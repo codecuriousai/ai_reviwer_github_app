@@ -3,62 +3,6 @@ const config = require('../config/config');
 const logger = require('../utils/logger');
 
 class AuthMiddleware {
-  // Verify GitHub webhook signature
-  verifyWebhook(req, res, next) {
-    try {
-      const signature = req.get('X-Hub-Signature-256');
-      const event = req.get('X-GitHub-Event');
-      
-      if (!signature || !event) {
-        logger.warn('Missing GitHub webhook headers');
-        return res.status(400).json({ error: 'Missing required headers' });
-      }
-
-      // Skip verification for health check
-      if (req.path === '/health') {
-        return next();
-      }
-
-      const payload = JSON.stringify(req.body);
-      const expectedSignature = crypto
-        .createHmac('sha256', config.github.webhookSecret)
-        .update(payload, 'utf8')
-        .digest('hex');
-
-      const expectedSignatureBuffer = Buffer.from(`sha256=${expectedSignature}`, 'utf8');
-      const actualSignatureBuffer = Buffer.from(signature, 'utf8');
-
-      // Use timingSafeEqual to prevent timing attacks
-      if (expectedSignatureBuffer.length !== actualSignatureBuffer.length ||
-          !crypto.timingSafeEqual(expectedSignatureBuffer, actualSignatureBuffer)) {
-        logger.warn('Invalid webhook signature', { 
-          event, 
-          expectedLength: expectedSignatureBuffer.length,
-          actualLength: actualSignatureBuffer.length 
-        });
-        return res.status(401).json({ error: 'Invalid signature' });
-      }
-
-      logger.info('Webhook signature verified', { event });
-      next();
-    } catch (error) {
-      logger.error('Error verifying webhook signature:', error);
-      res.status(500).json({ error: 'Authentication error' });
-    }
-  }
-
-  // Verify GitHub installation access
-  async verifyInstallation(installationId) {
-    try {
-      // This would typically verify the installation ID
-      // against your GitHub app's installations
-      return installationId === config.github.installationId;
-    } catch (error) {
-      logger.error('Error verifying installation:', error);
-      return false;
-    }
-  }
-
   // Rate limiting middleware
   rateLimitMiddleware() {
     const requests = new Map();
@@ -97,6 +41,83 @@ class AuthMiddleware {
       
       next();
     };
+  }
+
+  // Verify GitHub installation access
+  async verifyInstallation(installationId) {
+    try {
+      // This would typically verify the installation ID
+      // against your GitHub app's installations
+      return installationId === config.github.installationId;
+    } catch (error) {
+      logger.error('Error verifying installation:', error);
+      return false;
+    }
+  }
+
+  // Basic authentication for non-webhook endpoints
+  basicAuth(req, res, next) {
+    // Skip auth for health check and webhook endpoints
+    if (req.path === '/health' || req.path === '/webhook' || req.path === '/status') {
+      return next();
+    }
+
+    // Add basic auth logic here if needed for other endpoints
+    next();
+  }
+
+  // Request logging middleware
+  requestLogger(req, res, next) {
+    const start = Date.now();
+    
+    // Log request
+    logger.info(`${req.method} ${req.path}`, {
+      ip: req.ip,
+      userAgent: req.get('User-Agent'),
+      contentType: req.get('Content-Type'),
+      contentLength: req.get('Content-Length'),
+    });
+
+    // Log response when finished
+    res.on('finish', () => {
+      const duration = Date.now() - start;
+      logger.info(`${req.method} ${req.path} - ${res.statusCode}`, {
+        duration: `${duration}ms`,
+        contentLength: res.get('Content-Length'),
+      });
+    });
+
+    next();
+  }
+
+  // Webhook-specific validation
+  validateWebhookHeaders(req, res, next) {
+    const requiredHeaders = ['X-GitHub-Event', 'X-Hub-Signature-256', 'X-GitHub-Delivery'];
+    const missingHeaders = requiredHeaders.filter(header => !req.get(header));
+    
+    if (missingHeaders.length > 0) {
+      logger.warn('Missing webhook headers', { 
+        missing: missingHeaders,
+        received: Object.keys(req.headers).filter(h => h.startsWith('x-'))
+      });
+      return res.status(400).json({ 
+        error: 'Missing required webhook headers',
+        required: requiredHeaders,
+        missing: missingHeaders
+      });
+    }
+    
+    next();
+  }
+
+  // Security headers middleware
+  securityHeaders(req, res, next) {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('X-XSS-Protection', '1; mode=block');
+    res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+    res.removeHeader('X-Powered-By');
+    next();
   }
 }
 
