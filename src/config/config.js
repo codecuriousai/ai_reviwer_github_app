@@ -1,4 +1,23 @@
 require('dotenv').config();
+require('dotenv').config();
+const fs = require('fs');
+const path = require('path');
+
+let privateKeyPath;
+let privateKeyContent;
+
+if (process.env.GITHUB_PRIVATE_KEY_BASE64) {
+  // Render deployment: use base64 encoded key
+  privateKeyContent = Buffer.from(process.env.GITHUB_PRIVATE_KEY_BASE64, 'base64').toString('utf-8');
+  
+  // Write to temporary file
+  const tempKeyPath = path.join(__dirname, '../../temp-private-key.pem');
+  fs.writeFileSync(tempKeyPath, privateKeyContent);
+  privateKeyPath = tempKeyPath;
+} else {
+  // Local development: use file path
+  privateKeyPath = process.env.GITHUB_PRIVATE_KEY_PATH || './private-key.pem';
+}
 
 const config = {
   server: {

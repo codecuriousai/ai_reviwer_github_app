@@ -3,10 +3,14 @@
   "version": "1.0.0",
   "description": "AI-powered GitHub PR reviewer using SonarQube standards",
   "main": "src/index.js",
+   "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=8.0.0"
+  },
   "scripts": {
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "build": "echo 'No build step required'"
   },
   "keywords": [
     "github",
@@ -29,8 +33,5 @@
   },
   "devDependencies": {
     "nodemon": "^3.0.2"
-  },
-  "engines": {
-    "node": ">=16.0.0"
   }
 }
