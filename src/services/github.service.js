@@ -27,12 +27,12 @@ class GitHubService {
       if (process.env.GITHUB_PRIVATE_KEY_BASE64) {
         logger.info('Using base64 encoded private key from environment');
         const privateKeyContent = Buffer.from(process.env.GITHUB_PRIVATE_KEY_BASE64, 'base64').toString('utf-8');
-        
+
         // Validate key format
         if (!privateKeyContent.includes('BEGIN') || !privateKeyContent.includes('PRIVATE KEY')) {
           throw new Error('Invalid private key format in base64 string');
         }
-        
+
         return privateKeyContent;
       }
 
@@ -57,7 +57,7 @@ class GitHubService {
 
       // If none of the methods work, throw error
       throw new Error('No GitHub private key found. Please set GITHUB_PRIVATE_KEY_BASE64 environment variable for Render deployment.');
-      
+
     } catch (error) {
       logger.error('Error getting GitHub private key:', error);
       throw new Error(`Failed to load GitHub private key: ${error.message}`);
@@ -193,7 +193,7 @@ class GitHubService {
   // Filter files based on configuration
   filterFiles(files) {
     const { excludeFiles, maxFilesToAnalyze, maxFileSizeBytes } = config.review;
-    
+
     return files
       .filter(file => {
         // Check file extension exclusions
@@ -201,13 +201,13 @@ class GitHubService {
           const regex = new RegExp(pattern.replace('*', '.*'));
           return regex.test(file.filename);
         });
-        
+
         // Check file size
         const isTooLarge = file.changes > maxFileSizeBytes;
-        
+
         // Only include added or modified files
         const isRelevant = ['added', 'modified'].includes(file.status);
-        
+
         return !isExcluded && !isTooLarge && isRelevant;
       })
       .slice(0, maxFilesToAnalyze);
@@ -220,7 +220,7 @@ class GitHubService {
 
       // Create a review with multiple comments
       const reviewBody = this.formatReviewBody(comments);
-      
+
       const { data: review } = await this.octokit.rest.pulls.createReview({
         owner,
         repo,
@@ -258,14 +258,17 @@ class GitHubService {
 
   // Format review body with summary
   formatReviewBody(analysis) {
-    const { summary, issues, reviewerCoverage, recommendations } = analysis;
-    
+    const { summary, issues = [], reviewerCoverage, recommendations } = analysis;
+
     let body = `## 🤖 AI Code Review Summary\n\n`;
-    
+    if (!issues || !Array.isArray(issues)) {
+      logger.error('Invalid issues array in formatReviewBody:', { analysis });
+      return 'Error: Unable to format review body - invalid analysis data';
+    }
     // Overall summary
     body += `**Overall Rating:** ${summary.overallRating}\n`;
     body += `**Recommendation:** ${summary.recommendApproval ? '✅ Approve' : '❌ Request Changes'}\n\n`;
-    
+
     // Issues breakdown
     body += `### 📊 Issues Found\n`;
     body += `- **Total Issues:** ${summary.totalIssues}\n`;
@@ -303,7 +306,7 @@ class GitHubService {
     }
 
     body += `---\n*Powered by AI Code Reviewer with SonarQube Standards*`;
-    
+
     return body;
   }
 
@@ -339,11 +342,11 @@ class GitHubService {
     let comment = `${severityEmoji[issue.severity]} ${typeEmoji[issue.type]} **${issue.title}**\n\n`;
     comment += `${issue.description}\n\n`;
     comment += `**Suggestion:** ${issue.suggestion}\n`;
-    
+
     if (issue.sonarRule) {
       comment += `**SonarQube Rule:** ${issue.sonarRule}\n`;
     }
-    
+
     return comment;
   }
 

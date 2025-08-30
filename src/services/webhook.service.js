@@ -248,10 +248,11 @@ class WebhookService {
         // For initial analysis, create a proper review
         if (inlineComments.length > 0 && inlineComments.length <= 10) {
           // Post as review with inline comments (limit to 10 to avoid spam)
-          await githubService.postReviewComment(owner, repo, pullNumber, {
-            inlineComments: inlineComments.slice(0, 10),
-            summary: analysis,
-          });
+          // await githubService.postReviewComment(owner, repo, pullNumber, {
+          //   inlineComments: inlineComments.slice(0, 10),
+          //   summary: analysis,
+          // });
+          await githubService.postReviewComment(owner, repo, pullNumber, analysis);
         } else {
           // Post general comment if too many inline comments or none
           await githubService.postGeneralComment(owner, repo, pullNumber, reviewBody);
