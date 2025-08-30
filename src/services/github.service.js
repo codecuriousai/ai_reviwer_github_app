@@ -1,23 +1,78 @@
+// src/services/github.service.js - Fixed for Render Deployment
+
 const { Octokit } = require('@octokit/rest');
+const { createAppAuth } = require('@octokit/auth-app');
 const fs = require('fs');
+const path = require('path');
 const config = require('../config/config');
 const logger = require('../utils/logger');
 
 class GitHubService {
   constructor() {
+    this.privateKey = this.getPrivateKey();
     this.octokit = new Octokit({
-      auth: this.getInstallationToken(),
+      authStrategy: createAppAuth,
+      auth: {
+        appId: config.github.appId,
+        privateKey: this.privateKey,
+        installationId: config.github.installationId,
+      },
     });
   }
 
-  // Get installation token for GitHub App authentication
-  getInstallationToken() {
+  // Get private key from environment or file
+  getPrivateKey() {
     try {
-      const privateKey = fs.readFileSync(config.github.privateKeyPath, 'utf8');
-      return privateKey;
+      // Method 1: Base64 encoded private key (for Render/Cloud deployment)
+      if (process.env.GITHUB_PRIVATE_KEY_BASE64) {
+        logger.info('Using base64 encoded private key from environment');
+        const privateKeyContent = Buffer.from(process.env.GITHUB_PRIVATE_KEY_BASE64, 'base64').toString('utf-8');
+        
+        // Validate key format
+        if (!privateKeyContent.includes('BEGIN') || !privateKeyContent.includes('PRIVATE KEY')) {
+          throw new Error('Invalid private key format in base64 string');
+        }
+        
+        return privateKeyContent;
+      }
+
+      // Method 2: Direct private key content (fallback)
+      if (process.env.GITHUB_PRIVATE_KEY) {
+        logger.info('Using private key content from environment');
+        return process.env.GITHUB_PRIVATE_KEY.replace(/\\n/g, '\n');
+      }
+
+      // Method 3: Private key file path (local development)
+      if (process.env.GITHUB_PRIVATE_KEY_PATH && fs.existsSync(process.env.GITHUB_PRIVATE_KEY_PATH)) {
+        logger.info('Using private key from file path');
+        return fs.readFileSync(process.env.GITHUB_PRIVATE_KEY_PATH, 'utf8');
+      }
+
+      // Method 4: Default file location (local development fallback)
+      const defaultPath = path.join(process.cwd(), 'private-key.pem');
+      if (fs.existsSync(defaultPath)) {
+        logger.info('Using private key from default location');
+        return fs.readFileSync(defaultPath, 'utf8');
+      }
+
+      // If none of the methods work, throw error
+      throw new Error('No GitHub private key found. Please set GITHUB_PRIVATE_KEY_BASE64 environment variable for Render deployment.');
+      
     } catch (error) {
-      logger.error('Error reading GitHub private key:', error);
-      throw new Error('Failed to read GitHub private key');
+      logger.error('Error getting GitHub private key:', error);
+      throw new Error(`Failed to load GitHub private key: ${error.message}`);
+    }
+  }
+
+  // Test GitHub App authentication
+  async testAuthentication() {
+    try {
+      const { data: app } = await this.octokit.rest.apps.getAuthenticated();
+      logger.info(`GitHub App authenticated successfully: ${app.name} (ID: ${app.id})`);
+      return true;
+    } catch (error) {
+      logger.error('GitHub App authentication failed:', error);
+      return false;
     }
   }
 
@@ -335,6 +390,24 @@ class GitHubService {
   // Check if branch is in target branches list
   isTargetBranch(branch) {
     return config.review.targetBranches.includes(branch);
+  }
+
+  // Health check for GitHub service
+  async healthCheck() {
+    try {
+      const authenticated = await this.testAuthentication();
+      return {
+        status: authenticated ? 'healthy' : 'unhealthy',
+        authenticated,
+        timestamp: new Date().toISOString(),
+      };
+    } catch (error) {
+      return {
+        status: 'unhealthy',
+        error: error.message,
+        timestamp: new Date().toISOString(),
+      };
+    }
   }
 }
 

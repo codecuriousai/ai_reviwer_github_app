@@ -3,14 +3,15 @@
   "version": "1.0.0",
   "description": "AI-powered GitHub PR reviewer using SonarQube standards",
   "main": "src/index.js",
-   "engines": {
+  "engines": {
     "node": ">=18.0.0",
     "npm": ">=8.0.0"
   },
   "scripts": {
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
-    "build": "echo 'No build step required'"
+    "build": "echo 'No build step required'",
+    "test": "echo 'No tests configured'"
   },
   "keywords": [
     "github",
@@ -23,6 +24,7 @@
   "license": "MIT",
   "dependencies": {
     "@google/generative-ai": "^0.2.1",
+    "@octokit/auth-app": "^6.0.1",
     "@octokit/rest": "^20.0.2",
     "@octokit/webhooks": "^12.0.4",
     "crypto": "^1.0.1",
