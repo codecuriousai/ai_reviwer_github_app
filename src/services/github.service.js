@@ -415,9 +415,93 @@ class GitHubService {
     return comment;
   }
 
-  // Check if branch is in target branches list
+ // Check if branch is in target branches list
   isTargetBranch(branch) {
     return config.review.targetBranches.includes(branch);
+  }
+
+   // Post a general comment on the PR (for start notifications)
+  async postGeneralComment(owner, repo, pullNumber, body) {
+    try {
+      const { data: comment } = await this.octokit.rest.issues.createComment({
+        owner,
+        repo,
+        issue_number: pullNumber,
+        body,
+      });
+
+      logger.info(`General comment posted: ${comment.id}`);
+      return comment;
+    } catch (error) {
+      logger.error('Error posting general comment:', error);
+      throw new Error(`Failed to post general comment: ${error.message}`);
+    }
+  }
+
+  // Post review comment (for compatibility)
+  async postReviewComment(owner, repo, pullNumber, comments) {
+    try {
+      logger.info(`Posting review comments for ${owner}/${repo}#${pullNumber}`);
+
+      const reviewBody = typeof comments === 'string' ? comments : this.formatReviewBody(comments);
+      
+      const { data: review } = await this.octokit.rest.pulls.createReview({
+        owner,
+        repo,
+        pull_number: pullNumber,
+        event: 'COMMENT',
+        body: reviewBody,
+        comments: comments.inlineComments || [],
+      });
+
+      logger.info(`Review posted successfully: ${review.id}`);
+      return review;
+    } catch (error) {
+      logger.error('Error posting review comment:', error);
+      throw new Error(`Failed to post review comment: ${error.message}`);
+    }
+  }
+
+  // Format review body (legacy compatibility)
+  formatReviewBody(analysis) {
+    if (typeof analysis === 'string') {
+      return analysis;
+    }
+    
+    // If it's the new structured format, use the structured formatter
+    if (analysis.prInfo) {
+      return this.formatStructuredReviewComment(analysis);
+    }
+    
+    // Legacy format handling
+    const { summary, issues, recommendations } = analysis;
+    
+    let body = `## 🤖 AI Code Review Summary\n\n`;
+    body += `**Overall Rating:** ${summary?.overallRating || 'UNKNOWN'}\n`;
+    body += `**Total Issues:** ${summary?.totalIssues || 0}\n\n`;
+    
+    if (recommendations && recommendations.length > 0) {
+      body += `### 💡 Recommendations\n`;
+      recommendations.forEach(rec => {
+        body += `- ${rec}\n`;
+      });
+    }
+    
+    return body;
+  }
+
+  // Delete a comment (utility method)
+  async deleteComment(owner, repo, commentId) {
+    try {
+      await this.octokit.rest.issues.deleteComment({
+        owner,
+        repo,
+        comment_id: commentId,
+      });
+      logger.info(`Comment deleted: ${commentId}`);
+    } catch (error) {
+      logger.warn(`Failed to delete comment ${commentId}:`, error.message);
+    }
   }
 }
 
