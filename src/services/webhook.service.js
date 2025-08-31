@@ -109,7 +109,7 @@ class WebhookService {
     }
   }
 
-  // Handle button clicks - FIX: Only trigger for the specific PR
+  // Handle button clicks - FIX: Get PR from commit SHA when pull_requests is empty
   async handleCheckRunEvent(payload) {
     const { action, check_run, repository } = payload;
 
@@ -122,18 +122,100 @@ class WebhookService {
           headSha: check_run.head_sha,
         });
         
-        // FIX: Get the specific PR for this check run
-        const pullRequests = check_run.pull_requests;
-        if (pullRequests && pullRequests.length > 0) {
-          // Process only the first PR associated with this specific check run
-          const specificPR = pullRequests[0];
-          logger.info(`Triggering AI review for specific PR #${specificPR.number} from check run ${check_run.id}`);
-          
-          await this.triggerAIReview(repository, specificPR, check_run);
+        // FIX: Get PR from check run data
+        let targetPR = null;
+        
+        // Method 1: Try pull_requests array first
+        if (check_run.pull_requests && check_run.pull_requests.length > 0) {
+          targetPR = check_run.pull_requests[0];
+          logger.info(`Found PR from pull_requests array: #${targetPR.number}`);
         } else {
-          logger.error('No pull requests associated with check run', { checkRunId: check_run.id });
+          // Method 2: Find PR by commit SHA
+          logger.info(`No pull_requests in check_run, searching by commit SHA: ${check_run.head_sha}`);
+          targetPR = await this.findPRByCommitSha(repository, check_run.head_sha);
+        }
+        
+        if (targetPR) {
+          logger.info(`Triggering AI review for PR #${targetPR.number} from check run ${check_run.id}`);
+          await this.triggerAIReview(repository, targetPR, check_run);
+        } else {
+          logger.error('Could not find associated PR for check run', { 
+            checkRunId: check_run.id,
+            headSha: check_run.head_sha 
+          });
+          
+          // Update check run with error
+          await githubService.updateCheckRun(repository.owner.login, repository.name, check_run.id, {
+            status: 'completed',
+            conclusion: 'failure',
+            output: {
+              title: 'AI Review Failed',
+              summary: 'Could not find the associated pull request for this check run.',
+            }
+          });
         }
       }
+    }
+  }
+
+  // NEW METHOD: Find PR by commit SHA
+  async findPRByCommitSha(repository, commitSha) {
+    try {
+      const owner = repository.owner.login;
+      const repo = repository.name;
+      
+      logger.info(`Searching for PR with commit SHA: ${commitSha}`);
+      
+      // Search for pull requests with this commit
+      const { data: prs } = await githubService.octokit.rest.pulls.list({
+        owner,
+        repo,
+        state: 'open',
+        sort: 'updated',
+        direction: 'desc',
+        per_page: 50, // Check recent PRs
+      });
+
+      // Find PR that contains this commit SHA
+      for (const pr of prs) {
+        if (pr.head.sha === commitSha) {
+          logger.info(`Found matching PR #${pr.number} with head SHA: ${commitSha}`);
+          return {
+            number: pr.number,
+            head: { sha: commitSha }
+          };
+        }
+      }
+
+      // Alternative: Check if any PR's head branch matches
+      for (const pr of prs) {
+        try {
+          const { data: commits } = await githubService.octokit.rest.pulls.listCommits({
+            owner,
+            repo,
+            pull_number: pr.number,
+          });
+          
+          const hasCommit = commits.some(commit => commit.sha === commitSha);
+          if (hasCommit) {
+            logger.info(`Found PR #${pr.number} containing commit ${commitSha}`);
+            return {
+              number: pr.number,
+              head: { sha: commitSha }
+            };
+          }
+        } catch (error) {
+          // Continue searching other PRs
+          logger.debug(`Could not check commits for PR #${pr.number}:`, error.message);
+        }
+      }
+
+      logger.warn(`No open PR found for commit SHA: ${commitSha}`);
+      return null;
+      
+    } catch (error) {
+      logger.error('Error finding PR by commit SHA:', error);
+      return null;
     }
   }
 
@@ -599,6 +681,116 @@ class WebhookService {
       logger.warn(`Force shutdown with ${this.activeReviews} reviews still active`);
     } else {
       logger.info('All reviews completed, shutdown complete');
+    }
+  }
+
+   // NEW METHOD: Find PR by commit SHA when check run doesn't have pull_requests
+  async findPRByCommitSha(repository, commitSha) {
+    try {
+      const owner = repository.owner.login;
+      const repo = repository.name;
+      
+      logger.info(`Searching for PR with commit SHA: ${commitSha}`);
+      
+      // Get all open pull requests
+      const { data: prs } = await githubService.octokit.rest.pulls.list({
+        owner,
+        repo,
+        state: 'open',
+        sort: 'updated',
+        direction: 'desc',
+        per_page: 50,
+      });
+
+      // Find PR that has this exact commit as head SHA
+      for (const pr of prs) {
+        if (pr.head.sha === commitSha) {
+          logger.info(`Found matching PR #${pr.number} with head SHA: ${commitSha}`);
+          return {
+            number: pr.number,
+            head: { sha: commitSha }
+          };
+        }
+      }
+
+      // If no exact match, check if commit exists in any PR
+      for (const pr of prs) {
+        try {
+          const { data: commits } = await githubService.octokit.rest.pulls.listCommits({
+            owner,
+            repo,
+            pull_number: pr.number,
+          });
+          
+          const hasCommit = commits.some(commit => commit.sha === commitSha);
+          if (hasCommit) {
+            logger.info(`Found PR #${pr.number} containing commit ${commitSha}`);
+            return {
+              number: pr.number,
+              head: { sha: commitSha }
+            };
+          }
+        } catch (error) {
+          // Continue to next PR if error checking commits
+          continue;
+        }
+      }
+
+      logger.warn(`No open PR found for commit SHA: ${commitSha}`);
+      return null;
+      
+    } catch (error) {
+      logger.error('Error finding PR by commit SHA:', error);
+      return null;
+    }
+  }
+
+// ALSO UPDATE: Replace your existing handleCheckRunEvent method with this:
+
+  async handleCheckRunEvent(payload) {
+    const { action, check_run, repository } = payload;
+
+    if (action === 'requested_action' && check_run.name === 'AI Code Review') {
+      const requestedAction = payload.requested_action;
+      
+      if (requestedAction.identifier === 'ai_review') {
+        logger.info(`AI Review requested via button for check run ${check_run.id}`, {
+          checkRunId: check_run.id,
+          headSha: check_run.head_sha,
+        });
+        
+        let targetPR = null;
+        
+        // Method 1: Try pull_requests array first
+        if (check_run.pull_requests && check_run.pull_requests.length > 0) {
+          targetPR = check_run.pull_requests[0];
+          logger.info(`Found PR from pull_requests array: #${targetPR.number}`);
+        } else {
+          // Method 2: Find PR by commit SHA
+          logger.info(`No pull_requests in check_run, searching by commit SHA: ${check_run.head_sha}`);
+          targetPR = await this.findPRByCommitSha(repository, check_run.head_sha);
+        }
+        
+        if (targetPR) {
+          logger.info(`Triggering AI review for PR #${targetPR.number} from check run ${check_run.id}`);
+          await this.triggerAIReview(repository, targetPR, check_run);
+        } else {
+          logger.error('Could not find associated PR for check run', { 
+            checkRunId: check_run.id,
+            headSha: check_run.head_sha 
+          });
+          
+          // Update check run with helpful error message
+          await githubService.updateCheckRun(repository.owner.login, repository.name, check_run.id, {
+            status: 'completed',
+            conclusion: 'failure',
+            output: {
+              title: 'AI Review Failed - PR Not Found',
+              summary: 'Could not find the associated pull request for this check run. This might happen if the PR was closed or the commit SHA changed.',
+            }
+          });
+        }
+      }
     }
   }
 }
