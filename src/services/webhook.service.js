@@ -82,7 +82,7 @@ class WebhookService {
         },
         actions: [{
           label: 'AI Review',
-          description: 'Analyze code changes with AI using SonarQube standards',
+          description: 'Analyze PR code changes', // Shortened to under 40 chars
           identifier: 'ai_review'
         }]
       });
@@ -91,15 +91,16 @@ class WebhookService {
     } catch (error) {
       logger.error('Error creating AI Review button:', error);
       
-      // Fallback: Post instruction comment
+      // Fallback: Post instruction comment with manual trigger
       await githubService.postGeneralComment(
         owner,
         repo,
         pullRequest.number,
         `🤖 **AI Code Review Available**\n\n` +
-        `Manual trigger available. Contact administrator to enable button interface.\n\n` +
+        `Click the button below or comment \`/ai-review\` to trigger analysis.\n\n` +
         `**Files to analyze:** ${pullRequest.changed_files}\n` +
-        `**Lines changed:** +${pullRequest.additions} -${pullRequest.deletions}`
+        `**Lines changed:** +${pullRequest.additions} -${pullRequest.deletions}\n\n` +
+        `*Analysis will use SonarQube standards for comprehensive code review.*`
       );
     }
   }
