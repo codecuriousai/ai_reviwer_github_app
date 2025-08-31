@@ -1,4 +1,4 @@
-// src/services/github.service.js - Updated for Single Comment Format
+// src/services/github.service.js - Updated with Check Runs Support
 
 const { Octokit } = require('@octokit/rest');
 const { createAppAuth } = require('@octokit/auth-app');
@@ -109,6 +109,61 @@ class GitHubService {
     const hasPrivateKeyLabel = trimmedKey.includes('PRIVATE KEY');
     
     return hasBeginMarker && hasEndMarker && hasPrivateKeyLabel && trimmedKey.length > 200;
+  }
+
+  // Create check run for AI Review button
+  async createCheckRun(owner, repo, checkRunData) {
+    try {
+      logger.info(`Creating check run: ${checkRunData.name} for ${owner}/${repo}`);
+      
+      const { data: checkRun } = await this.octokit.rest.checks.create({
+        owner,
+        repo,
+        ...checkRunData,
+      });
+
+      logger.info(`Check run created: ${checkRun.id}`);
+      return checkRun;
+    } catch (error) {
+      logger.error('Error creating check run:', error);
+      throw new Error(`Failed to create check run: ${error.message}`);
+    }
+  }
+
+  // Update existing check run
+   async updateCheckRun(owner, repo, checkRunId, updateData) {
+    try {
+      const { data: checkRun } = await this.octokit.rest.checks.update({
+        owner,
+        repo,
+        check_run_id: checkRunId,
+        ...updateData,
+      });
+
+      logger.info(`Check run updated: ${checkRunId} - ${updateData.status}`);
+      return checkRun;
+    } catch (error) {
+      logger.error(`Error updating check run ${checkRunId}:`, error);
+      throw new Error(`Failed to update check run: ${error.message}`);
+    }
+  }
+
+   // Update an existing comment
+  async updateComment(owner, repo, commentId, body) {
+    try {
+      const { data: comment } = await this.octokit.rest.issues.updateComment({
+        owner,
+        repo,
+        comment_id: commentId,
+        body,
+      });
+
+      logger.info(`Comment updated: ${commentId}`);
+      return comment;
+    } catch (error) {
+      logger.error('Error updating comment:', error);
+      throw new Error(`Failed to update comment: ${error.message}`);
+    }
   }
 
   // Test GitHub App authentication
@@ -415,12 +470,7 @@ class GitHubService {
     return comment;
   }
 
- // Check if branch is in target branches list
-  isTargetBranch(branch) {
-    return config.review.targetBranches.includes(branch);
-  }
-
-   // Post a general comment on the PR (for start notifications)
+  // Post a general comment on the PR (for notifications)
   async postGeneralComment(owner, repo, pullNumber, body) {
     try {
       const { data: comment } = await this.octokit.rest.issues.createComment({
@@ -490,7 +540,12 @@ class GitHubService {
     return body;
   }
 
-  // Delete a comment (utility method)
+  // Check if branch is in target branches list
+  isTargetBranch(branch) {
+    return config.review.targetBranches.includes(branch);
+  }
+
+ // Delete a comment
   async deleteComment(owner, repo, commentId) {
     try {
       await this.octokit.rest.issues.deleteComment({
