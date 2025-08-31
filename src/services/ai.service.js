@@ -1,4 +1,4 @@
-// src/services/ai.service.js - Complete Implementation
+// src/services/ai.service.js - Updated for Single Comment Format
 
 const OpenAI = require('openai');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
@@ -59,10 +59,10 @@ class AIService {
       // Validate and parse response
       const parsedAnalysis = this.parseAnalysisResponse(analysis);
       
-      // Enhance analysis with additional context
-      const enhancedAnalysis = this.enhanceAnalysis(parsedAnalysis, prData);
+      // Enhance analysis with PR context
+      const enhancedAnalysis = this.enhanceAnalysisWithContext(parsedAnalysis, prData, existingComments);
       
-      logger.info(`AI analysis completed. Found ${enhancedAnalysis.summary.totalIssues} issues`);
+      logger.info(`AI analysis completed. Found ${enhancedAnalysis.automatedAnalysis.totalIssues} issues`);
       return enhancedAnalysis;
     } catch (error) {
       logger.error('Error in AI analysis:', error);
@@ -77,24 +77,22 @@ class AIService {
     // Sanitize and truncate data for AI processing
     const sanitizedDiff = sanitizeForAI(diff);
     const truncatedDiff = sanitizedDiff.length > 8000 
-      ? sanitizedDiff.substring(0, 8000) + '\n... [truncated]' 
+      ? sanitizedDiff.substring(0, 8000) + '\n... [truncated for analysis]' 
       : sanitizedDiff;
 
     return {
-      title: sanitizeForAI(pr.title),
-      description: sanitizeForAI(pr.description).substring(0, 500),
-      author: pr.author,
-      targetBranch: pr.targetBranch,
-      sourceBranch: pr.sourceBranch,
-      filesChanged: files.length,
-      diff: truncatedDiff,
-      files: files.map(file => ({
-        filename: file.filename,
-        status: file.status,
-        additions: file.additions,
-        deletions: file.deletions,
-        changes: file.changes,
-      })),
+      pr: {
+        ...pr,
+        diff: truncatedDiff,
+        files: files.map(file => ({
+          filename: file.filename,
+          status: file.status,
+          additions: file.additions,
+          deletions: file.deletions,
+          changes: file.changes,
+        })),
+      },
+      comments: existingComments,
     };
   }
 
@@ -108,7 +106,7 @@ class AIService {
         messages: [
           {
             role: 'system',
-            content: 'You are an expert code reviewer specializing in SonarQube standards. Always respond with valid JSON in the exact format specified.',
+            content: 'You are an expert code reviewer specializing in SonarQube standards. Always respond with valid JSON in the exact format specified. Focus on providing a comprehensive analysis in a single structured response.',
           },
           {
             role: 'user',
@@ -179,13 +177,13 @@ class AIService {
   // Parse and validate AI response
   parseAnalysisResponse(responseText) {
     try {
-      // Clean response text (remove markdown formatting if present)
+      // Clean response text
       let cleanedResponse = responseText.trim();
       
       // Remove markdown code blocks if present
       cleanedResponse = cleanedResponse.replace(/```json\n?/g, '').replace(/```\n?/g, '');
       
-      // Try to find JSON in the response if it contains other text
+      // Try to find JSON in the response
       const jsonMatch = cleanedResponse.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
         cleanedResponse = jsonMatch[0];
@@ -203,17 +201,16 @@ class AIService {
       return analysis;
     } catch (error) {
       logger.error('Error parsing AI response:', error);
-      logger.error('Raw response:', responseText.substring(0, 500));
+      logger.error('Raw response preview:', responseText.substring(0, 500));
       
       // Return fallback structure
       return this.getFallbackAnalysis(error.message);
     }
   }
 
-  // Validate analysis structure
+  // Validate analysis structure for new format
   validateAnalysisStructure(analysis) {
-    const requiredFields = ['summary', 'issues'];
-    const requiredSummaryFields = ['totalIssues', 'overallRating', 'recommendApproval'];
+    const requiredFields = ['prInfo', 'automatedAnalysis', 'humanReviewAnalysis', 'reviewAssessment', 'recommendation'];
     
     for (const field of requiredFields) {
       if (!analysis[field]) {
@@ -221,146 +218,153 @@ class AIService {
       }
     }
     
-    for (const field of requiredSummaryFields) {
-      if (analysis.summary[field] === undefined) {
-        throw new Error(`Missing required summary field: ${field}`);
-      }
+    // Validate nested structures
+    if (!analysis.automatedAnalysis.severityBreakdown) {
+      throw new Error('Missing severityBreakdown in automatedAnalysis');
     }
     
-    if (!Array.isArray(analysis.issues)) {
-      throw new Error('Issues must be an array');
+    if (!analysis.automatedAnalysis.categories) {
+      throw new Error('Missing categories in automatedAnalysis');
     }
 
-    // Validate issue structure
-    analysis.issues.forEach((issue, index) => {
-      const requiredIssueFields = ['type', 'severity', 'title', 'description'];
-      for (const field of requiredIssueFields) {
-        if (!issue[field]) {
-          logger.warn(`Issue ${index} missing field: ${field}`);
-        }
-      }
-    });
+    if (!Array.isArray(analysis.detailedFindings)) {
+      analysis.detailedFindings = [];
+    }
   }
 
-  // Enhance analysis with additional context
-  enhanceAnalysis(analysis, prData) {
-    // Add file-specific context
-    analysis.issues = analysis.issues.map(issue => {
-      if (issue.file) {
-        const fileData = prData.files.find(f => f.filename === issue.file);
-        if (fileData) {
-          issue.fileContext = {
-            additions: fileData.additions,
-            deletions: fileData.deletions,
-            status: fileData.status,
-          };
-        }
-      }
-      return issue;
-    });
-
-    // Add complexity assessment
-    analysis.complexity = {
-      filesChanged: prData.files.length,
-      totalChanges: prData.pr.additions + prData.pr.deletions,
-      riskLevel: this.calculateRiskLevel(prData),
+  // Enhance analysis with PR context
+  enhanceAnalysisWithContext(analysis, prData, existingComments) {
+    // Ensure prInfo is populated with actual data
+    analysis.prInfo = {
+      prId: prData.pr.number,
+      title: prData.pr.title,
+      repository: prData.pr.repository,
+      author: prData.pr.author,
+      reviewers: prData.reviewers || [],
+      url: prData.pr.url,
     };
 
-    // Enhance reviewer coverage if not present
-    if (!analysis.reviewerCoverage) {
-      analysis.reviewerCoverage = {
-        issuesFoundByReviewer: prData.comments.length,
-        issuesMissedByReviewer: analysis.summary.totalIssues,
-        additionalIssuesFound: analysis.summary.totalIssues,
-        reviewQuality: prData.comments.length > 0 ? 'ADEQUATE' : 'INSUFFICIENT',
-      };
+    // Enhance human review analysis with actual comment data
+    analysis.humanReviewAnalysis = {
+      reviewComments: existingComments.length,
+      issuesAddressedByReviewers: this.countIssuesInComments(existingComments),
+      securityIssuesCaught: this.countSecurityIssuesInComments(existingComments),
+      codeQualityIssuesCaught: this.countCodeQualityIssuesInComments(existingComments),
+    };
+
+    // Set review assessment based on analysis
+    if (existingComments.length === 0) {
+      analysis.reviewAssessment = 'REVIEW REQUIRED';
+    } else if (analysis.automatedAnalysis.totalIssues > analysis.humanReviewAnalysis.issuesAddressedByReviewers) {
+      analysis.reviewAssessment = 'NOT PROPERLY REVIEWED';
+    } else {
+      analysis.reviewAssessment = 'PROPERLY REVIEWED';
     }
 
     return analysis;
   }
 
-  // Calculate risk level based on PR data
-  calculateRiskLevel(prData) {
-    const { pr, files } = prData;
-    const totalChanges = pr.additions + pr.deletions;
-    const filesChanged = files.length;
+  // Count issues mentioned in human review comments
+  countIssuesInComments(comments) {
+    const issueKeywords = [
+      'bug', 'issue', 'problem', 'error', 'fix', 'wrong', 'incorrect', 
+      'security', 'vulnerability', 'risk', 'unsafe', 'dangerous'
+    ];
     
-    if (totalChanges > 500 || filesChanged > 10) {
-      return 'HIGH';
-    } else if (totalChanges > 100 || filesChanged > 5) {
-      return 'MEDIUM';
-    }
-    return 'LOW';
+    let issueCount = 0;
+    comments.forEach(comment => {
+      const body = comment.body.toLowerCase();
+      issueKeywords.forEach(keyword => {
+        if (body.includes(keyword)) {
+          issueCount++;
+        }
+      });
+    });
+    
+    return Math.min(issueCount, comments.length); // Cap at number of comments
   }
 
-  // Get fallback analysis when parsing fails
+  // Count security issues in comments
+  countSecurityIssuesInComments(comments) {
+    const securityKeywords = [
+      'security', 'vulnerability', 'exploit', 'injection', 'xss', 'csrf',
+      'authentication', 'authorization', 'encryption', 'password', 'token'
+    ];
+    
+    let securityCount = 0;
+    comments.forEach(comment => {
+      const body = comment.body.toLowerCase();
+      if (securityKeywords.some(keyword => body.includes(keyword))) {
+        securityCount++;
+      }
+    });
+    
+    return securityCount;
+  }
+
+  // Count code quality issues in comments
+  countCodeQualityIssuesInComments(comments) {
+    const qualityKeywords = [
+      'refactor', 'clean', 'readable', 'maintainable', 'complex', 'duplicate',
+      'naming', 'structure', 'design', 'pattern', 'smell'
+    ];
+    
+    let qualityCount = 0;
+    comments.forEach(comment => {
+      const body = comment.body.toLowerCase();
+      if (qualityKeywords.some(keyword => body.includes(keyword))) {
+        qualityCount++;
+      }
+    });
+    
+    return qualityCount;
+  }
+
+  // Get fallback analysis for new format
   getFallbackAnalysis(errorMessage) {
     return {
-      summary: {
-        totalIssues: 1,
-        criticalIssues: 0,
-        highIssues: 1,
-        mediumIssues: 0,
-        lowIssues: 0,
-        overallRating: 'NEEDS_IMPROVEMENT',
-        recommendApproval: false,
+      prInfo: {
+        prId: 'unknown',
+        title: 'Error in analysis',
+        repository: 'unknown/unknown',
+        author: 'unknown',
+        reviewers: [],
+        url: '#'
       },
-      issues: [{
+      automatedAnalysis: {
+        totalIssues: 1,
+        severityBreakdown: {
+          blocker: 0,
+          critical: 0,
+          major: 1,
+          minor: 0,
+          info: 0
+        },
+        categories: {
+          bugs: 0,
+          vulnerabilities: 0,
+          securityHotspots: 0,
+          codeSmells: 1
+        },
+        technicalDebtMinutes: 30
+      },
+      humanReviewAnalysis: {
+        reviewComments: 0,
+        issuesAddressedByReviewers: 0,
+        securityIssuesCaught: 0,
+        codeQualityIssuesCaught: 0
+      },
+      reviewAssessment: 'REVIEW REQUIRED',
+      detailedFindings: [{
         file: 'AI_ANALYSIS_ERROR',
         line: 1,
-        type: 'CODE_SMELL',
-        severity: 'HIGH',
-        title: 'AI Analysis Error',
-        description: `Failed to parse AI response: ${errorMessage}. This might be due to API limits, invalid response format, or service unavailability.`,
-        suggestion: 'Please check the AI service configuration, API keys, and quotas. Try again in a few minutes.',
-        sonarRule: 'N/A',
+        issue: `AI analysis failed: ${errorMessage}`,
+        severity: 'MAJOR',
+        category: 'CODE_SMELL',
+        suggestion: 'Please check AI service configuration and try again'
       }],
-      reviewerCoverage: {
-        issuesFoundByReviewer: 0,
-        issuesMissedByReviewer: 0,
-        additionalIssuesFound: 1,
-        reviewQuality: 'INSUFFICIENT',
-      },
-      recommendations: [
-        'Fix AI analysis configuration to get proper code review.',
-        'Verify API keys and service availability.',
-        'Check network connectivity and API quotas.',
-      ],
+      recommendation: 'Fix AI analysis configuration to get proper code review feedback. Check API keys, network connectivity, and service availability.'
     };
-  }
-
-  // Analyze specific code patterns
-  async analyzeCodePatterns(code, analysisType = 'security') {
-    try {
-      const prompts = require('../prompts/prompts');
-      let prompt;
-      
-      switch (analysisType) {
-        case 'security':
-          prompt = prompts.securityAnalysisPrompt;
-          break;
-        case 'performance':
-          prompt = prompts.performanceAnalysisPrompt;
-          break;
-        case 'maintainability':
-          prompt = prompts.maintainabilityPrompt;
-          break;
-        default:
-          prompt = prompts.codeReviewPrompt;
-      }
-
-      const sanitizedCode = sanitizeForAI(code);
-      prompt += `\n\nCODE TO ANALYZE:\n${sanitizedCode}`;
-
-      if (this.provider === 'openai') {
-        return await this.analyzeWithOpenAI(prompt);
-      } else {
-        return await this.analyzeWithGemini(prompt);
-      }
-    } catch (error) {
-      logger.error(`Error in ${analysisType} analysis:`, error);
-      throw error;
-    }
   }
 
   // Check AI service health
@@ -388,43 +392,170 @@ class AIService {
     }
   }
 
-  // Get token usage statistics
-  getUsageStats() {
+  // Convert legacy analysis format to new format (if needed)
+  convertLegacyAnalysis(legacyAnalysis, prData, existingComments) {
+    // If analysis is already in new format, return as-is
+    if (legacyAnalysis.prInfo && legacyAnalysis.automatedAnalysis) {
+      return legacyAnalysis;
+    }
+
+    // Convert old format to new format
+    const issues = legacyAnalysis.issues || [];
+    
+    // Map severity levels
+    const severityMap = {
+      'CRITICAL': 'critical',
+      'HIGH': 'major', 
+      'MEDIUM': 'minor',
+      'LOW': 'info',
+      'INFO': 'info'
+    };
+
+    // Count severity levels
+    const severityBreakdown = {
+      blocker: issues.filter(i => i.severity === 'BLOCKER').length,
+      critical: issues.filter(i => i.severity === 'CRITICAL').length,
+      major: issues.filter(i => i.severity === 'HIGH').length,
+      minor: issues.filter(i => i.severity === 'MEDIUM' || i.severity === 'LOW').length,
+      info: issues.filter(i => i.severity === 'INFO').length,
+    };
+
+    // Count categories
+    const categories = {
+      bugs: issues.filter(i => i.type === 'BUG').length,
+      vulnerabilities: issues.filter(i => i.type === 'VULNERABILITY').length,
+      securityHotspots: issues.filter(i => i.type === 'SECURITY_HOTSPOT').length,
+      codeSmells: issues.filter(i => i.type === 'CODE_SMELL').length,
+    };
+
+    // Calculate technical debt
+    const technicalDebtMinutes = issues.reduce((total, issue) => {
+      const effortMap = { 'TRIVIAL': 5, 'EASY': 15, 'MEDIUM': 60, 'HARD': 240 };
+      return total + (effortMap[issue.effort] || 30);
+    }, 0);
+
     return {
-      provider: this.provider,
-      requestsToday: 0, // Implement actual tracking
-      tokensUsed: 0,    // Implement actual tracking
+      prInfo: {
+        prId: prData.pr.number,
+        title: prData.pr.title,
+        repository: prData.pr.repository,
+        author: prData.pr.author,
+        reviewers: prData.reviewers || [],
+        url: prData.pr.url,
+      },
+      automatedAnalysis: {
+        totalIssues: issues.length,
+        severityBreakdown,
+        categories,
+        technicalDebtMinutes,
+      },
+      humanReviewAnalysis: {
+        reviewComments: existingComments.length,
+        issuesAddressedByReviewers: this.countIssuesInComments(existingComments),
+        securityIssuesCaught: this.countSecurityIssuesInComments(existingComments),
+        codeQualityIssuesCaught: this.countCodeQualityIssuesInComments(existingComments),
+      },
+      reviewAssessment: this.assessReviewQuality(issues, existingComments),
+      detailedFindings: issues.map(issue => ({
+        file: issue.file || 'unknown',
+        line: issue.line || 1,
+        issue: issue.description || issue.title,
+        severity: issue.severity,
+        category: issue.type,
+        suggestion: issue.suggestion || 'No suggestion provided'
+      })),
+      recommendation: this.generateRecommendation(issues, existingComments)
     };
   }
 
-  // Batch analyze multiple files
-  async batchAnalyzeFiles(files, prContext) {
-    const results = [];
-    
-    // Process files in chunks to avoid API limits
-    const chunkSize = 3;
-    for (let i = 0; i < files.length; i += chunkSize) {
-      const chunk = files.slice(i, i + chunkSize);
-      
-      const chunkPromises = chunk.map(async (file) => {
-        try {
-          return await this.analyzeCodePatterns(file.patch, 'comprehensive');
-        } catch (error) {
-          logger.error(`Error analyzing file ${file.filename}:`, error);
-          return this.getFallbackAnalysis(`Failed to analyze ${file.filename}`);
-        }
-      });
-      
-      const chunkResults = await Promise.all(chunkPromises);
-      results.push(...chunkResults);
-      
-      // Small delay between chunks to respect rate limits
-      if (i + chunkSize < files.length) {
-        await new Promise(resolve => setTimeout(resolve, 1000));
-      }
+  // Assess review quality
+  assessReviewQuality(issues, comments) {
+    if (comments.length === 0) {
+      return 'REVIEW REQUIRED';
     }
     
-    return results;
+    const criticalIssues = issues.filter(i => ['BLOCKER', 'CRITICAL'].includes(i.severity)).length;
+    const issuesCaught = this.countIssuesInComments(comments);
+    
+    if (criticalIssues > issuesCaught) {
+      return 'NOT PROPERLY REVIEWED';
+    } else if (issuesCaught >= Math.ceil(issues.length * 0.7)) {
+      return 'PROPERLY REVIEWED';
+    } else {
+      return 'NOT PROPERLY REVIEWED';
+    }
+  }
+
+  // Generate recommendation based on analysis
+  generateRecommendation(issues, comments) {
+    const criticalIssues = issues.filter(i => ['BLOCKER', 'CRITICAL'].includes(i.severity)).length;
+    const securityIssues = issues.filter(i => i.type === 'VULNERABILITY').length;
+    
+    if (comments.length === 0) {
+      return 'This PR requires human review. Please assign reviewers to examine the code changes, especially focusing on security and critical functionality.';
+    } else if (criticalIssues > 0) {
+      return `Critical issues were found that require immediate attention. Reviewers should focus on ${criticalIssues} critical issue(s) before approval.`;
+    } else if (securityIssues > 0) {
+      return `Security vulnerabilities detected. Please have a security-focused review before merging.`;
+    } else if (issues.length > comments.length) {
+      return 'Additional code quality issues were found. Consider a more thorough review focusing on maintainability and best practices.';
+    } else {
+      return 'The review appears comprehensive. Good job on thorough code examination.';
+    }
+  }
+
+  // Helper methods from previous implementation
+  countIssuesInComments(comments) {
+    const issueKeywords = [
+      'bug', 'issue', 'problem', 'error', 'fix', 'wrong', 'incorrect', 
+      'security', 'vulnerability', 'risk', 'unsafe', 'dangerous'
+    ];
+    
+    let issueCount = 0;
+    comments.forEach(comment => {
+      const body = comment.body.toLowerCase();
+      issueKeywords.forEach(keyword => {
+        if (body.includes(keyword)) {
+          issueCount++;
+        }
+      });
+    });
+    
+    return Math.min(issueCount, comments.length);
+  }
+
+  countSecurityIssuesInComments(comments) {
+    const securityKeywords = [
+      'security', 'vulnerability', 'exploit', 'injection', 'xss', 'csrf',
+      'authentication', 'authorization', 'encryption', 'password', 'token'
+    ];
+    
+    let securityCount = 0;
+    comments.forEach(comment => {
+      const body = comment.body.toLowerCase();
+      if (securityKeywords.some(keyword => body.includes(keyword))) {
+        securityCount++;
+      }
+    });
+    
+    return securityCount;
+  }
+
+  countCodeQualityIssuesInComments(comments) {
+    const qualityKeywords = [
+      'refactor', 'clean', 'readable', 'maintainable', 'complex', 'duplicate',
+      'naming', 'structure', 'design', 'pattern', 'smell'
+    ];
+    
+    let qualityCount = 0;
+    comments.forEach(comment => {
+      const body = comment.body.toLowerCase();
+      if (qualityKeywords.some(keyword => body.includes(keyword))) {
+        qualityCount++;
+      }
+    });
+    
+    return qualityCount;
   }
 }
 

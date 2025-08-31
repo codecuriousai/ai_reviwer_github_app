@@ -1,4 +1,4 @@
-// src/services/github.service.js - Fixed for Render Deployment
+// src/services/github.service.js - Updated for Single Comment Format
 
 const { Octokit } = require('@octokit/rest');
 const { createAppAuth } = require('@octokit/auth-app');
@@ -20,48 +20,95 @@ class GitHubService {
     });
   }
 
-  // Get private key from environment or file
+  // Enhanced private key retrieval with better validation
   getPrivateKey() {
     try {
+      let privateKeyContent = null;
+
       // Method 1: Base64 encoded private key (for Render/Cloud deployment)
       if (process.env.GITHUB_PRIVATE_KEY_BASE64) {
-        logger.info('Using base64 encoded private key from environment');
-        const privateKeyContent = Buffer.from(process.env.GITHUB_PRIVATE_KEY_BASE64, 'base64').toString('utf-8');
-
-        // Validate key format
-        if (!privateKeyContent.includes('BEGIN') || !privateKeyContent.includes('PRIVATE KEY')) {
-          throw new Error('Invalid private key format in base64 string');
+        logger.info('Attempting to use base64 encoded private key from environment');
+        
+        try {
+          const base64Key = process.env.GITHUB_PRIVATE_KEY_BASE64.trim();
+          
+          // Validate base64 format
+          if (!this.isValidBase64(base64Key)) {
+            throw new Error('Invalid base64 format');
+          }
+          
+          privateKeyContent = Buffer.from(base64Key, 'base64').toString('utf-8');
+          logger.info('Successfully decoded base64 private key');
+          
+        } catch (decodeError) {
+          logger.error('Failed to decode base64 private key:', decodeError.message);
+          throw new Error(`Base64 private key decode failed: ${decodeError.message}`);
         }
-
-        return privateKeyContent;
       }
-
+      
       // Method 2: Direct private key content (fallback)
-      if (process.env.GITHUB_PRIVATE_KEY) {
-        logger.info('Using private key content from environment');
-        return process.env.GITHUB_PRIVATE_KEY.replace(/\\n/g, '\n');
+      else if (process.env.GITHUB_PRIVATE_KEY) {
+        logger.info('Using direct private key content from environment');
+        privateKeyContent = process.env.GITHUB_PRIVATE_KEY.replace(/\\n/g, '\n');
       }
-
+      
       // Method 3: Private key file path (local development)
-      if (process.env.GITHUB_PRIVATE_KEY_PATH && fs.existsSync(process.env.GITHUB_PRIVATE_KEY_PATH)) {
-        logger.info('Using private key from file path');
-        return fs.readFileSync(process.env.GITHUB_PRIVATE_KEY_PATH, 'utf8');
+      else if (process.env.GITHUB_PRIVATE_KEY_PATH && fs.existsSync(process.env.GITHUB_PRIVATE_KEY_PATH)) {
+        logger.info('Using private key from specified file path');
+        privateKeyContent = fs.readFileSync(process.env.GITHUB_PRIVATE_KEY_PATH, 'utf8');
       }
-
+      
       // Method 4: Default file location (local development fallback)
-      const defaultPath = path.join(process.cwd(), 'private-key.pem');
-      if (fs.existsSync(defaultPath)) {
-        logger.info('Using private key from default location');
-        return fs.readFileSync(defaultPath, 'utf8');
+      else {
+        const defaultPath = path.join(process.cwd(), 'private-key.pem');
+        if (fs.existsSync(defaultPath)) {
+          logger.info('Using private key from default location');
+          privateKeyContent = fs.readFileSync(defaultPath, 'utf8');
+        }
       }
 
-      // If none of the methods work, throw error
-      throw new Error('No GitHub private key found. Please set GITHUB_PRIVATE_KEY_BASE64 environment variable for Render deployment.');
+      // Validate the private key content
+      if (!privateKeyContent) {
+        throw new Error('No private key content found. Please set GITHUB_PRIVATE_KEY_BASE64 environment variable.');
+      }
 
+      // Validate private key format
+      if (!this.validatePrivateKeyFormat(privateKeyContent)) {
+        logger.error('Private key validation failed');
+        throw new Error('Invalid private key format. Expected PEM format starting with -----BEGIN');
+      }
+
+      logger.info('Private key loaded and validated successfully');
+      return privateKeyContent;
+      
     } catch (error) {
       logger.error('Error getting GitHub private key:', error);
       throw new Error(`Failed to load GitHub private key: ${error.message}`);
     }
+  }
+
+  // Validate base64 format
+  isValidBase64(str) {
+    try {
+      const decoded = Buffer.from(str, 'base64').toString('base64');
+      return decoded === str;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  // Validate private key format
+  validatePrivateKeyFormat(keyContent) {
+    if (!keyContent || typeof keyContent !== 'string') {
+      return false;
+    }
+
+    const trimmedKey = keyContent.trim();
+    const hasBeginMarker = trimmedKey.includes('-----BEGIN');
+    const hasEndMarker = trimmedKey.includes('-----END');
+    const hasPrivateKeyLabel = trimmedKey.includes('PRIVATE KEY');
+    
+    return hasBeginMarker && hasEndMarker && hasPrivateKeyLabel && trimmedKey.length > 200;
   }
 
   // Test GitHub App authentication
@@ -69,14 +116,33 @@ class GitHubService {
     try {
       const { data: app } = await this.octokit.rest.apps.getAuthenticated();
       logger.info(`GitHub App authenticated successfully: ${app.name} (ID: ${app.id})`);
-      return true;
+      return { success: true, app: app.name, id: app.id };
     } catch (error) {
       logger.error('GitHub App authentication failed:', error);
-      return false;
+      return { success: false, error: error.message };
     }
   }
 
-  // Fetch pull request data
+  // Health check
+  async healthCheck() {
+    try {
+      const authResult = await this.testAuthentication();
+      return {
+        status: authResult.success ? 'healthy' : 'unhealthy',
+        authenticated: authResult.success,
+        timestamp: new Date().toISOString(),
+        ...(authResult.success ? { appName: authResult.app, appId: authResult.id } : { error: authResult.error })
+      };
+    } catch (error) {
+      return {
+        status: 'unhealthy',
+        error: error.message,
+        timestamp: new Date().toISOString(),
+      };
+    }
+  }
+
+  // Fetch pull request data with additional context
   async getPullRequestData(owner, repo, pullNumber) {
     try {
       logger.info(`Fetching PR data for ${owner}/${repo}#${pullNumber}`);
@@ -104,6 +170,9 @@ class GitHubService {
       // Get existing review comments
       const comments = await this.getPullRequestComments(owner, repo, pullNumber);
 
+      // Get reviewers list
+      const reviewers = await this.getPullRequestReviewers(owner, repo, pullNumber);
+
       return {
         pr: {
           id: pr.id,
@@ -118,14 +187,37 @@ class GitHubService {
           additions: pr.additions,
           deletions: pr.deletions,
           changedFiles: pr.changed_files,
+          url: pr.html_url,
+          repository: `${owner}/${repo}`,
         },
         files: filteredFiles,
         diff,
         comments,
+        reviewers,
       };
     } catch (error) {
       logger.error('Error fetching PR data:', error);
       throw new Error(`Failed to fetch PR data: ${error.message}`);
+    }
+  }
+
+  // Get PR reviewers
+  async getPullRequestReviewers(owner, repo, pullNumber) {
+    try {
+      const { data: reviews } = await this.octokit.rest.pulls.listReviews({
+        owner,
+        repo,
+        pull_number: pullNumber,
+      });
+
+      const reviewers = Array.from(new Set(
+        reviews.map(review => review.user.login)
+      ));
+
+      return reviewers;
+    } catch (error) {
+      logger.error('Error fetching PR reviewers:', error);
+      return [];
     }
   }
 
@@ -193,7 +285,7 @@ class GitHubService {
   // Filter files based on configuration
   filterFiles(files) {
     const { excludeFiles, maxFilesToAnalyze, maxFileSizeBytes } = config.review;
-
+    
     return files
       .filter(file => {
         // Check file extension exclusions
@@ -201,216 +293,131 @@ class GitHubService {
           const regex = new RegExp(pattern.replace('*', '.*'));
           return regex.test(file.filename);
         });
-
+        
         // Check file size
         const isTooLarge = file.changes > maxFileSizeBytes;
-
+        
         // Only include added or modified files
         const isRelevant = ['added', 'modified'].includes(file.status);
-
+        
         return !isExcluded && !isTooLarge && isRelevant;
       })
       .slice(0, maxFilesToAnalyze);
   }
 
-  // Post review comment on PR
-  async postReviewComment(owner, repo, pullNumber, comments) {
+  // Post single structured comment (main function)
+  async postStructuredReviewComment(owner, repo, pullNumber, analysis) {
     try {
-      logger.info(`Posting review comments for ${owner}/${repo}#${pullNumber}`);
+      logger.info(`Posting structured review comment for ${owner}/${repo}#${pullNumber}`);
 
-      // Create a review with multiple comments
-      const reviewBody = this.formatReviewBody(comments);
-
-      const { data: review } = await this.octokit.rest.pulls.createReview({
-        owner,
-        repo,
-        pull_number: pullNumber,
-        event: 'COMMENT',
-        body: reviewBody,
-        comments: comments.inlineComments || [],
-      });
-
-      logger.info(`Review posted successfully: ${review.id}`);
-      return review;
-    } catch (error) {
-      logger.error('Error posting review comment:', error);
-      throw new Error(`Failed to post review comment: ${error.message}`);
-    }
-  }
-
-  // Post a general comment on the PR
-  async postGeneralComment(owner, repo, pullNumber, body) {
-    try {
+      const commentBody = this.formatStructuredReviewComment(analysis);
+      
       const { data: comment } = await this.octokit.rest.issues.createComment({
         owner,
         repo,
         issue_number: pullNumber,
-        body,
+        body: commentBody,
       });
 
-      logger.info(`General comment posted: ${comment.id}`);
+      logger.info(`Structured review comment posted: ${comment.id}`);
       return comment;
     } catch (error) {
-      logger.error('Error posting general comment:', error);
-      throw new Error(`Failed to post general comment: ${error.message}`);
+      logger.error('Error posting structured review comment:', error);
+      throw new Error(`Failed to post structured review comment: ${error.message}`);
     }
   }
 
-  // Format review body with summary
-  formatReviewBody(analysis) {
-    const { summary, issues = [], reviewerCoverage, recommendations } = analysis;
+  // Format the structured review comment matching your expected format
+  formatStructuredReviewComment(analysis) {
+    const { 
+      prInfo, 
+      automatedAnalysis, 
+      humanReviewAnalysis, 
+      reviewAssessment, 
+      detailedFindings, 
+      recommendation 
+    } = analysis;
 
-    let body = `## 🤖 AI Code Review Summary\n\n`;
-    if (!issues || !Array.isArray(issues)) {
-      logger.error('Invalid issues array in formatReviewBody:', { analysis });
-      return 'Error: Unable to format review body - invalid analysis data';
-    }
-    // Overall summary
-    body += `**Overall Rating:** ${summary.overallRating}\n`;
-    body += `**Recommendation:** ${summary.recommendApproval ? '✅ Approve' : '❌ Request Changes'}\n\n`;
+    let comment = `🔍 **MERGE REQUEST REVIEW ANALYSIS**\n`;
+    comment += `==================================================\n\n`;
+    
+    // PR Information Section
+    comment += `📋 **Pull Request Information:**\n`;
+    comment += `• PR ID: ${prInfo.prId}\n`;
+    comment += `• Title: ${prInfo.title}\n`;
+    comment += `• Repository: ${prInfo.repository}\n`;
+    comment += `• Author: ${prInfo.author}\n`;
+    comment += `• Reviewer(s): ${prInfo.reviewers.length > 0 ? prInfo.reviewers.join(', ') : 'None yet'}\n`;
+    comment += `• URL: ${prInfo.url}\n\n`;
 
-    // Issues breakdown
-    body += `### 📊 Issues Found\n`;
-    body += `- **Total Issues:** ${summary.totalIssues}\n`;
-    body += `- **Critical:** ${summary.criticalIssues}\n`;
-    body += `- **High:** ${summary.highIssues}\n`;
-    body += `- **Medium:** ${summary.mediumIssues}\n`;
-    body += `- **Low:** ${summary.lowIssues}\n\n`;
+    // Automated Analysis Results
+    comment += `🤖 **AUTOMATED ANALYSIS RESULTS:**\n`;
+    comment += `• Issues Found: ${automatedAnalysis.totalIssues}\n`;
+    comment += `• Severity Breakdown: 🚫 ${automatedAnalysis.severityBreakdown.blocker} | `;
+    comment += `🔴 ${automatedAnalysis.severityBreakdown.critical} | `;
+    comment += `🟡 ${automatedAnalysis.severityBreakdown.major} | `;
+    comment += `🔵 ${automatedAnalysis.severityBreakdown.minor} | `;
+    comment += `ℹ️ ${automatedAnalysis.severityBreakdown.info}\n`;
+    comment += `• Categories: 🐛 ${automatedAnalysis.categories.bugs} | `;
+    comment += `🔒 ${automatedAnalysis.categories.vulnerabilities} | `;
+    comment += `⚠️ ${automatedAnalysis.categories.securityHotspots} | `;
+    comment += `💨 ${automatedAnalysis.categories.codeSmells}\n`;
+    comment += `• Technical Debt: ${automatedAnalysis.technicalDebtMinutes} minutes\n\n`;
 
-    // Reviewer coverage analysis
-    if (reviewerCoverage) {
-      body += `### 👥 Review Coverage Analysis\n`;
-      body += `- **Issues found by reviewer:** ${reviewerCoverage.issuesFoundByReviewer}\n`;
-      body += `- **Issues missed by reviewer:** ${reviewerCoverage.issuesMissedByReviewer}\n`;
-      body += `- **Additional issues found:** ${reviewerCoverage.additionalIssuesFound}\n`;
-      body += `- **Review quality:** ${reviewerCoverage.reviewQuality}\n\n`;
-    }
+    // Human Review Analysis
+    comment += `👥 **HUMAN REVIEW ANALYSIS:**\n`;
+    comment += `• Review Comments: ${humanReviewAnalysis.reviewComments}\n`;
+    comment += `• Issues Addressed by Reviewers: ${humanReviewAnalysis.issuesAddressedByReviewers}\n`;
+    comment += `• Security Issues Caught: ${humanReviewAnalysis.securityIssuesCaught}\n`;
+    comment += `• Code Quality Issues Caught: ${humanReviewAnalysis.codeQualityIssuesCaught}\n\n`;
 
-    // Critical issues summary
-    const criticalIssues = issues.filter(issue => issue.severity === 'CRITICAL');
-    if (criticalIssues.length > 0) {
-      body += `### 🚨 Critical Issues\n`;
-      criticalIssues.forEach(issue => {
-        body += `- **${issue.file}:${issue.line}** - ${issue.title}\n`;
+    // Review Assessment
+    comment += `⚖️ **REVIEW ASSESSMENT:**\n`;
+    comment += `${reviewAssessment}\n\n`;
+
+    // Detailed Findings
+    if (detailedFindings && detailedFindings.length > 0) {
+      comment += `📝 **DETAILED FINDINGS:**\n`;
+      detailedFindings.forEach((finding, index) => {
+        const severityEmoji = {
+          'BLOCKER': '🚫',
+          'CRITICAL': '🔴', 
+          'MAJOR': '🟡',
+          'MINOR': '🔵',
+          'INFO': 'ℹ️'
+        };
+        
+        const categoryEmoji = {
+          'BUG': '🐛',
+          'VULNERABILITY': '🔒',
+          'SECURITY_HOTSPOT': '⚠️',
+          'CODE_SMELL': '💨'
+        };
+
+        comment += `${index + 1}. ${severityEmoji[finding.severity]} ${categoryEmoji[finding.category]} **${finding.file}:${finding.line}**\n`;
+        comment += `   └ ${finding.issue}\n`;
+        comment += `   └ *Suggestion: ${finding.suggestion}*\n\n`;
       });
-      body += `\n`;
+    } else {
+      comment += `📝 **DETAILED FINDINGS:**\n`;
+      comment += `No additional issues found that were missed by reviewers.\n\n`;
     }
 
-    // Recommendations
-    if (recommendations && recommendations.length > 0) {
-      body += `### 💡 Recommendations\n`;
-      recommendations.forEach(rec => {
-        body += `- ${rec}\n`;
-      });
-      body += `\n`;
-    }
+    // Recommendation
+    comment += `🎯 **RECOMMENDATION:**\n`;
+    comment += `${recommendation}\n\n`;
 
-    body += `---\n*Powered by AI Code Reviewer with SonarQube Standards*`;
-
-    return body;
-  }
-
-  // Format inline comments for specific lines
-  formatInlineComments(issues) {
-    return issues
-      .filter(issue => issue.file && issue.line)
-      .map(issue => ({
-        path: issue.file,
-        line: issue.line,
-        body: this.formatIssueComment(issue),
-      }));
-  }
-
-  // Format individual issue comment
-  formatIssueComment(issue) {
-    const severityEmoji = {
-      CRITICAL: '🚨',
-      HIGH: '🔴',
-      MEDIUM: '🟡',
-      LOW: '🔵',
-      INFO: 'ℹ️',
-    };
-
-    const typeEmoji = {
-      BUG: '🐛',
-      VULNERABILITY: '🔒',
-      CODE_SMELL: '👃',
-      COVERAGE: '📊',
-      DUPLICATION: '📋',
-    };
-
-    let comment = `${severityEmoji[issue.severity]} ${typeEmoji[issue.type]} **${issue.title}**\n\n`;
-    comment += `${issue.description}\n\n`;
-    comment += `**Suggestion:** ${issue.suggestion}\n`;
-
-    if (issue.sonarRule) {
-      comment += `**SonarQube Rule:** ${issue.sonarRule}\n`;
-    }
+    // Footer
+    comment += `---\n`;
+    comment += `*🔧 Analysis completed by AI Code Reviewer using SonarQube Standards*\n`;
+    comment += `*⏱️ Generated at: ${new Date().toISOString()}*`;
 
     return comment;
-  }
-
-  // Get file content for a specific commit
-  async getFileContent(owner, repo, path, ref) {
-    try {
-      const { data } = await this.octokit.rest.repos.getContent({
-        owner,
-        repo,
-        path,
-        ref,
-      });
-
-      // Decode base64 content
-      const content = Buffer.from(data.content, 'base64').toString('utf8');
-      return content;
-    } catch (error) {
-      logger.error(`Error fetching file content for ${path}:`, error);
-      return null;
-    }
-  }
-
-  // Get commits in the PR
-  async getPullRequestCommits(owner, repo, pullNumber) {
-    try {
-      const { data: commits } = await this.octokit.rest.pulls.listCommits({
-        owner,
-        repo,
-        pull_number: pullNumber,
-      });
-
-      return commits.map(commit => ({
-        sha: commit.sha,
-        message: commit.commit.message,
-        author: commit.commit.author.name,
-        date: commit.commit.author.date,
-      }));
-    } catch (error) {
-      logger.error('Error fetching PR commits:', error);
-      throw new Error(`Failed to fetch PR commits: ${error.message}`);
-    }
   }
 
   // Check if branch is in target branches list
   isTargetBranch(branch) {
     return config.review.targetBranches.includes(branch);
-  }
-
-  // Health check for GitHub service
-  async healthCheck() {
-    try {
-      const authenticated = await this.testAuthentication();
-      return {
-        status: authenticated ? 'healthy' : 'unhealthy',
-        authenticated,
-        timestamp: new Date().toISOString(),
-      };
-    } catch (error) {
-      return {
-        status: 'unhealthy',
-        error: error.message,
-        timestamp: new Date().toISOString(),
-      };
-    }
   }
 }
 
