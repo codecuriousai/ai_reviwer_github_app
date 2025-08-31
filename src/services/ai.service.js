@@ -70,29 +70,41 @@ class AIService {
     }
   }
 
-  // Prepare data for AI analysis
+  // Prepare data for AI analysis with safe property access
   prepareAnalysisData(prData, existingComments) {
-    const { pr, files, diff } = prData;
+    // Safely extract data with fallbacks
+    const pr = prData.pr || prData || {};
+    const files = prData.files || [];
+    const diff = prData.diff || '';
     
     // Sanitize and truncate data for AI processing
-    const sanitizedDiff = sanitizeForAI(diff);
+    const sanitizedDiff = diff ? sanitizeForAI(diff) : 'No diff available';
     const truncatedDiff = sanitizedDiff.length > 8000 
       ? sanitizedDiff.substring(0, 8000) + '\n... [truncated for analysis]' 
       : sanitizedDiff;
 
     return {
       pr: {
-        ...pr,
-        diff: truncatedDiff,
-        files: files.map(file => ({
-          filename: file.filename,
-          status: file.status,
-          additions: file.additions,
-          deletions: file.deletions,
-          changes: file.changes,
-        })),
+        number: pr.number || 0,
+        title: pr.title || 'No title',
+        description: pr.description || 'No description',
+        author: pr.author || 'unknown',
+        repository: pr.repository || 'owner/repo',
+        targetBranch: pr.targetBranch || 'unknown',
+        sourceBranch: pr.sourceBranch || 'unknown',
+        additions: pr.additions || 0,
+        deletions: pr.deletions || 0,
+        url: pr.url || '#',
       },
-      comments: existingComments,
+      files: files.map(file => ({
+        filename: file.filename || 'unknown',
+        status: file.status || 'unknown',
+        additions: file.additions || 0,
+        deletions: file.deletions || 0,
+        changes: file.changes || 0,
+      })),
+      diff: truncatedDiff,
+      comments: existingComments || [],
     };
   }
 

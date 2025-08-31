@@ -88,30 +88,36 @@ IMPORTANT:
   getCodeReviewPrompt: (prData, existingComments = []) => {
     let prompt = prompts.codeReviewPrompt;
     
+    // Safely access prData properties with fallbacks
+    const pr = prData.pr || prData || {};
+    const files = prData.files || [];
+    const diff = prData.diff || '';
+    const comments = existingComments || [];
+    
     prompt += `\n\nPULL REQUEST CONTEXT:
-- PR ID: ${prData.pr.number}
-- Title: ${prData.pr.title}
-- Description: ${prData.pr.description}
-- Author: ${prData.pr.author}
-- Repository: ${prData.pr.repository || 'owner/repo'}
-- Target Branch: ${prData.pr.targetBranch}
-- Source Branch: ${prData.pr.sourceBranch}
-- Files Changed: ${prData.files.length}
-- Lines Added: ${prData.pr.additions}
-- Lines Deleted: ${prData.pr.deletions}
+- PR ID: ${pr.number || 'unknown'}
+- Title: ${pr.title || 'No title'}
+- Description: ${pr.description || 'No description'}
+- Author: ${pr.author || 'unknown'}
+- Repository: ${pr.repository || 'owner/repo'}
+- Target Branch: ${pr.targetBranch || 'unknown'}
+- Source Branch: ${pr.sourceBranch || 'unknown'}
+- Files Changed: ${files.length || 0}
+- Lines Added: ${pr.additions || 0}
+- Lines Deleted: ${pr.deletions || 0}
 
 REVIEWERS:
-${existingComments.length > 0 ? 
-  Array.from(new Set(existingComments.map(c => c.user))).join(', ') : 
+${comments.length > 0 ? 
+  Array.from(new Set(comments.map(c => c.user).filter(u => u))).join(', ') : 
   'No reviewers yet'}
 
 CODE CHANGES:
-${prData.diff}`;
+${diff || 'No diff available'}`;
 
-    if (existingComments && existingComments.length > 0) {
+    if (comments && comments.length > 0) {
       prompt += `\n\nEXISTING REVIEW COMMENTS:
-${existingComments.map((comment, index) => 
-  `${index + 1}. **${comment.user}** (${comment.type}${comment.path ? ` - ${comment.path}:${comment.line}` : ''}): ${comment.body}`
+${comments.map((comment, index) => 
+  `${index + 1}. **${comment.user || 'Unknown'}** (${comment.type || 'comment'}${comment.path ? ` - ${comment.path}:${comment.line}` : ''}): ${comment.body || 'No content'}`
 ).join('\n\n')}
 
 ANALYSIS FOCUS:
