@@ -1,5 +1,3 @@
-// src/services/ai.service.js - Updated for Single Comment Format
-
 const OpenAI = require('openai');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const config = require('../config/config');
@@ -13,7 +11,6 @@ class AIService {
     this.initializeProviders();
   }
 
-  // Initialize AI providers
   initializeProviders() {
     try {
       if (this.provider === 'openai' || config.ai.openai.apiKey) {
@@ -36,16 +33,16 @@ class AIService {
     }
   }
 
-  // Main function to analyze pull request
+  // Main function to analyze pull request with enhanced error handling
   async analyzePullRequest(prData, existingComments = []) {
     try {
       logger.info(`Starting AI analysis for PR #${prData.pr.number}`);
 
-      // Prepare data for analysis
+      // Prepare data for analysis with safe property access
       const analysisData = this.prepareAnalysisData(prData, existingComments);
       const prompt = getCodeReviewPrompt(analysisData, existingComments);
       
-      // Perform analysis with retry logic
+      // Perform analysis with multiple retry attempts
       const analysis = await retryWithBackoff(async () => {
         if (this.provider === 'openai') {
           return await this.analyzeWithOpenAI(prompt);
@@ -54,15 +51,15 @@ class AIService {
         } else {
           throw new Error(`Unsupported AI provider: ${this.provider}`);
         }
-      });
+      }, 3, 2000); // 3 retries with 2 second base delay
 
-      // Validate and parse response
-      const parsedAnalysis = this.parseAnalysisResponse(analysis);
+      // Enhanced parsing with better error handling
+      const parsedAnalysis = this.parseAnalysisResponse(analysis, prData);
       
       // Enhance analysis with PR context
       const enhancedAnalysis = this.enhanceAnalysisWithContext(parsedAnalysis, prData, existingComments);
       
-      logger.info(`AI analysis completed. Found ${enhancedAnalysis.automatedAnalysis.totalIssues} issues`);
+      logger.info(`AI analysis completed successfully. Found ${enhancedAnalysis.automatedAnalysis.totalIssues} issues`);
       return enhancedAnalysis;
     } catch (error) {
       logger.error('Error in AI analysis:', error);
@@ -70,14 +67,12 @@ class AIService {
     }
   }
 
-  // Prepare data for AI analysis with safe property access
+  // Prepare data with comprehensive null safety
   prepareAnalysisData(prData, existingComments) {
-    // Safely extract data with fallbacks
     const pr = prData.pr || prData || {};
     const files = prData.files || [];
     const diff = prData.diff || '';
     
-    // Sanitize and truncate data for AI processing
     const sanitizedDiff = diff ? sanitizeForAI(diff) : 'No diff available';
     const truncatedDiff = sanitizedDiff.length > 8000 
       ? sanitizedDiff.substring(0, 8000) + '\n... [truncated for analysis]' 
@@ -108,7 +103,7 @@ class AIService {
     };
   }
 
-  // OpenAI analysis
+  // Enhanced OpenAI analysis with better prompt engineering
   async analyzeWithOpenAI(prompt) {
     try {
       logger.info('Sending request to OpenAI');
@@ -118,11 +113,11 @@ class AIService {
         messages: [
           {
             role: 'system',
-            content: 'You are an expert code reviewer specializing in SonarQube standards. Always respond with valid JSON in the exact format specified. Focus on providing a comprehensive analysis in a single structured response.',
+            content: 'You are an expert code reviewer specializing in SonarQube standards. You MUST respond with valid JSON in the exact format specified. Do not include any text outside the JSON structure.',
           },
           {
             role: 'user',
-            content: prompt,
+            content: prompt + '\n\nIMPORTANT: Respond with ONLY valid JSON. No markdown, no explanations, just the JSON object in the specified format.',
           },
         ],
         max_tokens: config.ai.openai.maxTokens,
@@ -149,12 +144,12 @@ class AIService {
     }
   }
 
-  // Gemini analysis
+  // Enhanced Gemini analysis
   async analyzeWithGemini(prompt) {
     try {
       logger.info('Sending request to Gemini');
       
-      const enhancedPrompt = prompt + '\n\nIMPORTANT: Respond ONLY with valid JSON. Do not include any markdown formatting or additional text.';
+      const enhancedPrompt = prompt + '\n\nCRITICAL: You must respond with ONLY valid JSON in the exact format specified. Do not include markdown formatting, explanations, or any text outside the JSON structure. Start your response with { and end with }.';
       
       const result = await this.geminiModel.generateContent({
         contents: [{
@@ -186,162 +181,55 @@ class AIService {
     }
   }
 
-  // Parse and validate AI response
-  parseAnalysisResponse(responseText) {
+  // Enhanced JSON parsing with multiple fallback strategies
+  parseAnalysisResponse(responseText, prData) {
     try {
-      // Clean response text
       let cleanedResponse = responseText.trim();
       
-      // Remove markdown code blocks if present
+      // Remove markdown code blocks
       cleanedResponse = cleanedResponse.replace(/```json\n?/g, '').replace(/```\n?/g, '');
       
-      // Try to find JSON in the response
-      const jsonMatch = cleanedResponse.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        cleanedResponse = jsonMatch[0];
+      // Remove any text before first { and after last }
+      const firstBrace = cleanedResponse.indexOf('{');
+      const lastBrace = cleanedResponse.lastIndexOf('}');
+      
+      if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+        cleanedResponse = cleanedResponse.substring(firstBrace, lastBrace + 1);
       }
       
+      // Validate JSON
       if (!isValidJSON(cleanedResponse)) {
-        throw new Error('Response is not valid JSON');
+        throw new Error('Response is not valid JSON after cleaning');
       }
       
       const analysis = JSON.parse(cleanedResponse);
       
-      // Validate required fields
+      // Validate structure
       this.validateAnalysisStructure(analysis);
       
+      logger.info('AI response parsed successfully');
       return analysis;
     } catch (error) {
       logger.error('Error parsing AI response:', error);
-      logger.error('Raw response preview:', responseText.substring(0, 500));
+      logger.error('Raw response preview:', responseText.substring(0, 500) + '...');
       
-      // Return fallback structure
-      return this.getFallbackAnalysis(error.message);
+      // Create a valid fallback analysis
+      return this.createValidFallbackAnalysis(prData, error.message);
     }
   }
 
-  // Validate analysis structure for new format
-  validateAnalysisStructure(analysis) {
-    const requiredFields = ['prInfo', 'automatedAnalysis', 'humanReviewAnalysis', 'reviewAssessment', 'recommendation'];
+  // Create properly structured fallback analysis
+  createValidFallbackAnalysis(prData, errorMessage) {
+    const pr = prData.pr || {};
     
-    for (const field of requiredFields) {
-      if (!analysis[field]) {
-        throw new Error(`Missing required field: ${field}`);
-      }
-    }
-    
-    // Validate nested structures
-    if (!analysis.automatedAnalysis.severityBreakdown) {
-      throw new Error('Missing severityBreakdown in automatedAnalysis');
-    }
-    
-    if (!analysis.automatedAnalysis.categories) {
-      throw new Error('Missing categories in automatedAnalysis');
-    }
-
-    if (!Array.isArray(analysis.detailedFindings)) {
-      analysis.detailedFindings = [];
-    }
-  }
-
-  // Enhance analysis with PR context
-  enhanceAnalysisWithContext(analysis, prData, existingComments) {
-    // Ensure prInfo is populated with actual data
-    analysis.prInfo = {
-      prId: prData.pr.number,
-      title: prData.pr.title,
-      repository: prData.pr.repository,
-      author: prData.pr.author,
-      reviewers: prData.reviewers || [],
-      url: prData.pr.url,
-    };
-
-    // Enhance human review analysis with actual comment data
-    analysis.humanReviewAnalysis = {
-      reviewComments: existingComments.length,
-      issuesAddressedByReviewers: this.countIssuesInComments(existingComments),
-      securityIssuesCaught: this.countSecurityIssuesInComments(existingComments),
-      codeQualityIssuesCaught: this.countCodeQualityIssuesInComments(existingComments),
-    };
-
-    // Set review assessment based on analysis
-    if (existingComments.length === 0) {
-      analysis.reviewAssessment = 'REVIEW REQUIRED';
-    } else if (analysis.automatedAnalysis.totalIssues > analysis.humanReviewAnalysis.issuesAddressedByReviewers) {
-      analysis.reviewAssessment = 'NOT PROPERLY REVIEWED';
-    } else {
-      analysis.reviewAssessment = 'PROPERLY REVIEWED';
-    }
-
-    return analysis;
-  }
-
-  // Count issues mentioned in human review comments
-  countIssuesInComments(comments) {
-    const issueKeywords = [
-      'bug', 'issue', 'problem', 'error', 'fix', 'wrong', 'incorrect', 
-      'security', 'vulnerability', 'risk', 'unsafe', 'dangerous'
-    ];
-    
-    let issueCount = 0;
-    comments.forEach(comment => {
-      const body = comment.body.toLowerCase();
-      issueKeywords.forEach(keyword => {
-        if (body.includes(keyword)) {
-          issueCount++;
-        }
-      });
-    });
-    
-    return Math.min(issueCount, comments.length); // Cap at number of comments
-  }
-
-  // Count security issues in comments
-  countSecurityIssuesInComments(comments) {
-    const securityKeywords = [
-      'security', 'vulnerability', 'exploit', 'injection', 'xss', 'csrf',
-      'authentication', 'authorization', 'encryption', 'password', 'token'
-    ];
-    
-    let securityCount = 0;
-    comments.forEach(comment => {
-      const body = comment.body.toLowerCase();
-      if (securityKeywords.some(keyword => body.includes(keyword))) {
-        securityCount++;
-      }
-    });
-    
-    return securityCount;
-  }
-
-  // Count code quality issues in comments
-  countCodeQualityIssuesInComments(comments) {
-    const qualityKeywords = [
-      'refactor', 'clean', 'readable', 'maintainable', 'complex', 'duplicate',
-      'naming', 'structure', 'design', 'pattern', 'smell'
-    ];
-    
-    let qualityCount = 0;
-    comments.forEach(comment => {
-      const body = comment.body.toLowerCase();
-      if (qualityKeywords.some(keyword => body.includes(keyword))) {
-        qualityCount++;
-      }
-    });
-    
-    return qualityCount;
-  }
-
-  // Get fallback analysis for new format
-  getFallbackAnalysis(errorMessage) {
     return {
       prInfo: {
-        prId: 'unknown',
-        title: 'Error in analysis',
-        repository: 'unknown/unknown',
-        author: 'unknown',
+        prId: pr.number || 0,
+        title: pr.title || 'Unknown',
+        repository: pr.repository || 'unknown/unknown',
+        author: pr.author || 'unknown',
         reviewers: [],
-        url: '#'
+        url: pr.url || '#',
       },
       automatedAnalysis: {
         totalIssues: 1,
@@ -361,7 +249,7 @@ class AIService {
         technicalDebtMinutes: 30
       },
       humanReviewAnalysis: {
-        reviewComments: 0,
+        reviewComments: prData.comments ? prData.comments.length : 0,
         issuesAddressedByReviewers: 0,
         securityIssuesCaught: 0,
         codeQualityIssuesCaught: 0
@@ -370,13 +258,131 @@ class AIService {
       detailedFindings: [{
         file: 'AI_ANALYSIS_ERROR',
         line: 1,
-        issue: `AI analysis failed: ${errorMessage}`,
+        issue: `AI analysis failed: ${errorMessage}. This could be due to API limits, service unavailability, or response format issues.`,
         severity: 'MAJOR',
         category: 'CODE_SMELL',
-        suggestion: 'Please check AI service configuration and try again'
+        suggestion: 'Please try running the analysis again. If the error persists, check AI service configuration or contact administrator.'
       }],
-      recommendation: 'Fix AI analysis configuration to get proper code review feedback. Check API keys, network connectivity, and service availability.'
+      recommendation: `AI analysis could not be completed due to: ${errorMessage}. Manual code review is recommended. Please try again or contact support.`
     };
+  }
+
+  // Validate analysis structure
+  validateAnalysisStructure(analysis) {
+    const requiredFields = ['prInfo', 'automatedAnalysis', 'humanReviewAnalysis', 'reviewAssessment', 'recommendation'];
+    
+    for (const field of requiredFields) {
+      if (!analysis[field]) {
+        throw new Error(`Missing required field: ${field}`);
+      }
+    }
+    
+    // Validate nested structures with defaults
+    if (!analysis.automatedAnalysis.severityBreakdown) {
+      analysis.automatedAnalysis.severityBreakdown = { blocker: 0, critical: 0, major: 0, minor: 0, info: 0 };
+    }
+    
+    if (!analysis.automatedAnalysis.categories) {
+      analysis.automatedAnalysis.categories = { bugs: 0, vulnerabilities: 0, securityHotspots: 0, codeSmells: 0 };
+    }
+
+    if (!Array.isArray(analysis.detailedFindings)) {
+      analysis.detailedFindings = [];
+    }
+
+    // Ensure all required automatedAnalysis fields exist
+    if (typeof analysis.automatedAnalysis.totalIssues !== 'number') {
+      analysis.automatedAnalysis.totalIssues = analysis.detailedFindings.length;
+    }
+
+    if (typeof analysis.automatedAnalysis.technicalDebtMinutes !== 'number') {
+      analysis.automatedAnalysis.technicalDebtMinutes = analysis.automatedAnalysis.totalIssues * 15; // Estimate
+    }
+  }
+
+  // Enhance analysis with actual PR context
+  enhanceAnalysisWithContext(analysis, prData, existingComments) {
+    // Ensure prInfo has actual data
+    analysis.prInfo = {
+      prId: prData.pr.number,
+      title: prData.pr.title,
+      repository: prData.pr.repository,
+      author: prData.pr.author,
+      reviewers: prData.reviewers || [],
+      url: prData.pr.url,
+    };
+
+    // Calculate actual human review metrics
+    const comments = existingComments || [];
+    analysis.humanReviewAnalysis = {
+      reviewComments: comments.length,
+      issuesAddressedByReviewers: this.countIssuesInComments(comments),
+      securityIssuesCaught: this.countSecurityIssuesInComments(comments),
+      codeQualityIssuesCaught: this.countCodeQualityIssuesInComments(comments),
+    };
+
+    // Set proper review assessment
+    if (comments.length === 0) {
+      analysis.reviewAssessment = 'REVIEW REQUIRED';
+    } else {
+      const criticalIssues = analysis.automatedAnalysis.severityBreakdown.critical + analysis.automatedAnalysis.severityBreakdown.blocker;
+      const issuesCaught = analysis.humanReviewAnalysis.issuesAddressedByReviewers;
+      
+      if (criticalIssues > issuesCaught) {
+        analysis.reviewAssessment = 'NOT PROPERLY REVIEWED';
+      } else if (issuesCaught >= Math.ceil(analysis.automatedAnalysis.totalIssues * 0.7)) {
+        analysis.reviewAssessment = 'PROPERLY REVIEWED';
+      } else {
+        analysis.reviewAssessment = 'NOT PROPERLY REVIEWED';
+      }
+    }
+
+    return analysis;
+  }
+
+  // Count issues mentioned in comments
+  countIssuesInComments(comments) {
+    const issueKeywords = ['bug', 'issue', 'problem', 'error', 'fix', 'wrong', 'incorrect'];
+    let count = 0;
+    
+    comments.forEach(comment => {
+      const body = (comment.body || '').toLowerCase();
+      if (issueKeywords.some(keyword => body.includes(keyword))) {
+        count++;
+      }
+    });
+    
+    return Math.min(count, comments.length);
+  }
+
+  // Count security issues in comments
+  countSecurityIssuesInComments(comments) {
+    const securityKeywords = ['security', 'vulnerability', 'exploit', 'injection', 'xss', 'csrf', 'auth'];
+    let count = 0;
+    
+    comments.forEach(comment => {
+      const body = (comment.body || '').toLowerCase();
+      if (securityKeywords.some(keyword => body.includes(keyword))) {
+        count++;
+      }
+    });
+    
+    return count;
+  }
+
+  // Count code quality issues in comments
+  countCodeQualityIssuesInComments(comments) {
+    const qualityKeywords = ['refactor', 'clean', 'readable', 'complex', 'duplicate', 'naming', 'structure'];
+    let count = 0;
+    
+    comments.forEach(comment => {
+      const body = (comment.body || '').toLowerCase();
+      if (qualityKeywords.some(keyword => body.includes(keyword))) {
+        count++;
+      }
+    });
+    
+    return count;
   }
 
   // Check AI service health
@@ -402,172 +408,6 @@ class AIService {
       logger.error('AI health check failed:', error);
       return false;
     }
-  }
-
-  // Convert legacy analysis format to new format (if needed)
-  convertLegacyAnalysis(legacyAnalysis, prData, existingComments) {
-    // If analysis is already in new format, return as-is
-    if (legacyAnalysis.prInfo && legacyAnalysis.automatedAnalysis) {
-      return legacyAnalysis;
-    }
-
-    // Convert old format to new format
-    const issues = legacyAnalysis.issues || [];
-    
-    // Map severity levels
-    const severityMap = {
-      'CRITICAL': 'critical',
-      'HIGH': 'major', 
-      'MEDIUM': 'minor',
-      'LOW': 'info',
-      'INFO': 'info'
-    };
-
-    // Count severity levels
-    const severityBreakdown = {
-      blocker: issues.filter(i => i.severity === 'BLOCKER').length,
-      critical: issues.filter(i => i.severity === 'CRITICAL').length,
-      major: issues.filter(i => i.severity === 'HIGH').length,
-      minor: issues.filter(i => i.severity === 'MEDIUM' || i.severity === 'LOW').length,
-      info: issues.filter(i => i.severity === 'INFO').length,
-    };
-
-    // Count categories
-    const categories = {
-      bugs: issues.filter(i => i.type === 'BUG').length,
-      vulnerabilities: issues.filter(i => i.type === 'VULNERABILITY').length,
-      securityHotspots: issues.filter(i => i.type === 'SECURITY_HOTSPOT').length,
-      codeSmells: issues.filter(i => i.type === 'CODE_SMELL').length,
-    };
-
-    // Calculate technical debt
-    const technicalDebtMinutes = issues.reduce((total, issue) => {
-      const effortMap = { 'TRIVIAL': 5, 'EASY': 15, 'MEDIUM': 60, 'HARD': 240 };
-      return total + (effortMap[issue.effort] || 30);
-    }, 0);
-
-    return {
-      prInfo: {
-        prId: prData.pr.number,
-        title: prData.pr.title,
-        repository: prData.pr.repository,
-        author: prData.pr.author,
-        reviewers: prData.reviewers || [],
-        url: prData.pr.url,
-      },
-      automatedAnalysis: {
-        totalIssues: issues.length,
-        severityBreakdown,
-        categories,
-        technicalDebtMinutes,
-      },
-      humanReviewAnalysis: {
-        reviewComments: existingComments.length,
-        issuesAddressedByReviewers: this.countIssuesInComments(existingComments),
-        securityIssuesCaught: this.countSecurityIssuesInComments(existingComments),
-        codeQualityIssuesCaught: this.countCodeQualityIssuesInComments(existingComments),
-      },
-      reviewAssessment: this.assessReviewQuality(issues, existingComments),
-      detailedFindings: issues.map(issue => ({
-        file: issue.file || 'unknown',
-        line: issue.line || 1,
-        issue: issue.description || issue.title,
-        severity: issue.severity,
-        category: issue.type,
-        suggestion: issue.suggestion || 'No suggestion provided'
-      })),
-      recommendation: this.generateRecommendation(issues, existingComments)
-    };
-  }
-
-  // Assess review quality
-  assessReviewQuality(issues, comments) {
-    if (comments.length === 0) {
-      return 'REVIEW REQUIRED';
-    }
-    
-    const criticalIssues = issues.filter(i => ['BLOCKER', 'CRITICAL'].includes(i.severity)).length;
-    const issuesCaught = this.countIssuesInComments(comments);
-    
-    if (criticalIssues > issuesCaught) {
-      return 'NOT PROPERLY REVIEWED';
-    } else if (issuesCaught >= Math.ceil(issues.length * 0.7)) {
-      return 'PROPERLY REVIEWED';
-    } else {
-      return 'NOT PROPERLY REVIEWED';
-    }
-  }
-
-  // Generate recommendation based on analysis
-  generateRecommendation(issues, comments) {
-    const criticalIssues = issues.filter(i => ['BLOCKER', 'CRITICAL'].includes(i.severity)).length;
-    const securityIssues = issues.filter(i => i.type === 'VULNERABILITY').length;
-    
-    if (comments.length === 0) {
-      return 'This PR requires human review. Please assign reviewers to examine the code changes, especially focusing on security and critical functionality.';
-    } else if (criticalIssues > 0) {
-      return `Critical issues were found that require immediate attention. Reviewers should focus on ${criticalIssues} critical issue(s) before approval.`;
-    } else if (securityIssues > 0) {
-      return `Security vulnerabilities detected. Please have a security-focused review before merging.`;
-    } else if (issues.length > comments.length) {
-      return 'Additional code quality issues were found. Consider a more thorough review focusing on maintainability and best practices.';
-    } else {
-      return 'The review appears comprehensive. Good job on thorough code examination.';
-    }
-  }
-
-  // Helper methods from previous implementation
-  countIssuesInComments(comments) {
-    const issueKeywords = [
-      'bug', 'issue', 'problem', 'error', 'fix', 'wrong', 'incorrect', 
-      'security', 'vulnerability', 'risk', 'unsafe', 'dangerous'
-    ];
-    
-    let issueCount = 0;
-    comments.forEach(comment => {
-      const body = comment.body.toLowerCase();
-      issueKeywords.forEach(keyword => {
-        if (body.includes(keyword)) {
-          issueCount++;
-        }
-      });
-    });
-    
-    return Math.min(issueCount, comments.length);
-  }
-
-  countSecurityIssuesInComments(comments) {
-    const securityKeywords = [
-      'security', 'vulnerability', 'exploit', 'injection', 'xss', 'csrf',
-      'authentication', 'authorization', 'encryption', 'password', 'token'
-    ];
-    
-    let securityCount = 0;
-    comments.forEach(comment => {
-      const body = comment.body.toLowerCase();
-      if (securityKeywords.some(keyword => body.includes(keyword))) {
-        securityCount++;
-      }
-    });
-    
-    return securityCount;
-  }
-
-  countCodeQualityIssuesInComments(comments) {
-    const qualityKeywords = [
-      'refactor', 'clean', 'readable', 'maintainable', 'complex', 'duplicate',
-      'naming', 'structure', 'design', 'pattern', 'smell'
-    ];
-    
-    let qualityCount = 0;
-    comments.forEach(comment => {
-      const body = comment.body.toLowerCase();
-      if (qualityKeywords.some(keyword => body.includes(keyword))) {
-        qualityCount++;
-      }
-    });
-    
-    return qualityCount;
   }
 }
 
