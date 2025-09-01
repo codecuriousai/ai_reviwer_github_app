@@ -18,7 +18,6 @@ class WebhookService {
         repository: payload.repository?.full_name,
         pullRequest: payload.pull_request?.number,
         checkRunId: payload.check_run?.id,
-        checkRunHeadSha: payload.check_run?.head_sha,
       });
 
       this.validateWebhookPayload(payload, event);
@@ -45,7 +44,7 @@ class WebhookService {
     }
   }
 
-  // Handle PR events - create unique check runs per PR
+  // Handle PR events - only create button, no analysis
   async handlePullRequestEvent(payload) {
     const { action, pull_request, repository } = payload;
     
@@ -68,44 +67,41 @@ class WebhookService {
     await this.createAIReviewButton(repository, pull_request);
   }
 
-  // Create AI Review button with PR-specific naming
+  // Create AI Review button
   async createAIReviewButton(repository, pullRequest) {
     const owner = repository.owner.login;
     const repo = repository.name;
     const headSha = pullRequest.head.sha;
 
     try {
-      logger.info(`Creating AI Review button for PR #${pullRequest.number} with SHA: ${headSha}`);
-
-      // IMPORTANT: Create unique check run name per PR to avoid conflicts
-      const uniqueCheckRunName = `AI Code Review (PR #${pullRequest.number})`;
+      logger.info(`Creating AI Review button for PR #${pullRequest.number}`);
 
       const checkRun = await githubService.createCheckRun(owner, repo, {
-        name: uniqueCheckRunName,
+        name: 'AI Code Review',
         head_sha: headSha,
         status: 'queued',
         output: {
-          title: `AI Code Review Available for PR #${pullRequest.number}`,
-          summary: `Click "AI Review" to analyze PR #${pullRequest.number} with SonarQube standards.\n\n**Files to analyze:** ${pullRequest.changed_files}\n**Lines changed:** +${pullRequest.additions} -${pullRequest.deletions}`,
+          title: 'AI Code Review Available',
+          summary: `Click "AI Review" to analyze this PR with SonarQube standards.\n\n**Files to analyze:** ${pullRequest.changed_files}\n**Lines changed:** +${pullRequest.additions} -${pullRequest.deletions}`,
         },
         actions: [{
           label: 'AI Review',
-          description: `Analyze PR #${pullRequest.number}`,
-          identifier: `ai_review_${pullRequest.number}_${Date.now()}` // Unique identifier
+          description: 'Analyze with SonarQube standards',
+          identifier: 'ai_review'
         }]
       });
 
-      logger.info(`AI Review button created for PR #${pullRequest.number}: ${checkRun.id}`);
+      logger.info(`AI Review button created: ${checkRun.id} for PR #${pullRequest.number}`);
     } catch (error) {
-      logger.error(`Error creating AI Review button for PR #${pullRequest.number}:`, error);
+      logger.error('Error creating AI Review button:', error);
       
-      // Fallback: Post instruction comment
+      // Fallback: Post instruction comment with manual trigger
       await githubService.postGeneralComment(
         owner,
         repo,
         pullRequest.number,
-        `🤖 **AI Code Review Available for PR #${pullRequest.number}**\n\n` +
-        `Comment \`/ai-review\` to trigger analysis.\n\n` +
+        `🤖 **AI Code Review Available**\n\n` +
+        `Click the button above or comment \`/ai-review\` to trigger analysis.\n\n` +
         `**Files to analyze:** ${pullRequest.changed_files}\n` +
         `**Lines changed:** +${pullRequest.additions} -${pullRequest.deletions}\n\n` +
         `*Analysis will use SonarQube standards for comprehensive code review.*`
@@ -113,56 +109,29 @@ class WebhookService {
     }
   }
 
-  // Handle button clicks with improved PR finding
+  // Handle button clicks - FIX: Get PR from commit SHA when pull_requests is empty
   async handleCheckRunEvent(payload) {
     const { action, check_run, repository } = payload;
 
-    if (action === 'requested_action' && check_run.name.startsWith('AI Code Review')) {
+    if (action === 'requested_action' && check_run.name === 'AI Code Review') {
       const requestedAction = payload.requested_action;
       
-      if (requestedAction.identifier.startsWith('ai_review')) {
-        logger.info(`AI Review button clicked for check run ${check_run.id}`, {
+      if (requestedAction.identifier === 'ai_review') {
+        logger.info(`AI Review requested via button for check run ${check_run.id}`, {
           checkRunId: check_run.id,
-          checkRunName: check_run.name,
           headSha: check_run.head_sha,
         });
         
+        // FIX: Get PR from check run data
         let targetPR = null;
         
-        // Method 1: Extract PR number from check run name
-        const prMatch = check_run.name.match(/PR #(\d+)/);
-        if (prMatch) {
-          const prNumber = parseInt(prMatch[1]);
-          logger.info(`Extracted PR number from check run name: #${prNumber}`);
-          
-          // Validate this PR exists and matches the commit
-          try {
-            const { data: pr } = await githubService.octokit.rest.pulls.get({
-              owner: repository.owner.login,
-              repo: repository.name,
-              pull_number: prNumber,
-            });
-            
-            if (pr.head.sha === check_run.head_sha) {
-              targetPR = { number: prNumber, head: { sha: check_run.head_sha } };
-              logger.info(`Validated PR #${prNumber} matches commit SHA`);
-            } else {
-              logger.warn(`PR #${prNumber} head SHA mismatch. Expected: ${check_run.head_sha}, Got: ${pr.head.sha}`);
-            }
-          } catch (error) {
-            logger.error(`Failed to validate PR #${prNumber}:`, error.message);
-          }
-        }
-        
-        // Method 2: Try pull_requests array
-        if (!targetPR && check_run.pull_requests && check_run.pull_requests.length > 0) {
+        // Method 1: Try pull_requests array first
+        if (check_run.pull_requests && check_run.pull_requests.length > 0) {
           targetPR = check_run.pull_requests[0];
           logger.info(`Found PR from pull_requests array: #${targetPR.number}`);
-        }
-        
-        // Method 3: Search by commit SHA
-        if (!targetPR) {
-          logger.info(`Searching for PR by commit SHA: ${check_run.head_sha}`);
+        } else {
+          // Method 2: Find PR by commit SHA
+          logger.info(`No pull_requests in check_run, searching by commit SHA: ${check_run.head_sha}`);
           targetPR = await this.findPRByCommitSha(repository, check_run.head_sha);
         }
         
@@ -172,16 +141,16 @@ class WebhookService {
         } else {
           logger.error('Could not find associated PR for check run', { 
             checkRunId: check_run.id,
-            checkRunName: check_run.name,
             headSha: check_run.head_sha 
           });
           
+          // Update check run with error
           await githubService.updateCheckRun(repository.owner.login, repository.name, check_run.id, {
             status: 'completed',
             conclusion: 'failure',
             output: {
-              title: 'AI Review Failed - PR Not Found',
-              summary: `Could not find the associated pull request.\n\nCheck Run: ${check_run.name}\nCommit SHA: ${check_run.head_sha}`,
+              title: 'AI Review Failed',
+              summary: 'Could not find the associated pull request for this check run.',
             }
           });
         }
@@ -189,7 +158,7 @@ class WebhookService {
     }
   }
 
-  // Find PR by commit SHA
+  // NEW METHOD: Find PR by commit SHA
   async findPRByCommitSha(repository, commitSha) {
     try {
       const owner = repository.owner.login;
@@ -197,24 +166,28 @@ class WebhookService {
       
       logger.info(`Searching for PR with commit SHA: ${commitSha}`);
       
+      // Search for pull requests with this commit
       const { data: prs } = await githubService.octokit.rest.pulls.list({
         owner,
         repo,
         state: 'open',
         sort: 'updated',
         direction: 'desc',
-        per_page: 50,
+        per_page: 50, // Check recent PRs
       });
 
-      // Find PR with exact head SHA match
+      // Find PR that contains this commit SHA
       for (const pr of prs) {
         if (pr.head.sha === commitSha) {
           logger.info(`Found matching PR #${pr.number} with head SHA: ${commitSha}`);
-          return { number: pr.number, head: { sha: commitSha } };
+          return {
+            number: pr.number,
+            head: { sha: commitSha }
+          };
         }
       }
 
-      // If no exact match, check commits in each PR
+      // Alternative: Check if any PR's head branch matches
       for (const pr of prs) {
         try {
           const { data: commits } = await githubService.octokit.rest.pulls.listCommits({
@@ -226,10 +199,14 @@ class WebhookService {
           const hasCommit = commits.some(commit => commit.sha === commitSha);
           if (hasCommit) {
             logger.info(`Found PR #${pr.number} containing commit ${commitSha}`);
-            return { number: pr.number, head: { sha: commitSha } };
+            return {
+              number: pr.number,
+              head: { sha: commitSha }
+            };
           }
         } catch (error) {
-          continue; // Skip to next PR if error
+          // Continue searching other PRs
+          logger.debug(`Could not check commits for PR #${pr.number}:`, error.message);
         }
       }
 
@@ -246,21 +223,24 @@ class WebhookService {
   async handleIssueCommentEvent(payload) {
     const { action, comment, issue, repository } = payload;
     
-    if (action !== 'created' || !issue.pull_request || comment.user.type === 'Bot') {
+    // Only process created comments on pull requests
+    if (action !== 'created' || !issue.pull_request) {
       return;
     }
 
+    // Check if comment contains AI review trigger
     const commentBody = comment.body.toLowerCase();
     const triggers = ['/ai-review', '@ai-reviewer review', 'ai review'];
     const isAIReviewTrigger = triggers.some(trigger => commentBody.includes(trigger));
 
-    if (!isAIReviewTrigger) {
+    if (!isAIReviewTrigger || comment.user.type === 'Bot') {
       return;
     }
 
     logger.info(`AI review triggered by comment from ${comment.user.login} on PR #${issue.number}`);
 
     try {
+      // Get PR details
       const owner = repository.owner.login;
       const repo = repository.name;
       
@@ -270,49 +250,53 @@ class WebhookService {
         pull_number: issue.number,
       });
 
+      // Create check run for progress tracking
       const checkRun = await githubService.createCheckRun(owner, repo, {
-        name: `AI Code Review (PR #${issue.number}) - Manual`,
+        name: 'AI Code Review (Manual)',
         head_sha: pr.head.sha,
         status: 'queued',
         output: {
-          title: `AI Review Triggered for PR #${issue.number}`,
+          title: 'AI Review Triggered by Comment',
           summary: `Analysis started by @${comment.user.login}`,
         }
       });
 
+      // Trigger analysis
       await this.triggerAIReview(repository, { number: issue.number }, checkRun);
 
     } catch (error) {
       logger.error('Error handling manual trigger:', error);
+      // Fallback to direct processing
       await this.processAIReviewDirect(repository, { number: issue.number }, comment.user.login);
     }
   }
 
-  // Trigger AI review with proper PR isolation
+  // Trigger AI review for specific PR only
   async triggerAIReview(repository, pullRequest, checkRun) {
     const owner = repository.owner.login;
     const repo = repository.name;
     const pullNumber = pullRequest.number;
     const trackingId = generateTrackingId();
 
-    logger.info(`Triggering AI review for PR #${pullNumber}`, { 
+    logger.info(`Triggering AI review for specific PR #${pullNumber}`, { 
       trackingId, 
       checkRunId: checkRun.id,
-      repository: `${owner}/${repo}`,
-      pullNumber
+      repository: `${owner}/${repo}`
     });
 
+    // Check concurrent review limit
     if (this.activeReviews >= this.maxConcurrentReviews) {
       await githubService.updateCheckRun(owner, repo, checkRun.id, {
         status: 'queued',
         output: {
-          title: `AI Review Queued for PR #${pullNumber}`,
+          title: 'AI Review Queued',
           summary: `Analysis queued due to high demand. Currently processing ${this.activeReviews} reviews.\n\nPlease wait and try again in a few minutes.`,
         }
       });
       return;
     }
 
+    // Prevent duplicate processing for this specific PR
     const prKey = `${repository.full_name}#${pullNumber}`;
     if (this.processingQueue.has(prKey)) {
       logger.info(`PR ${prKey} already being processed`);
@@ -320,7 +304,7 @@ class WebhookService {
       await githubService.updateCheckRun(owner, repo, checkRun.id, {
         status: 'queued',
         output: {
-          title: `AI Review Already in Progress for PR #${pullNumber}`,
+          title: 'AI Review Already in Progress',
           summary: 'This PR is already being analyzed. Please wait for completion.',
         }
       });
@@ -343,23 +327,23 @@ class WebhookService {
     }
   }
 
-  // Process AI review with enhanced error handling
+  // Process AI review with progress updates
   async processAIReview(repository, pullRequest, checkRun, trackingId) {
     const owner = repository.owner.login;
     const repo = repository.name;
     const pullNumber = pullRequest.number;
 
     try {
-      logger.info(`Starting AI review for PR #${pullNumber}`, { 
+      logger.info(`Starting AI review for PR ${owner}/${repo}#${pullNumber}`, { 
         trackingId,
         checkRunId: checkRun.id
       });
 
-      // Progress 1: Starting
+      // Progress 1: Starting analysis
       await githubService.updateCheckRun(owner, repo, checkRun.id, {
         status: 'in_progress',
         output: {
-          title: `AI Review In Progress - PR #${pullNumber}`,
+          title: 'AI Review In Progress',
           summary: `🔄 Starting code analysis for PR #${pullNumber}...\n\n**Status:** Initializing\n**Analysis ID:** \`${trackingId}\``,
         }
       });
@@ -368,7 +352,7 @@ class WebhookService {
       await githubService.updateCheckRun(owner, repo, checkRun.id, {
         status: 'in_progress',
         output: {
-          title: `AI Review In Progress - PR #${pullNumber}`,
+          title: 'AI Review In Progress',
           summary: `🔄 Fetching PR data and code changes for PR #${pullNumber}...\n\n**Status:** Fetching data\n**Analysis ID:** \`${trackingId}\``,
         }
       });
@@ -384,39 +368,23 @@ class WebhookService {
       await githubService.updateCheckRun(owner, repo, checkRun.id, {
         status: 'in_progress',
         output: {
-          title: `AI Review In Progress - PR #${pullNumber}`,
-          summary: `🧠 Analyzing ${prData.files.length} files with AI using SonarQube standards...\n\n**PR:** #${pullNumber}\n**Status:** AI processing\n**Analysis ID:** \`${trackingId}\`\n\n*This may take 1-2 minutes...*`,
+          title: 'AI Review In Progress',
+          summary: `🧠 Analyzing ${prData.files.length} files with AI using SonarQube standards...\n\n**PR:** #${pullNumber}\n**Status:** AI processing\n**Analysis ID:** \`${trackingId}\`\n\n*This may take 1-2 minutes depending on code complexity...*`,
         }
       });
 
       const startTime = Date.now();
-      
-      // Enhanced AI analysis with better error handling
-      let analysis;
-      try {
-        analysis = await aiService.analyzePullRequest(prData, prData.comments);
-        
-        // Validate analysis structure
-        if (!analysis || !analysis.automatedAnalysis) {
-          throw new Error('AI returned invalid analysis structure');
-        }
-        
-        const analysisTime = Date.now() - startTime;
-        logger.info(`AI analysis completed successfully in ${analysisTime}ms`, {
-          trackingId,
-          pullNumber,
-          issuesFound: analysis.automatedAnalysis.totalIssues,
-          assessment: analysis.reviewAssessment,
-        });
-        
-      } catch (aiError) {
-        logger.error(`AI analysis failed for PR #${pullNumber}:`, aiError);
-        
-        // Create fallback analysis with proper structure
-        analysis = this.createFallbackAnalysis(prData, aiError.message, trackingId);
-      }
+      const analysis = await aiService.analyzePullRequest(prData, prData.comments);
+      const analysisTime = Date.now() - startTime;
 
-      // Always post the analysis (either successful or fallback)
+      logger.info(`AI analysis completed in ${analysisTime}ms`, {
+        trackingId,
+        pullNumber,
+        issuesFound: analysis.automatedAnalysis.totalIssues,
+        assessment: analysis.reviewAssessment,
+      });
+
+      // FIX: Always post the detailed comment
       await this.completeWithResults(owner, repo, pullNumber, checkRun, analysis, trackingId);
 
     } catch (error) {
@@ -425,72 +393,36 @@ class WebhookService {
     }
   }
 
-  // Create proper fallback analysis structure
-  createFallbackAnalysis(prData, errorMessage, trackingId) {
-    return {
-      prInfo: {
-        prId: prData.pr.number,
-        title: prData.pr.title,
-        repository: prData.pr.repository,
-        author: prData.pr.author,
-        reviewers: prData.reviewers || [],
-        url: prData.pr.url,
-      },
-      automatedAnalysis: {
-        totalIssues: 1,
-        severityBreakdown: { blocker: 0, critical: 0, major: 1, minor: 0, info: 0 },
-        categories: { bugs: 0, vulnerabilities: 0, securityHotspots: 0, codeSmells: 1 },
-        technicalDebtMinutes: 0
-      },
-      humanReviewAnalysis: {
-        reviewComments: prData.comments.length,
-        issuesAddressedByReviewers: 0,
-        securityIssuesCaught: 0,
-        codeQualityIssuesCaught: 0
-      },
-      reviewAssessment: 'REVIEW REQUIRED',
-      detailedFindings: [{
-        file: 'AI_ANALYSIS_ERROR',
-        line: 1,
-        issue: `AI analysis encountered an error: ${errorMessage}`,
-        severity: 'MAJOR',
-        category: 'CODE_SMELL',
-        suggestion: 'Please try running the analysis again or contact the administrator if the error persists.'
-      }],
-      recommendation: `AI analysis failed due to: ${errorMessage}. Manual code review is recommended. Please try again or contact support if the issue persists.`
-    };
-  }
-
-  // Complete with results (always posts structured comment)
+  // FIX: Always post detailed structured comment on success
   async completeWithResults(owner, repo, pullNumber, checkRun, analysis, trackingId) {
     try {
-      logger.info(`Posting structured comment for PR #${pullNumber}`, { trackingId });
+      logger.info(`Posting detailed structured comment for PR #${pullNumber}`, { trackingId });
 
-      // Always post the structured comment
+      // ALWAYS post the detailed structured comment (your format)
       await githubService.postStructuredReviewComment(owner, repo, pullNumber, analysis);
 
-      // Determine conclusion
+      // Determine check run conclusion
       const hasCriticalIssues = analysis.automatedAnalysis.severityBreakdown.critical > 0;
       const hasBlockerIssues = analysis.automatedAnalysis.severityBreakdown.blocker > 0;
-      const isAnalysisError = analysis.detailedFindings.some(f => f.file === 'AI_ANALYSIS_ERROR');
       
       let conclusion = 'success';
-      if (isAnalysisError) {
-        conclusion = 'neutral';
-      } else if (hasBlockerIssues) {
+      if (hasBlockerIssues) {
         conclusion = 'failure';
       } else if (hasCriticalIssues) {
         conclusion = 'neutral';
       } else if (analysis.reviewAssessment === 'PROPERLY REVIEWED') {
         conclusion = 'success';
+      } else {
+        conclusion = 'neutral';
       }
 
+      // Update check run to completed
       await githubService.updateCheckRun(owner, repo, checkRun.id, {
         status: 'completed',
         conclusion: conclusion,
         output: {
-          title: `AI Code Review Completed - PR #${pullNumber}`,
-          summary: `✅ Analysis completed for PR #${pullNumber}!\n\n**Issues Found:** ${analysis.automatedAnalysis.totalIssues}\n**Critical:** ${analysis.automatedAnalysis.severityBreakdown.critical}\n**Assessment:** ${analysis.reviewAssessment}\n\n📋 See detailed analysis in PR comments below.`,
+          title: 'AI Code Review Completed',
+          summary: `✅ Analysis completed successfully for PR #${pullNumber}!\n\n**Issues Found:** ${analysis.automatedAnalysis.totalIssues}\n**Critical:** ${analysis.automatedAnalysis.severityBreakdown.critical}\n**Assessment:** ${analysis.reviewAssessment}\n\n📋 See detailed analysis in PR comments below.`,
         }
       });
 
@@ -506,9 +438,10 @@ class WebhookService {
     }
   }
 
-  // Complete with no files
+  // Complete with no files to analyze
   async completeWithNoFiles(owner, repo, pullNumber, checkRun, prData, trackingId) {
     try {
+      // Create minimal analysis for no files
       const analysis = {
         prInfo: {
           prId: prData.pr.number,
@@ -532,17 +465,19 @@ class WebhookService {
         },
         reviewAssessment: 'REVIEW REQUIRED',
         detailedFindings: [],
-        recommendation: `No code files found to analyze in PR #${pullNumber}. This PR contains only documentation or configuration changes. Human review recommended for content validation.`
+        recommendation: 'No code files found to analyze. This PR contains only documentation or configuration changes. Human review recommended for content validation.'
       };
 
+      // Post structured comment
       await githubService.postStructuredReviewComment(owner, repo, pullNumber, analysis);
 
+      // Update check run
       await githubService.updateCheckRun(owner, repo, checkRun.id, {
         status: 'completed',
         conclusion: 'neutral',
         output: {
-          title: `AI Code Review Completed - PR #${pullNumber}`,
-          summary: `No code files found to analyze in PR #${pullNumber}. This PR may contain only documentation or configuration changes.`,
+          title: 'AI Code Review Completed',
+          summary: `No code files found to analyze for PR #${pullNumber}. This PR may contain only documentation or configuration changes.`,
         }
       });
 
@@ -553,36 +488,40 @@ class WebhookService {
     }
   }
 
-  // Complete with error
+  // Complete with error - show "unable to complete" message
   async completeWithError(owner, repo, pullNumber, checkRun, error, trackingId) {
     try {
+      // Post simple error message (NOT structured comment)
       await githubService.postGeneralComment(
         owner,
         repo,
         pullNumber,
-        `🚨 **Unable to Complete AI Review for PR #${pullNumber}**\n\n` +
-        `The AI analysis encountered an error and could not be completed.\n\n` +
+        `🚨 **Unable to Complete AI Review**\n\n` +
+        `The AI analysis encountered an error and could not be completed for PR #${pullNumber}.\n\n` +
         `**Error:** ${error.message}\n` +
         `**Analysis ID:** \`${trackingId}\`\n` +
         `**Time:** ${new Date().toISOString()}\n\n` +
         `Please try clicking "AI Review" again or contact the administrator if this persists.`
       );
 
+      // Update check run to failed
       await githubService.updateCheckRun(owner, repo, checkRun.id, {
         status: 'completed',
         conclusion: 'failure',
         output: {
-          title: `AI Code Review Failed - PR #${pullNumber}`,
-          summary: `❌ Analysis failed for PR #${pullNumber}: ${error.message}\n\n**Tracking ID:** ${trackingId}`,
+          title: 'AI Code Review Failed',
+          summary: `❌ Analysis failed for PR #${pullNumber}: ${error.message}\n\nPlease try again or contact administrator.\n\n**Tracking ID:** ${trackingId}`,
         }
       });
+
+      logger.error(`AI review failed for PR #${pullNumber}`, { trackingId, error: error.message });
 
     } catch (postError) {
       logger.error('Error posting failure message:', postError);
     }
   }
 
-  // Direct processing fallback
+  // Direct processing without check runs (fallback)
   async processAIReviewDirect(repository, pullRequest, triggeredBy) {
     const owner = repository.owner.login;
     const repo = repository.name;
@@ -590,43 +529,48 @@ class WebhookService {
     const trackingId = generateTrackingId();
 
     try {
+      logger.info(`Direct AI review processing for PR #${pullNumber}`, { triggeredBy, trackingId });
+
+      // Post progress comment
       const progressComment = await githubService.postGeneralComment(
         owner,
         repo,
         pullNumber,
-        `🤖 **AI Review In Progress for PR #${pullNumber}**\n\n🔄 Analysis started by @${triggeredBy}\n\n**Status:** Processing...\n**Analysis ID:** \`${trackingId}\``
+        `🤖 **AI Review In Progress**\n\n🔄 Analysis started by @${triggeredBy} for PR #${pullNumber}\n\n**Status:** Processing...\n**Analysis ID:** \`${trackingId}\`\n\n*Please wait, this may take 1-2 minutes...*`
       );
 
+      // Fetch data and analyze
       const prData = await githubService.getPullRequestData(owner, repo, pullNumber);
       
       if (!prData.files || prData.files.length === 0) {
         await githubService.deleteComment(owner, repo, progressComment.id);
+        
         const analysis = this.createNoAnalysisResponse(prData, trackingId);
         await githubService.postStructuredReviewComment(owner, repo, pullNumber, analysis);
         return;
       }
 
-      let analysis;
-      try {
-        analysis = await aiService.analyzePullRequest(prData, prData.comments);
-      } catch (aiError) {
-        analysis = this.createFallbackAnalysis(prData, aiError.message, trackingId);
-      }
+      const analysis = await aiService.analyzePullRequest(prData, prData.comments);
 
+      // Delete progress comment and post detailed results
       await githubService.deleteComment(owner, repo, progressComment.id);
       await githubService.postStructuredReviewComment(owner, repo, pullNumber, analysis);
 
+      logger.info(`Direct AI review completed for PR #${pullNumber}`, { trackingId, triggeredBy });
+
     } catch (error) {
+      logger.error(`Direct AI review failed for PR #${pullNumber}:`, error);
+      
       await githubService.postGeneralComment(
         owner,
         repo,
         pullNumber,
-        `🚨 **Unable to Complete AI Review for PR #${pullNumber}**\n\nError: ${error.message}\n\nTriggered by: @${triggeredBy}\nTracking ID: \`${trackingId}\``
+        `🚨 **Unable to Complete AI Review**\n\nError: ${error.message}\n\nTriggered by: @${triggeredBy}\nPR: #${pullNumber}\nTracking ID: \`${trackingId}\``
       );
     }
   }
 
-  // Create response for no analysis
+  // Create response for PRs with no code
   createNoAnalysisResponse(prData, trackingId) {
     return {
       prInfo: {
@@ -657,15 +601,30 @@ class WebhookService {
 
   // Validate webhook payload
   validateWebhookPayload(payload, event) {
-    if (!payload) throw new Error('Empty webhook payload');
-    if (event === 'pull_request' && !payload.pull_request) throw new Error('Invalid pull request payload');
-    if (event === 'check_run' && !payload.check_run) throw new Error('Invalid check run payload');
-    if (event === 'issue_comment' && (!payload.comment || !payload.issue)) throw new Error('Invalid issue comment payload');
-    if (!payload.repository) throw new Error('Missing repository information');
+    if (!payload) {
+      throw new Error('Empty webhook payload');
+    }
+
+    if (event === 'pull_request' && !payload.pull_request) {
+      throw new Error('Invalid pull request payload');
+    }
+
+    if (event === 'check_run' && !payload.check_run) {
+      throw new Error('Invalid check run payload');
+    }
+
+    if (event === 'issue_comment' && (!payload.comment || !payload.issue)) {
+      throw new Error('Invalid issue comment payload');
+    }
+
+    if (!payload.repository) {
+      throw new Error('Missing repository information in payload');
+    }
+
     return true;
   }
 
-  // Get processing status
+  // Get processing queue status
   getProcessingStatus() {
     const queueEntries = Array.from(this.processingQueue.entries()).map(([key, value]) => ({
       prKey: key,
@@ -687,7 +646,7 @@ class WebhookService {
   // Clean old processing entries
   cleanProcessingQueue() {
     const now = Date.now();
-    const maxAge = 15 * 60 * 1000;
+    const maxAge = 15 * 60 * 1000; // 15 minutes
     let cleaned = 0;
     
     for (const [key, value] of this.processingQueue.entries()) {
@@ -710,7 +669,7 @@ class WebhookService {
   async shutdown() {
     logger.info('Shutting down webhook service...');
     
-    const maxWaitTime = 30000;
+    const maxWaitTime = 30000; // 30 seconds
     const startTime = Date.now();
     
     while (this.activeReviews > 0 && (Date.now() - startTime) < maxWaitTime) {
@@ -724,8 +683,122 @@ class WebhookService {
       logger.info('All reviews completed, shutdown complete');
     }
   }
+
+   // NEW METHOD: Find PR by commit SHA when check run doesn't have pull_requests
+  async findPRByCommitSha(repository, commitSha) {
+    try {
+      const owner = repository.owner.login;
+      const repo = repository.name;
+      
+      logger.info(`Searching for PR with commit SHA: ${commitSha}`);
+      
+      // Get all open pull requests
+      const { data: prs } = await githubService.octokit.rest.pulls.list({
+        owner,
+        repo,
+        state: 'open',
+        sort: 'updated',
+        direction: 'desc',
+        per_page: 50,
+      });
+
+      // Find PR that has this exact commit as head SHA
+      for (const pr of prs) {
+        if (pr.head.sha === commitSha) {
+          logger.info(`Found matching PR #${pr.number} with head SHA: ${commitSha}`);
+          return {
+            number: pr.number,
+            head: { sha: commitSha }
+          };
+        }
+      }
+
+      // If no exact match, check if commit exists in any PR
+      for (const pr of prs) {
+        try {
+          const { data: commits } = await githubService.octokit.rest.pulls.listCommits({
+            owner,
+            repo,
+            pull_number: pr.number,
+          });
+          
+          const hasCommit = commits.some(commit => commit.sha === commitSha);
+          if (hasCommit) {
+            logger.info(`Found PR #${pr.number} containing commit ${commitSha}`);
+            return {
+              number: pr.number,
+              head: { sha: commitSha }
+            };
+          }
+        } catch (error) {
+          // Continue to next PR if error checking commits
+          continue;
+        }
+      }
+
+      logger.warn(`No open PR found for commit SHA: ${commitSha}`);
+      return null;
+      
+    } catch (error) {
+      logger.error('Error finding PR by commit SHA:', error);
+      return null;
+    }
+  }
+
+// ALSO UPDATE: Replace your existing handleCheckRunEvent method with this:
+
+  async handleCheckRunEvent(payload) {
+    const { action, check_run, repository } = payload;
+
+    if (action === 'requested_action' && check_run.name === 'AI Code Review') {
+      const requestedAction = payload.requested_action;
+      
+      if (requestedAction.identifier === 'ai_review') {
+        logger.info(`AI Review requested via button for check run ${check_run.id}`, {
+          checkRunId: check_run.id,
+          headSha: check_run.head_sha,
+        });
+        
+        let targetPR = null;
+        
+        // Method 1: Try pull_requests array first
+        if (check_run.pull_requests && check_run.pull_requests.length > 0) {
+          targetPR = check_run.pull_requests[0];
+          logger.info(`Found PR from pull_requests array: #${targetPR.number}`);
+        } else {
+          // Method 2: Find PR by commit SHA
+          logger.info(`No pull_requests in check_run, searching by commit SHA: ${check_run.head_sha}`);
+          targetPR = await this.findPRByCommitSha(repository, check_run.head_sha);
+        }
+        
+        if (targetPR) {
+          logger.info(`Triggering AI review for PR #${targetPR.number} from check run ${check_run.id}`);
+          await this.triggerAIReview(repository, targetPR, check_run);
+        } else {
+          logger.error('Could not find associated PR for check run', { 
+            checkRunId: check_run.id,
+            headSha: check_run.head_sha 
+          });
+          
+          // Update check run with helpful error message
+          await githubService.updateCheckRun(repository.owner.login, repository.name, check_run.id, {
+            status: 'completed',
+            conclusion: 'failure',
+            output: {
+              title: 'AI Review Failed - PR Not Found',
+              summary: 'Could not find the associated pull request for this check run. This might happen if the PR was closed or the commit SHA changed.',
+            }
+          });
+        }
+      }
+    }
+  }
 }
 
+// Initialize cleanup interval
 const webhookService = new WebhookService();
-setInterval(() => webhookService.cleanProcessingQueue(), 5 * 60 * 1000);
+setInterval(() => {
+  webhookService.cleanProcessingQueue();
+}, 5 * 60 * 1000); // Clean every 5 minutes
+
 module.exports = webhookService;
