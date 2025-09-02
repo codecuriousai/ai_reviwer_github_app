@@ -64,10 +64,10 @@ class AIService {
         }
       });
 
-       // CONSOLE LOG: Debug raw AI response
+      //  // CONSOLE LOG: Debug raw AI response
       console.log('=== RAW AI RESPONSE ===');
-      console.log('Response length:', rawResponse.length);
-      console.log('Raw response:', rawResponse);
+      console.log('Response length:', analysis);
+      console.log('Raw response:', analysis);
       console.log('=== END RAW RESPONSE ===');
 
       // Validate and parse response
@@ -213,6 +213,7 @@ CRITICAL INSTRUCTIONS:
       let content = response.text().trim();
       
       logger.info(`Gemini response received (${content.length} characters)`);
+      logger.info(`Gemini response (${response})`);
       logger.debug('Gemini response preview:', content.substring(0, 200));
       
       return content;
