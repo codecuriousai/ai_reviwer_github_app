@@ -1,4 +1,4 @@
-// src/services/github.service.js - Complete Updated File
+// src/services/github.service.js - Fixed DETAILED FINDINGS formatting
 
 const { Octokit } = require('@octokit/rest');
 const { createAppAuth } = require('@octokit/auth-app');
@@ -305,10 +305,16 @@ class GitHubService {
       .slice(0, maxFilesToAnalyze);
   }
 
-  // Post single structured comment (main function)
+  // Post single structured comment (main function) - FIXED detailedFindings formatting
   async postStructuredReviewComment(owner, repo, pullNumber, analysis) {
     try {
       logger.info(`Posting structured review comment for ${owner}/${repo}#${pullNumber}`);
+
+      // CONSOLE LOG: Debug the analysis object
+      console.log('=== AI ANALYSIS RESPONSE DEBUG ===');
+      console.log('Full analysis object:', JSON.stringify(analysis, null, 2));
+      console.log('DetailedFindings:', JSON.stringify(analysis.detailedFindings, null, 2));
+      console.log('=== END DEBUG ===');
 
       const commentBody = this.formatStructuredReviewComment(analysis);
       
@@ -327,7 +333,7 @@ class GitHubService {
     }
   }
 
-  // Format the structured review comment matching your expected format
+  // FIXED: Format the structured review comment with proper detailedFindings handling
   formatStructuredReviewComment(analysis) {
     const { 
       prInfo, 
@@ -343,42 +349,58 @@ class GitHubService {
     
     // PR Information Section
     comment += `📋 **Pull Request Information:**\n`;
-    comment += `• PR ID: ${prInfo.prId}\n`;
-    comment += `• Title: ${prInfo.title}\n`;
-    comment += `• Repository: ${prInfo.repository}\n`;
-    comment += `• Author: ${prInfo.author}\n`;
-    comment += `• Reviewer(s): ${prInfo.reviewers.length > 0 ? prInfo.reviewers.join(', ') : 'None yet'}\n`;
-    comment += `• URL: ${prInfo.url}\n\n`;
+    comment += `• PR ID: ${prInfo.prId || 'unknown'}\n`;
+    comment += `• Title: ${prInfo.title || 'No title'}\n`;
+    comment += `• Repository: ${prInfo.repository || 'unknown/unknown'}\n`;
+    comment += `• Author: ${prInfo.author || 'unknown'}\n`;
+    comment += `• Reviewer(s): ${(prInfo.reviewers && prInfo.reviewers.length > 0) ? prInfo.reviewers.join(', ') : 'None yet'}\n`;
+    comment += `• URL: ${prInfo.url || '#'}\n\n`;
 
     // Automated Analysis Results
     comment += `🤖 **AUTOMATED ANALYSIS RESULTS:**\n`;
-    comment += `• Issues Found: ${automatedAnalysis.totalIssues}\n`;
-    comment += `• Severity Breakdown: 🚫 ${automatedAnalysis.severityBreakdown.blocker} | `;
-    comment += `🔴 ${automatedAnalysis.severityBreakdown.critical} | `;
-    comment += `🟡 ${automatedAnalysis.severityBreakdown.major} | `;
-    comment += `🔵 ${automatedAnalysis.severityBreakdown.minor} | `;
-    comment += `ℹ️ ${automatedAnalysis.severityBreakdown.info}\n`;
-    comment += `• Categories: 🐛 ${automatedAnalysis.categories.bugs} | `;
-    comment += `🔒 ${automatedAnalysis.categories.vulnerabilities} | `;
-    comment += `⚠️ ${automatedAnalysis.categories.securityHotspots} | `;
-    comment += `💨 ${automatedAnalysis.categories.codeSmells}\n`;
-    comment += `• Technical Debt: ${automatedAnalysis.technicalDebtMinutes} minutes\n\n`;
+    comment += `• Issues Found: ${automatedAnalysis.totalIssues || 0}\n`;
+    
+    const severity = automatedAnalysis.severityBreakdown || {};
+    comment += `• Severity Breakdown: 🚫 ${severity.blocker || 0} | `;
+    comment += `🔴 ${severity.critical || 0} | `;
+    comment += `🟡 ${severity.major || 0} | `;
+    comment += `🔵 ${severity.minor || 0} | `;
+    comment += `ℹ️ ${severity.info || 0}\n`;
+    
+    const categories = automatedAnalysis.categories || {};
+    comment += `• Categories: 🐛 ${categories.bugs || 0} | `;
+    comment += `🔒 ${categories.vulnerabilities || 0} | `;
+    comment += `⚠️ ${categories.securityHotspots || 0} | `;
+    comment += `💨 ${categories.codeSmells || 0}\n`;
+    comment += `• Technical Debt: ${automatedAnalysis.technicalDebtMinutes || 0} minutes\n\n`;
 
     // Human Review Analysis
     comment += `👥 **HUMAN REVIEW ANALYSIS:**\n`;
-    comment += `• Review Comments: ${humanReviewAnalysis.reviewComments}\n`;
-    comment += `• Issues Addressed by Reviewers: ${humanReviewAnalysis.issuesAddressedByReviewers}\n`;
-    comment += `• Security Issues Caught: ${humanReviewAnalysis.securityIssuesCaught}\n`;
-    comment += `• Code Quality Issues Caught: ${humanReviewAnalysis.codeQualityIssuesCaught}\n\n`;
+    comment += `• Review Comments: ${humanReviewAnalysis.reviewComments || 0}\n`;
+    comment += `• Issues Addressed by Reviewers: ${humanReviewAnalysis.issuesAddressedByReviewers || 0}\n`;
+    comment += `• Security Issues Caught: ${humanReviewAnalysis.securityIssuesCaught || 0}\n`;
+    comment += `• Code Quality Issues Caught: ${humanReviewAnalysis.codeQualityIssuesCaught || 0}\n\n`;
 
     // Review Assessment
     comment += `⚖️ **REVIEW ASSESSMENT:**\n`;
-    comment += `${reviewAssessment}\n\n`;
+    comment += `${reviewAssessment || 'REVIEW REQUIRED'}\n\n`;
 
-    // Detailed Findings
-    if (detailedFindings && detailedFindings.length > 0) {
-      comment += `📝 **DETAILED FINDINGS:**\n`;
+    // FIXED: Detailed Findings with proper property handling
+    comment += `📝 **DETAILED FINDINGS:**\n`;
+    
+    if (detailedFindings && Array.isArray(detailedFindings) && detailedFindings.length > 0) {
       detailedFindings.forEach((finding, index) => {
+        // CONSOLE LOG: Debug each finding
+        console.log(`Finding ${index + 1}:`, JSON.stringify(finding, null, 2));
+        
+        // Use safe property access with fallbacks
+        const file = finding.file || finding.filename || 'unknown-file';
+        const line = finding.line || finding.lineNumber || 'unknown';
+        const issue = finding.issue || finding.description || finding.message || 'No description';
+        const severity = finding.severity || 'INFO';
+        const category = finding.category || finding.type || 'CODE_SMELL';
+        const suggestion = finding.suggestion || finding.fix || finding.recommendation || 'No suggestion provided';
+        
         const severityEmoji = {
           'BLOCKER': '🚫',
           'CRITICAL': '🔴', 
@@ -394,18 +416,20 @@ class GitHubService {
           'CODE_SMELL': '💨'
         };
 
-        comment += `${index + 1}. ${severityEmoji[finding.severity]} ${categoryEmoji[finding.category]} **${finding.file}:${finding.line}**\n`;
-        comment += `   └ ${finding.issue}\n`;
-        comment += `   └ *Suggestion: ${finding.suggestion}*\n\n`;
+        const emoji = severityEmoji[severity] || 'ℹ️';
+        const catEmoji = categoryEmoji[category] || '💨';
+
+        comment += `${index + 1}. ${emoji} ${catEmoji} **${file}:${line}**\n`;
+        comment += `   └ ${issue}\n`;
+        comment += `   └ *Suggestion: ${suggestion}*\n\n`;
       });
     } else {
-      comment += `📝 **DETAILED FINDINGS:**\n`;
       comment += `No additional issues found that were missed by reviewers.\n\n`;
     }
 
     // Recommendation
     comment += `🎯 **RECOMMENDATION:**\n`;
-    comment += `${recommendation}\n\n`;
+    comment += `${recommendation || 'No specific recommendation available'}\n\n`;
 
     // Footer
     comment += `---\n`;

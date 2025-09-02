@@ -41,6 +41,14 @@ class AIService {
     try {
       logger.info(`Starting AI analysis for PR #${prData.pr.number}`);
 
+      console.log('=== AI ANALYSIS INPUT DEBUG ===');
+      console.log('PR Data:', JSON.stringify({
+        pr: prData.pr,
+        fileCount: prData.files?.length || 0,
+        commentCount: existingComments?.length || 0
+      }, null, 2));
+      console.log('=== END INPUT DEBUG ===');
+
       // Prepare data for analysis
       const analysisData = this.prepareAnalysisData(prData, existingComments);
       const prompt = getCodeReviewPrompt(analysisData, existingComments);
@@ -56,12 +64,29 @@ class AIService {
         }
       });
 
+       // CONSOLE LOG: Debug raw AI response
+      console.log('=== RAW AI RESPONSE ===');
+      console.log('Response length:', rawResponse.length);
+      console.log('Raw response:', rawResponse);
+      console.log('=== END RAW RESPONSE ===');
+
       // Validate and parse response
       const parsedAnalysis = this.parseAnalysisResponse(analysis);
       
+      // CONSOLE LOG: Debug parsed analysis
+      console.log('=== PARSED ANALYSIS ===');
+      console.log('Parsed analysis:', JSON.stringify(parsedAnalysis, null, 2));
+      console.log('=== END PARSED ANALYSIS ===');
+
       // Enhance analysis with PR context
       const enhancedAnalysis = this.enhanceAnalysisWithContext(parsedAnalysis, prData, existingComments);
       
+      // CONSOLE LOG: Debug final analysis
+      console.log('=== FINAL ENHANCED ANALYSIS ===');
+      console.log('Enhanced analysis:', JSON.stringify(enhancedAnalysis, null, 2));
+      console.log('=== END FINAL ANALYSIS ===');
+      
+
       logger.info(`AI analysis completed. Found ${enhancedAnalysis.automatedAnalysis.totalIssues} issues`);
       return enhancedAnalysis;
     } catch (error) {
@@ -298,6 +323,40 @@ CRITICAL INSTRUCTIONS:
     if (!Array.isArray(analysis.detailedFindings)) {
       analysis.detailedFindings = [];
     }
+
+    // FIXED: Normalize detailedFindings properties
+    if (analysis.detailedFindings && analysis.detailedFindings.length > 0) {
+      analysis.detailedFindings = analysis.detailedFindings.map(finding => {
+        // Console log each finding for debugging
+        console.log('Raw finding from AI:', JSON.stringify(finding, null, 2));
+        
+        // Normalize property names - AI might use different names
+        const normalizedFinding = {
+          file: finding.file || finding.filename || finding.fileName || 'unknown-file',
+          line: finding.line || finding.lineNumber || finding.lineNum || 1,
+          issue: finding.issue || finding.description || finding.message || finding.title || 'No description',
+          severity: finding.severity || finding.level || 'INFO',
+          category: finding.category || finding.type || finding.kind || 'CODE_SMELL',
+          suggestion: finding.suggestion || finding.fix || finding.recommendation || finding.solution || 'No suggestion provided'
+        };
+        
+        // Ensure severity is uppercase and valid
+        normalizedFinding.severity = normalizedFinding.severity.toString().toUpperCase();
+        if (!['BLOCKER', 'CRITICAL', 'MAJOR', 'MINOR', 'INFO'].includes(normalizedFinding.severity)) {
+          normalizedFinding.severity = 'INFO';
+        }
+        
+        // Ensure category is uppercase and valid
+        normalizedFinding.category = normalizedFinding.category.toString().toUpperCase();
+        if (!['BUG', 'VULNERABILITY', 'SECURITY_HOTSPOT', 'CODE_SMELL'].includes(normalizedFinding.category)) {
+          normalizedFinding.category = 'CODE_SMELL';
+        }
+        
+        console.log('Normalized finding:', JSON.stringify(normalizedFinding, null, 2));
+        return normalizedFinding;
+      });
+    }
+
 
     // Ensure numeric fields are numbers
     analysis.automatedAnalysis.totalIssues = Number(analysis.automatedAnalysis.totalIssues) || 0;

@@ -28,7 +28,7 @@ CRITICAL RESPONSE REQUIREMENTS:
 - All strings must be properly escaped
 - Numbers must be actual numbers, not strings
 
-REQUIRED JSON STRUCTURE:
+REQUIRED JSON STRUCTURE - EXACT FORMAT REQUIRED:
 {
   "prInfo": {
     "prId": 0,
@@ -62,9 +62,26 @@ REQUIRED JSON STRUCTURE:
     "codeQualityIssuesCaught": 0
   },
   "reviewAssessment": "REVIEW REQUIRED",
-  "detailedFindings": [],
-  "recommendation": ""
+  "detailedFindings": [
+    {
+      "file": "exact-filename.js",
+      "line": 42,
+      "issue": "Detailed description of the specific issue found",
+      "severity": "CRITICAL",
+      "category": "VULNERABILITY",
+      "suggestion": "Specific actionable fix recommendation"
+    }
+  ],
+  "recommendation": "Detailed recommendation text"
 }
+
+CRITICAL: Use EXACTLY these property names in detailedFindings:
+- "file" (not filename, fileName, or path)
+- "line" (not lineNumber, lineNum, or row)  
+- "issue" (not description, message, or title)
+- "severity" (not level or priority)
+- "category" (not type or kind)
+- "suggestion" (not fix, recommendation, or solution)
 
 SEVERITY LEVELS:
 - BLOCKER: Critical issues that must be fixed (security vulnerabilities, crashes)
@@ -84,11 +101,24 @@ REVIEW ASSESSMENT OPTIONS (choose exactly one):
 - "NOT PROPERLY REVIEWED": Critical issues missed by human reviewers
 - "REVIEW REQUIRED": No human review yet or insufficient review
 
-IMPORTANT: 
-- Focus on issues that human reviewers MISSED, not issues they already caught
-- Only include issues in detailedFindings that were NOT addressed by human reviewers
+IMPORTANT ANALYSIS RULES:
+- Focus ONLY on issues that human reviewers MISSED, not issues they already caught
+- Only include issues in detailedFindings that were NOT addressed by human reviewers  
 - Assess the quality and thoroughness of the human review
-- Return ONLY the JSON response, no additional text`,
+- Use exact property names as specified above
+- Provide specific line numbers and file paths
+- Make suggestions actionable and specific
+- Return ONLY the JSON response, no additional text
+
+EXAMPLE detailedFindings entry:
+{
+  "file": "src/auth/login.js",
+  "line": 23,
+  "issue": "Hard-coded password found in authentication logic",
+  "severity": "CRITICAL", 
+  "category": "VULNERABILITY",
+  "suggestion": "Move password to environment variable and use secure storage"
+}`,
 
   // Helper function to build dynamic prompts
   buildPrompt: (promptType, data) => {
