@@ -120,6 +120,8 @@ const sanitizeForAI = (text) => {
   return text
     .replace(/[\x00-\x1F\x7F-\x9F]/g, '') // Remove control characters
     .replace(/\r\n/g, '\n') // Normalize line endings
+    .replace(/\\/g, '\\\\') // Escape backslashes
+    .replace(/"/g, '\\"') // Escape quotes for JSON safety
     .trim();
 };
 
@@ -149,14 +151,50 @@ const parseRepositoryUrl = (url) => {
   };
 };
 
-// Check if string is valid JSON
+// ENHANCED: Better JSON validation with detailed error reporting
 const isValidJSON = (str) => {
-  try {
-    JSON.parse(str);
-    return true;
-  } catch {
+  if (!str || typeof str !== 'string') {
     return false;
   }
+  
+  try {
+    const parsed = JSON.parse(str);
+    return typeof parsed === 'object' && parsed !== null;
+  } catch (error) {
+    logger.debug('JSON validation failed:', error.message);
+    return false;
+  }
+};
+
+// ENHANCED: Better JSON cleaning function
+const cleanJSONResponse = (responseText) => {
+  if (!responseText) return null;
+  
+  let cleaned = responseText.trim();
+  
+  // Remove markdown code blocks
+  cleaned = cleaned.replace(/```json\s*/g, '').replace(/```\s*/g, '');
+  
+  // Remove any text before first {
+  const firstBrace = cleaned.indexOf('{');
+  if (firstBrace > 0) {
+    cleaned = cleaned.substring(firstBrace);
+  }
+  
+  // Remove any text after last }
+  const lastBrace = cleaned.lastIndexOf('}');
+  if (lastBrace >= 0 && lastBrace < cleaned.length - 1) {
+    cleaned = cleaned.substring(0, lastBrace + 1);
+  }
+  
+  // Clean common JSON issues
+  cleaned = cleaned
+    .replace(/\n\s*\/\/.*$/gm, '') // Remove single-line comments
+    .replace(/\/\*[\s\S]*?\*\//g, '') // Remove multi-line comments
+    .replace(/,(\s*[}\]])/g, '$1') // Remove trailing commas
+    .replace(/(['"])\s*\n\s*\+\s*(['"])/g, '$1$2'); // Fix string concatenation
+  
+  return cleaned;
 };
 
 // Generate unique ID for tracking
@@ -217,6 +255,7 @@ module.exports = {
   retryWithBackoff,
   parseRepositoryUrl,
   isValidJSON,
+  cleanJSONResponse,
   generateTrackingId,
   isValidEmail,
   cleanFilePath,

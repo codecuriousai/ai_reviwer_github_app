@@ -1,9 +1,11 @@
+// src/services/ai.service.js - Fixed JSON Parsing Issues
+
 const OpenAI = require('openai');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const config = require('../config/config');
 const logger = require('../utils/logger');
 const { getCodeReviewPrompt } = require('../prompts/prompts');
-const { retryWithBackoff, sanitizeForAI, isValidJSON } = require('../utils/helpers');
+const { retryWithBackoff, sanitizeForAI, isValidJSON, cleanJSONResponse } = require('../utils/helpers');
 
 class AIService {
   constructor() {
@@ -11,6 +13,7 @@ class AIService {
     this.initializeProviders();
   }
 
+  // Initialize AI providers
   initializeProviders() {
     try {
       if (this.provider === 'openai' || config.ai.openai.apiKey) {
@@ -33,16 +36,24 @@ class AIService {
     }
   }
 
-  // Main function to analyze pull request with enhanced error handling
+  // Main function to analyze pull request
   async analyzePullRequest(prData, existingComments = []) {
     try {
       logger.info(`Starting AI analysis for PR #${prData.pr.number}`);
 
-      // Prepare data for analysis with safe property access
+      console.log('=== AI ANALYSIS INPUT DEBUG ===');
+      console.log('PR Data:', JSON.stringify({
+        pr: prData.pr,
+        fileCount: prData.files?.length || 0,
+        commentCount: existingComments?.length || 0
+      }, null, 2));
+      console.log('=== END INPUT DEBUG ===');
+
+      // Prepare data for analysis
       const analysisData = this.prepareAnalysisData(prData, existingComments);
       const prompt = getCodeReviewPrompt(analysisData, existingComments);
       
-      // Perform analysis with multiple retry attempts
+      // Perform analysis with retry logic
       const analysis = await retryWithBackoff(async () => {
         if (this.provider === 'openai') {
           return await this.analyzeWithOpenAI(prompt);
@@ -51,15 +62,32 @@ class AIService {
         } else {
           throw new Error(`Unsupported AI provider: ${this.provider}`);
         }
-      }, 3, 2000); // 3 retries with 2 second base delay
+      });
 
-      // Enhanced parsing with better error handling
-      const parsedAnalysis = this.parseAnalysisResponse(analysis, prData);
+      //  // CONSOLE LOG: Debug raw AI response
+      console.log('=== RAW AI RESPONSE ===');
+      console.log('Response length:', analysis);
+      console.log('Raw response:', analysis);
+      console.log('=== END RAW RESPONSE ===');
+
+      // Validate and parse response
+      const parsedAnalysis = this.parseAnalysisResponse(analysis);
       
+      // CONSOLE LOG: Debug parsed analysis
+      console.log('=== PARSED ANALYSIS ===');
+      console.log('Parsed analysis:', JSON.stringify(parsedAnalysis, null, 2));
+      console.log('=== END PARSED ANALYSIS ===');
+
       // Enhance analysis with PR context
       const enhancedAnalysis = this.enhanceAnalysisWithContext(parsedAnalysis, prData, existingComments);
       
-      logger.info(`AI analysis completed successfully. Found ${enhancedAnalysis.automatedAnalysis.totalIssues} issues`);
+      // CONSOLE LOG: Debug final analysis
+      console.log('=== FINAL ENHANCED ANALYSIS ===');
+      console.log('Enhanced analysis:', JSON.stringify(enhancedAnalysis, null, 2));
+      console.log('=== END FINAL ANALYSIS ===');
+      
+
+      logger.info(`AI analysis completed. Found ${enhancedAnalysis.automatedAnalysis.totalIssues} issues`);
       return enhancedAnalysis;
     } catch (error) {
       logger.error('Error in AI analysis:', error);
@@ -67,12 +95,14 @@ class AIService {
     }
   }
 
-  // Prepare data with comprehensive null safety
+  // Prepare data for AI analysis with safe property access
   prepareAnalysisData(prData, existingComments) {
+    // Safely extract data with fallbacks
     const pr = prData.pr || prData || {};
     const files = prData.files || [];
     const diff = prData.diff || '';
     
+    // Sanitize and truncate data for AI processing
     const sanitizedDiff = diff ? sanitizeForAI(diff) : 'No diff available';
     const truncatedDiff = sanitizedDiff.length > 8000 
       ? sanitizedDiff.substring(0, 8000) + '\n... [truncated for analysis]' 
@@ -103,7 +133,7 @@ class AIService {
     };
   }
 
-  // Enhanced OpenAI analysis with better prompt engineering
+  // OpenAI analysis - FIXED: Better JSON handling
   async analyzeWithOpenAI(prompt) {
     try {
       logger.info('Sending request to OpenAI');
@@ -113,20 +143,29 @@ class AIService {
         messages: [
           {
             role: 'system',
-            content: 'You are an expert code reviewer specializing in SonarQube standards. You MUST respond with valid JSON in the exact format specified. Do not include any text outside the JSON structure.',
+            content: `You are an expert code reviewer specializing in SonarQube standards. 
+            
+CRITICAL: You MUST respond with ONLY valid JSON in the exact format specified. 
+Do not include any markdown formatting, code blocks, or additional text.
+Your response must start with { and end with }.
+            
+Focus on providing a comprehensive analysis in a single structured response.`,
           },
           {
             role: 'user',
-            content: prompt + '\n\nIMPORTANT: Respond with ONLY valid JSON. No markdown, no explanations, just the JSON object in the specified format.',
+            content: prompt,
           },
         ],
         max_tokens: config.ai.openai.maxTokens,
         temperature: config.ai.openai.temperature,
-        response_format: { type: 'json_object' },
+        response_format: { type: 'json_object' }, // Force JSON response
       });
 
-      const content = response.choices[0].message.content;
+      const content = response.choices[0].message.content.trim();
       logger.info(`OpenAI response received (${content.length} characters)`);
+      
+      // Log first 200 chars for debugging
+      logger.debug('OpenAI response preview:', content.substring(0, 200));
       
       return content;
     } catch (error) {
@@ -144,12 +183,20 @@ class AIService {
     }
   }
 
-  // Enhanced Gemini analysis
+  // Gemini analysis - FIXED: Better JSON handling
   async analyzeWithGemini(prompt) {
     try {
       logger.info('Sending request to Gemini');
       
-      const enhancedPrompt = prompt + '\n\nCRITICAL: You must respond with ONLY valid JSON in the exact format specified. Do not include markdown formatting, explanations, or any text outside the JSON structure. Start your response with { and end with }.';
+      const enhancedPrompt = `${prompt}
+
+CRITICAL INSTRUCTIONS:
+- Respond ONLY with valid JSON
+- Do not include any markdown formatting (no \`\`\`json blocks)
+- Do not include any additional text before or after the JSON
+- Your response must start with { and end with }
+- Ensure all strings are properly escaped
+- Make sure all required fields are present`;
       
       const result = await this.geminiModel.generateContent({
         contents: [{
@@ -163,9 +210,11 @@ class AIService {
       });
 
       const response = await result.response;
-      const content = response.text();
+      let content = response.text().trim();
       
       logger.info(`Gemini response received (${content.length} characters)`);
+      logger.info(`Gemini response (${response})`);
+      logger.debug('Gemini response preview:', content.substring(0, 200));
       
       return content;
     } catch (error) {
@@ -181,55 +230,193 @@ class AIService {
     }
   }
 
-  // Enhanced JSON parsing with multiple fallback strategies
-  parseAnalysisResponse(responseText, prData) {
+  // FIXED: Enhanced JSON parsing with better error handling
+  parseAnalysisResponse(responseText) {
     try {
+      logger.debug('Parsing AI response:', responseText.substring(0, 300));
+      
+      // Clean response text
       let cleanedResponse = responseText.trim();
       
-      // Remove markdown code blocks
-      cleanedResponse = cleanedResponse.replace(/```json\n?/g, '').replace(/```\n?/g, '');
+      // Remove markdown code blocks if present
+      cleanedResponse = cleanedResponse.replace(/```json\s*/g, '').replace(/```\s*/g, '');
       
-      // Remove any text before first { and after last }
-      const firstBrace = cleanedResponse.indexOf('{');
-      const lastBrace = cleanedResponse.lastIndexOf('}');
-      
-      if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
-        cleanedResponse = cleanedResponse.substring(firstBrace, lastBrace + 1);
+      // Remove any text before the first {
+      const firstBraceIndex = cleanedResponse.indexOf('{');
+      if (firstBraceIndex > 0) {
+        cleanedResponse = cleanedResponse.substring(firstBraceIndex);
       }
       
-      // Validate JSON
+      // Remove any text after the last }
+      const lastBraceIndex = cleanedResponse.lastIndexOf('}');
+      if (lastBraceIndex >= 0 && lastBraceIndex < cleanedResponse.length - 1) {
+        cleanedResponse = cleanedResponse.substring(0, lastBraceIndex + 1);
+      }
+      
+      // Additional cleaning for common issues
+      cleanedResponse = cleanedResponse
+        .replace(/\n\s*\/\/.*/g, '') // Remove single-line comments
+        .replace(/\/\*[\s\S]*?\*\//g, '') // Remove multi-line comments
+        .replace(/,\s*}/g, '}') // Remove trailing commas
+        .replace(/,\s*]/g, ']'); // Remove trailing commas in arrays
+      
+      // Validate JSON format
+      if (!cleanedResponse.startsWith('{') || !cleanedResponse.endsWith('}')) {
+        throw new Error(`Response doesn't appear to be JSON object. Starts with: '${cleanedResponse.substring(0, 20)}', Ends with: '${cleanedResponse.slice(-20)}'`);
+      }
+      
+      // Test JSON validity
       if (!isValidJSON(cleanedResponse)) {
-        throw new Error('Response is not valid JSON after cleaning');
+        throw new Error('Cleaned response is not valid JSON');
       }
       
       const analysis = JSON.parse(cleanedResponse);
       
-      // Validate structure
+      // Validate required fields
       this.validateAnalysisStructure(analysis);
       
-      logger.info('AI response parsed successfully');
+      logger.info('Successfully parsed AI analysis response');
       return analysis;
-    } catch (error) {
-      logger.error('Error parsing AI response:', error);
-      logger.error('Raw response preview:', responseText.substring(0, 500) + '...');
       
-      // Create a valid fallback analysis
-      return this.createValidFallbackAnalysis(prData, error.message);
+    } catch (parseError) {
+      logger.error('Error parsing AI response:', parseError);
+      logger.error('Raw response (first 500 chars):', responseText.substring(0, 500));
+      logger.error('Cleaned response (first 500 chars):', cleanedResponse ? cleanedResponse.substring(0, 500) : 'undefined');
+      
+      // Return fallback structure with specific error details
+      return this.getFallbackAnalysis(`JSON parsing failed: ${parseError.message}. Response preview: ${responseText.substring(0, 100)}`);
     }
   }
 
-  // Create properly structured fallback analysis
-  createValidFallbackAnalysis(prData, errorMessage) {
-    const pr = prData.pr || {};
+  // FIXED: More robust structure validation
+  validateAnalysisStructure(analysis) {
+    const requiredFields = {
+      'prInfo': 'object',
+      'automatedAnalysis': 'object',
+      'humanReviewAnalysis': 'object',
+      'reviewAssessment': 'string',
+      'recommendation': 'string'
+    };
+    
+    // Check required top-level fields
+    for (const [field, expectedType] of Object.entries(requiredFields)) {
+      if (!analysis[field]) {
+        throw new Error(`Missing required field: ${field}`);
+      }
+      if (typeof analysis[field] !== expectedType) {
+        throw new Error(`Field '${field}' should be ${expectedType}, got ${typeof analysis[field]}`);
+      }
+    }
+    
+    // Validate nested structures with defaults
+    if (!analysis.automatedAnalysis.severityBreakdown) {
+      analysis.automatedAnalysis.severityBreakdown = {
+        blocker: 0, critical: 0, major: 0, minor: 0, info: 0
+      };
+    }
+    
+    if (!analysis.automatedAnalysis.categories) {
+      analysis.automatedAnalysis.categories = {
+        bugs: 0, vulnerabilities: 0, securityHotspots: 0, codeSmells: 0
+      };
+    }
+
+    if (!Array.isArray(analysis.detailedFindings)) {
+      analysis.detailedFindings = [];
+    }
+
+    // FIXED: Normalize detailedFindings properties
+    if (analysis.detailedFindings && analysis.detailedFindings.length > 0) {
+      analysis.detailedFindings = analysis.detailedFindings.map(finding => {
+        // Console log each finding for debugging
+        console.log('Raw finding from AI:', JSON.stringify(finding, null, 2));
+        
+        // Normalize property names - AI might use different names
+        const normalizedFinding = {
+          file: finding.file || finding.filename || finding.fileName || 'unknown-file',
+          line: finding.line || finding.lineNumber || finding.lineNum || 1,
+          issue: finding.issue || finding.description || finding.message || finding.title || 'No description',
+          severity: finding.severity || finding.level || 'INFO',
+          category: finding.category || finding.type || finding.kind || 'CODE_SMELL',
+          suggestion: finding.suggestion || finding.fix || finding.recommendation || finding.solution || 'No suggestion provided'
+        };
+        
+        // Ensure severity is uppercase and valid
+        normalizedFinding.severity = normalizedFinding.severity.toString().toUpperCase();
+        if (!['BLOCKER', 'CRITICAL', 'MAJOR', 'MINOR', 'INFO'].includes(normalizedFinding.severity)) {
+          normalizedFinding.severity = 'INFO';
+        }
+        
+        // Ensure category is uppercase and valid
+        normalizedFinding.category = normalizedFinding.category.toString().toUpperCase();
+        if (!['BUG', 'VULNERABILITY', 'SECURITY_HOTSPOT', 'CODE_SMELL'].includes(normalizedFinding.category)) {
+          normalizedFinding.category = 'CODE_SMELL';
+        }
+        
+        console.log('Normalized finding:', JSON.stringify(normalizedFinding, null, 2));
+        return normalizedFinding;
+      });
+    }
+
+
+    // Ensure numeric fields are numbers
+    analysis.automatedAnalysis.totalIssues = Number(analysis.automatedAnalysis.totalIssues) || 0;
+    analysis.automatedAnalysis.technicalDebtMinutes = Number(analysis.automatedAnalysis.technicalDebtMinutes) || 0;
+
+    // Validate review assessment options
+    const validAssessments = ['PROPERLY REVIEWED', 'NOT PROPERLY REVIEWED', 'REVIEW REQUIRED'];
+    if (!validAssessments.includes(analysis.reviewAssessment)) {
+      logger.warn(`Invalid reviewAssessment: ${analysis.reviewAssessment}, defaulting to REVIEW REQUIRED`);
+      analysis.reviewAssessment = 'REVIEW REQUIRED';
+    }
+
+    logger.debug('Analysis structure validation passed');
+  }
+
+  // Enhance analysis with PR context
+  enhanceAnalysisWithContext(analysis, prData, existingComments) {
+    // Ensure prInfo is populated with actual data
+    analysis.prInfo = {
+      prId: prData.pr.number,
+      title: prData.pr.title,
+      repository: prData.pr.repository,
+      author: prData.pr.author,
+      reviewers: prData.reviewers || [],
+      url: prData.pr.url,
+    };
+
+    // Enhance human review analysis with actual comment data
+    analysis.humanReviewAnalysis = {
+      reviewComments: existingComments.length,
+      issuesAddressedByReviewers: this.countIssuesInComments(existingComments),
+      securityIssuesCaught: this.countSecurityIssuesInComments(existingComments),
+      codeQualityIssuesCaught: this.countCodeQualityIssuesInComments(existingComments),
+    };
+
+    // Set review assessment based on analysis
+    if (existingComments.length === 0) {
+      analysis.reviewAssessment = 'REVIEW REQUIRED';
+    } else if (analysis.automatedAnalysis.totalIssues > analysis.humanReviewAnalysis.issuesAddressedByReviewers) {
+      analysis.reviewAssessment = 'NOT PROPERLY REVIEWED';
+    } else {
+      analysis.reviewAssessment = 'PROPERLY REVIEWED';
+    }
+
+    return analysis;
+  }
+
+  // FIXED: Enhanced fallback analysis with better error context
+  getFallbackAnalysis(errorMessage) {
+    logger.info('Creating fallback analysis due to parsing error');
     
     return {
       prInfo: {
-        prId: pr.number || 0,
-        title: pr.title || 'Unknown',
-        repository: pr.repository || 'unknown/unknown',
-        author: pr.author || 'unknown',
+        prId: 'unknown',
+        title: 'AI Analysis Error',
+        repository: 'unknown/unknown',
+        author: 'unknown',
         reviewers: [],
-        url: pr.url || '#',
+        url: '#'
       },
       automatedAnalysis: {
         totalIssues: 1,
@@ -249,7 +436,7 @@ class AIService {
         technicalDebtMinutes: 30
       },
       humanReviewAnalysis: {
-        reviewComments: prData.comments ? prData.comments.length : 0,
+        reviewComments: 0,
         issuesAddressedByReviewers: 0,
         securityIssuesCaught: 0,
         codeQualityIssuesCaught: 0
@@ -258,149 +445,38 @@ class AIService {
       detailedFindings: [{
         file: 'AI_ANALYSIS_ERROR',
         line: 1,
-        issue: `AI analysis failed: ${errorMessage}. This could be due to API limits, service unavailability, or response format issues.`,
+        issue: `AI analysis parsing error: ${errorMessage}`,
         severity: 'MAJOR',
         category: 'CODE_SMELL',
-        suggestion: 'Please try running the analysis again. If the error persists, check AI service configuration or contact administrator.'
+        suggestion: 'Check AI service configuration, API keys, and ensure the AI model is responding with valid JSON format'
       }],
-      recommendation: `AI analysis could not be completed due to: ${errorMessage}. Manual code review is recommended. Please try again or contact support.`
+      recommendation: 'Fix AI analysis configuration to get proper code review feedback. Verify API keys, check network connectivity, and ensure the AI service is responding with properly formatted JSON.'
     };
-  }
-
-  // Validate analysis structure
-  validateAnalysisStructure(analysis) {
-    const requiredFields = ['prInfo', 'automatedAnalysis', 'humanReviewAnalysis', 'reviewAssessment', 'recommendation'];
-    
-    for (const field of requiredFields) {
-      if (!analysis[field]) {
-        throw new Error(`Missing required field: ${field}`);
-      }
-    }
-    
-    // Validate nested structures with defaults
-    if (!analysis.automatedAnalysis.severityBreakdown) {
-      analysis.automatedAnalysis.severityBreakdown = { blocker: 0, critical: 0, major: 0, minor: 0, info: 0 };
-    }
-    
-    if (!analysis.automatedAnalysis.categories) {
-      analysis.automatedAnalysis.categories = { bugs: 0, vulnerabilities: 0, securityHotspots: 0, codeSmells: 0 };
-    }
-
-    if (!Array.isArray(analysis.detailedFindings)) {
-      analysis.detailedFindings = [];
-    }
-
-    // Ensure all required automatedAnalysis fields exist
-    if (typeof analysis.automatedAnalysis.totalIssues !== 'number') {
-      analysis.automatedAnalysis.totalIssues = analysis.detailedFindings.length;
-    }
-
-    if (typeof analysis.automatedAnalysis.technicalDebtMinutes !== 'number') {
-      analysis.automatedAnalysis.technicalDebtMinutes = analysis.automatedAnalysis.totalIssues * 15; // Estimate
-    }
-  }
-
-  // Enhance analysis with actual PR context
-  enhanceAnalysisWithContext(analysis, prData, existingComments) {
-    // Ensure prInfo has actual data
-    analysis.prInfo = {
-      prId: prData.pr.number,
-      title: prData.pr.title,
-      repository: prData.pr.repository,
-      author: prData.pr.author,
-      reviewers: prData.reviewers || [],
-      url: prData.pr.url,
-    };
-
-    // Calculate actual human review metrics
-    const comments = existingComments || [];
-    analysis.humanReviewAnalysis = {
-      reviewComments: comments.length,
-      issuesAddressedByReviewers: this.countIssuesInComments(comments),
-      securityIssuesCaught: this.countSecurityIssuesInComments(comments),
-      codeQualityIssuesCaught: this.countCodeQualityIssuesInComments(comments),
-    };
-
-    // Set proper review assessment
-    if (comments.length === 0) {
-      analysis.reviewAssessment = 'REVIEW REQUIRED';
-    } else {
-      const criticalIssues = analysis.automatedAnalysis.severityBreakdown.critical + analysis.automatedAnalysis.severityBreakdown.blocker;
-      const issuesCaught = analysis.humanReviewAnalysis.issuesAddressedByReviewers;
-      
-      if (criticalIssues > issuesCaught) {
-        analysis.reviewAssessment = 'NOT PROPERLY REVIEWED';
-      } else if (issuesCaught >= Math.ceil(analysis.automatedAnalysis.totalIssues * 0.7)) {
-        analysis.reviewAssessment = 'PROPERLY REVIEWED';
-      } else {
-        analysis.reviewAssessment = 'NOT PROPERLY REVIEWED';
-      }
-    }
-
-    return analysis;
-  }
-
-  // Count issues mentioned in comments
-  countIssuesInComments(comments) {
-    const issueKeywords = ['bug', 'issue', 'problem', 'error', 'fix', 'wrong', 'incorrect'];
-    let count = 0;
-    
-    comments.forEach(comment => {
-      const body = (comment.body || '').toLowerCase();
-      if (issueKeywords.some(keyword => body.includes(keyword))) {
-        count++;
-      }
-    });
-    
-    return Math.min(count, comments.length);
-  }
-
-  // Count security issues in comments
-  countSecurityIssuesInComments(comments) {
-    const securityKeywords = ['security', 'vulnerability', 'exploit', 'injection', 'xss', 'csrf', 'auth'];
-    let count = 0;
-    
-    comments.forEach(comment => {
-      const body = (comment.body || '').toLowerCase();
-      if (securityKeywords.some(keyword => body.includes(keyword))) {
-        count++;
-      }
-    });
-    
-    return count;
-  }
-
-  // Count code quality issues in comments
-  countCodeQualityIssuesInComments(comments) {
-    const qualityKeywords = ['refactor', 'clean', 'readable', 'complex', 'duplicate', 'naming', 'structure'];
-    let count = 0;
-    
-    comments.forEach(comment => {
-      const body = (comment.body || '').toLowerCase();
-      if (qualityKeywords.some(keyword => body.includes(keyword))) {
-        count++;
-      }
-    });
-    
-    return count;
   }
 
   // Check AI service health
   async checkHealth() {
     try {
-      const testPrompt = 'Respond with "OK" if you can process this message.';
+      const testPrompt = `Respond with this exact JSON and nothing else: {"status": "OK", "test": true}`;
       
       if (this.provider === 'openai') {
         const response = await this.openai.chat.completions.create({
           model: config.ai.openai.model,
           messages: [{ role: 'user', content: testPrompt }],
-          max_tokens: 10,
+          max_tokens: 50,
+          response_format: { type: 'json_object' },
         });
-        return response.choices[0].message.content.includes('OK');
+        
+        const content = response.choices[0].message.content.trim();
+        const parsed = JSON.parse(content);
+        return parsed.status === 'OK';
+        
       } else if (this.provider === 'gemini') {
         const result = await this.geminiModel.generateContent(testPrompt);
         const response = await result.response;
-        return response.text().includes('OK');
+        const content = response.text().trim();
+        const parsed = JSON.parse(content);
+        return parsed.status === 'OK';
       }
       
       return false;
@@ -408,6 +484,62 @@ class AIService {
       logger.error('AI health check failed:', error);
       return false;
     }
+  }
+
+  // Count issues mentioned in human review comments
+  countIssuesInComments(comments) {
+    const issueKeywords = [
+      'bug', 'issue', 'problem', 'error', 'fix', 'wrong', 'incorrect', 
+      'security', 'vulnerability', 'risk', 'unsafe', 'dangerous'
+    ];
+    
+    let issueCount = 0;
+    comments.forEach(comment => {
+      const body = comment.body.toLowerCase();
+      issueKeywords.forEach(keyword => {
+        if (body.includes(keyword)) {
+          issueCount++;
+        }
+      });
+    });
+    
+    return Math.min(issueCount, comments.length); // Cap at number of comments
+  }
+
+  // Count security issues in comments
+  countSecurityIssuesInComments(comments) {
+    const securityKeywords = [
+      'security', 'vulnerability', 'exploit', 'injection', 'xss', 'csrf',
+      'authentication', 'authorization', 'encryption', 'password', 'token'
+    ];
+    
+    let securityCount = 0;
+    comments.forEach(comment => {
+      const body = comment.body.toLowerCase();
+      if (securityKeywords.some(keyword => body.includes(keyword))) {
+        securityCount++;
+      }
+    });
+    
+    return securityCount;
+  }
+
+  // Count code quality issues in comments
+  countCodeQualityIssuesInComments(comments) {
+    const qualityKeywords = [
+      'refactor', 'clean', 'readable', 'maintainable', 'complex', 'duplicate',
+      'naming', 'structure', 'design', 'pattern', 'smell'
+    ];
+    
+    let qualityCount = 0;
+    comments.forEach(comment => {
+      const body = comment.body.toLowerCase();
+      if (qualityKeywords.some(keyword => body.includes(keyword))) {
+        qualityCount++;
+      }
+    });
+    
+    return qualityCount;
   }
 }
 

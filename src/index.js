@@ -151,6 +151,58 @@ app.get('/status', (req, res) => {
   });
 });
 
+// Debug endpoint for testing AI service directly
+app.post('/debug/ai-test', async (req, res) => {
+  try {
+    const aiService = require('./services/ai.service');
+    
+    // Simple test data
+    const testData = {
+      pr: {
+        number: 999,
+        title: 'Test PR',
+        description: 'Testing AI service',
+        author: 'test-user',
+        repository: 'test/repo',
+        targetBranch: 'main',
+        sourceBranch: 'feature',
+        additions: 10,
+        deletions: 5,
+        url: 'https://github.com/test/repo/pull/999'
+      },
+      files: [{
+        filename: 'test.js',
+        status: 'added',
+        additions: 10,
+        deletions: 0,
+        changes: 10
+      }],
+      diff: `+function testFunction() {
++  var password = "hardcoded123";
++  console.log(password);
++}`,
+      comments: []
+    };
+
+    logger.info('Testing AI service with sample data');
+    const result = await aiService.analyzePullRequest(testData, []);
+    
+    res.json({
+      success: true,
+      result: result,
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    logger.error('AI test failed:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
 // Error handling middleware
 app.use((error, req, res, next) => {
   logger.error('Unhandled error:', error);
