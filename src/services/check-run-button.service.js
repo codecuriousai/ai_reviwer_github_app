@@ -68,11 +68,22 @@ class CheckRunButtonService {
   // Generate actions (buttons) for the check run
   generateCheckRunActions(postableFindings) {
     const actions = [];
-    const maxButtons = 5; // GitHub has a limit of 50 actions per check run
-    const maxDescLength = 40; // GitHub API limit
+    // GitHub API only allows a max of 3 buttons in a check run
+    const maxButtons = 2;
+    const maxDescLength = 40; 
+    
+    // If there are more than two findings, only show the "Post All" button
+    if (postableFindings.length > 2) {
+      actions.push({
+        label: `Post All Comments`,
+        description: `Post all ${postableFindings.length} findings`,
+        identifier: 'post-all'
+      });
+      return actions;
+    }
 
-    // Individual buttons for each postable finding
-    postableFindings.slice(0, maxButtons).forEach((finding, index) => {
+    // Otherwise, show individual buttons and "Post All"
+    postableFindings.forEach((finding, index) => {
       const truncatedFile = truncateText(finding.file, maxDescLength - 10);
       actions.push({
         label: `Comment #${index + 1}`,
@@ -81,11 +92,11 @@ class CheckRunButtonService {
       });
     });
 
-    // Post all button if there are multiple findings or more than maxButtons
-    if (postableFindings.length > 1) {
+    // Always include the Post all comments button if there are any findings
+    if (postableFindings.length > 0) {
       actions.push({
-        label: `Post All Comments (${postableFindings.length})`,
-        description: `Post all findings as inline comments`,
+        label: `Post All Comments`,
+        description: `Post all ${postableFindings.length} findings`,
         identifier: 'post-all'
       });
     }
@@ -439,7 +450,7 @@ class CheckRunButtonService {
   // Generate updated actions reflecting current button states
   generateUpdatedActions(postableFindings, buttonStates) {
     const actions = [];
-    const maxButtons = 5;
+    const maxButtons = 2;
     const maxDescLength = 40;
 
     postableFindings.slice(0, maxButtons).forEach((finding, index) => {
@@ -470,7 +481,7 @@ class CheckRunButtonService {
 
     // Post all button
     const allState = buttonStates['post-all'];
-    if (postableFindings.length > 1) {
+    if (postableFindings.length > 0) {
       if (allState === 'completed') {
         actions.push({
           label: `✓ All Comments Posted`,
@@ -485,8 +496,8 @@ class CheckRunButtonService {
         });
       } else {
         actions.push({
-          label: `Post All Comments (${postableFindings.length})`,
-          description: `Post all findings as inline comments`,
+          label: `Post All Comments`,
+          description: `Post all ${postableFindings.length} findings`,
           identifier: 'post-all'
         });
       }
