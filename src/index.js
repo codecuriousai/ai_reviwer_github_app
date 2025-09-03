@@ -4,7 +4,7 @@ const logger = require('./utils/logger');
 const webhookService = require('./services/webhook.service');
 const authMiddleware = require('./middleware/auth.middleware');
 const checkRunButtonService = require('./services/check-run-button.service');
-
+const path = require('path');
 const app = express();
 
 // Raw body parser for webhook signature verification
