@@ -351,6 +351,7 @@ class WebhookService {
     const owner = repository.owner.login;
     const repo = repository.name;
     const pullNumber = pullRequest.number;
+    const headSha = initialCheckRun.head_sha;
 
     try {
       logger.info(`Processing AI review with buttons for PR ${owner}/${repo}#${pullNumber}`, { 
@@ -406,7 +407,7 @@ class WebhookService {
       });
 
       // ENHANCED: Complete with interactive button check run
-      await this.completeWithButtonsCheckRun(owner, repo, pullNumber, initialCheckRun, analysis, prData);
+      await this.completeWithButtonsCheckRun(owner, repo, pullNumber, initialCheckRun, analysis, headSha);
 
     } catch (error) {
       logger.error(`Error in AI review for PR #${pullNumber}:`, error, { trackingId });
@@ -415,7 +416,7 @@ class WebhookService {
   }
 
   // ENHANCED: Complete with interactive button check run
-  async completeWithButtonsCheckRun(owner, repo, pullNumber, initialCheckRun, analysis, prData) {
+  async completeWithButtonsCheckRun(owner, repo, pullNumber, initialCheckRun, analysis, headSha) {
     try {
       logger.info(`Creating interactive check run for PR #${pullNumber}`, { 
         trackingId: analysis.trackingId,
@@ -425,12 +426,9 @@ class WebhookService {
       // Post the traditional structured comment first
       await githubService.postStructuredReviewComment(owner, repo, pullNumber, analysis);
 
-      // Get PR head SHA for the new check run
-      const pr = await githubService.getPullRequestData(owner, repo, pullNumber);
-
       // Create the new interactive check run with buttons
       const interactiveCheckRun = await checkRunButtonService.createInteractiveCheckRun(
-        owner, repo, pullNumber, analysis, pr.pr.head.sha
+        owner, repo, pullNumber, analysis, headSha
       );
 
       // Update the initial check run to point to the interactive one
