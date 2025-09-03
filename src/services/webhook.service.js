@@ -89,7 +89,7 @@ class WebhookService {
         },
         actions: [{
           label: 'Start AI Review',
-          description: 'Analyze with SonarQube standards and create interactive comment buttons',
+          description: 'Trigger code analysis for this PR', // Shortened to fit character limit
           identifier: 'ai_review'
         }]
       });
@@ -430,7 +430,7 @@ class WebhookService {
 
       // Create the new interactive check run with buttons
       const interactiveCheckRun = await checkRunButtonService.createInteractiveCheckRun(
-        owner, repo, pullNumber, analysis, pr.pr.sourceBranch
+        owner, repo, pullNumber, analysis, pr.pr.head.sha
       );
 
       // Update the initial check run to point to the interactive one
@@ -608,7 +608,7 @@ class WebhookService {
 
   // Graceful shutdown
   async shutdown() {
-    logger.info('Shutting down webhook service...');
+    logger.info('Shutting down gracefully...');
     
     const maxWaitTime = 30000; // 30 seconds
     const startTime = Date.now();

@@ -2,7 +2,7 @@
 
 const githubService = require('./github.service');
 const logger = require('../utils/logger');
-const { generateTrackingId } = require('../utils/helpers');
+const { generateTrackingId, truncateText } = require('../utils/helpers');
 
 class CheckRunButtonService {
   constructor() {
@@ -69,12 +69,14 @@ class CheckRunButtonService {
   generateCheckRunActions(postableFindings) {
     const actions = [];
     const maxButtons = 5; // GitHub has a limit of 50 actions per check run
+    const maxDescLength = 40; // GitHub API limit
 
     // Individual buttons for each postable finding
     postableFindings.slice(0, maxButtons).forEach((finding, index) => {
+      const truncatedFile = truncateText(finding.file, maxDescLength - 10);
       actions.push({
         label: `Comment #${index + 1}`,
-        description: `${finding.severity}: ${finding.file}:${finding.line}`,
+        description: `${finding.severity}: ${truncatedFile}`,
         identifier: `comment-finding-${index}`
       });
     });
@@ -350,7 +352,6 @@ class CheckRunButtonService {
     
     if (errorCount > 0) {
       summary += `Failed to post: ${errorCount} comments\n\n`;
-      summary += `**Errors:**\n`;
       errors.forEach(error => {
         summary += `• ${error}\n`;
       });
@@ -421,27 +422,29 @@ class CheckRunButtonService {
   generateUpdatedActions(postableFindings, buttonStates) {
     const actions = [];
     const maxButtons = 5;
+    const maxDescLength = 40;
 
     postableFindings.slice(0, maxButtons).forEach((finding, index) => {
       const actionId = `comment-finding-${index}`;
       const state = buttonStates[actionId];
+      const truncatedFile = truncateText(finding.file, maxDescLength - 10);
       
       if (state === 'completed') {
         actions.push({
           label: `✓ Posted #${index + 1}`,
-          description: `Comment posted to ${finding.file}:${finding.line}`,
+          description: `Comment posted to ${truncatedFile}`,
           identifier: `completed-${index}` // Different identifier to prevent re-clicking
         });
       } else if (state === 'error') {
         actions.push({
           label: `✗ Error #${index + 1}`,
-          description: `Failed to post to ${finding.file}:${finding.line}`,
+          description: `Failed to post to ${truncatedFile}`,
           identifier: actionId // Keep same ID to allow retry
         });
       } else {
         actions.push({
           label: `Comment #${index + 1}`,
-          description: `${finding.severity}: ${finding.file}:${finding.line}`,
+          description: `${finding.severity}: ${truncatedFile}`,
           identifier: actionId
         });
       }
