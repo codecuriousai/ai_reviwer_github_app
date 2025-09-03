@@ -255,42 +255,35 @@ class CheckRunButtonService {
       trackingId: checkRunData.trackingId
     });
 
-    // NEW: Get the diff hunk for the file and line number
     const diffHunk = await githubService.findDiffHunk(owner, repo, pullNumber, finding.file, finding.line);
     
     if (!diffHunk) {
-      // This is the key fix: if we can't find a valid diff hunk, throw an error
       const errorMessage = `Could not find a valid diff hunk for file "${finding.file}" at line "${finding.line}". This file/line may not be part of the changes in this pull request.`;
       logger.error(errorMessage);
       throw new Error(errorMessage);
     }
     
-    // Create inline comment body
     const commentBody = this.formatInlineComment(finding, checkRunData.trackingId);
 
-    // Post as inline review comment
-    const { data: comment } = await githubService.octokit.rest.pulls.createReviewComment({
-      owner,
-      repo,
-      pull_number: pullNumber,
-      body: commentBody,
-      commit_id: headSha,
+    // Post as a review with a single comment
+    const commentsToPost = [{
       path: finding.file,
       line: finding.line,
-      diff_hunk: diffHunk,
-    });
+      body: commentBody,
+    }];
+
+    await githubService.postReviewComments(owner, repo, pullNumber, headSha, commentsToPost);
 
     // Mark finding as posted
     finding.posted = true;
-    finding.commentId = comment.id;
+    // We don't get a comment ID back easily from the review API for a single comment, so this is left out for now.
+    // finding.commentId = comment.id;
 
-    logger.info(`Individual finding posted as comment ${comment.id}`, {
+    logger.info(`Individual finding posted as part of a review`, {
       file: finding.file,
       line: finding.line,
       pullNumber
     });
-
-    return comment;
   }
 
   // Post all findings as inline comments
@@ -300,8 +293,8 @@ class CheckRunButtonService {
       trackingId: checkRunData.trackingId
     });
 
+    const commentsToPost = [];
     let successCount = 0;
-    let errorCount = 0;
     const errors = [];
 
     for (const finding of postableFindings) {
@@ -319,43 +312,43 @@ class CheckRunButtonService {
         
         const commentBody = this.formatInlineComment(finding, checkRunData.trackingId);
 
-        const { data: comment } = await githubService.octokit.rest.pulls.createReviewComment({
-          owner,
-          repo,
-          pull_number: pullNumber,
-          body: commentBody,
-          commit_id: headSha,
+        commentsToPost.push({
           path: finding.file,
           line: finding.line,
-          diff_hunk: diffHunk,
+          body: commentBody,
         });
 
         finding.posted = true;
-        finding.commentId = comment.id;
         successCount++;
 
-        // Small delay to avoid rate limiting
-        await new Promise(resolve => setTimeout(resolve, 200));
-
       } catch (error) {
-        logger.error(`Error posting comment for ${finding.file}:${finding.line}:`, error);
-        errorCount++;
+        logger.error(`Error processing comment for ${finding.file}:${finding.line}:`, error);
         errors.push(`${finding.file}:${finding.line} - ${error.message}`);
+      }
+    }
+    
+    // Post all comments in a single review
+    if (commentsToPost.length > 0) {
+      try {
+        await githubService.postReviewComments(owner, repo, pullNumber, headSha, commentsToPost);
+      } catch (bulkPostError) {
+        logger.error('Error in bulk posting to GitHub:', bulkPostError);
+        errors.push(`Bulk posting failed: ${bulkPostError.message}`);
       }
     }
 
     // Post summary comment
-    const summaryMessage = this.formatBulkPostSummary(successCount, errorCount, errors, checkRunData.trackingId);
+    const summaryMessage = this.formatBulkPostSummary(successCount, errors.length, errors, checkRunData.trackingId);
     await githubService.postGeneralComment(owner, repo, pullNumber, summaryMessage);
 
     logger.info(`Bulk posting completed`, {
       pullNumber,
       successCount,
-      errorCount,
+      errorCount: errors.length,
       trackingId: checkRunData.trackingId
     });
 
-    return { successCount, errorCount, errors };
+    return { successCount, errorCount: errors.length, errors };
   }
 
   // Format inline comment for a finding
@@ -453,7 +446,32 @@ class CheckRunButtonService {
     const maxButtons = 2;
     const maxDescLength = 40;
 
-    postableFindings.slice(0, maxButtons).forEach((finding, index) => {
+    // Logic for individual buttons vs. "Post All"
+    if (postableFindings.length > 2) {
+      const allState = buttonStates['post-all'];
+      if (allState === 'completed') {
+        actions.push({
+          label: `✓ All Comments Posted`,
+          description: `All ${postableFindings.length} comments have been posted`,
+          identifier: 'all-completed'
+        });
+      } else if (allState === 'error') {
+        actions.push({
+          label: `Post All Comments (Retry)`,
+          description: `Retry posting all findings`,
+          identifier: 'post-all'
+        });
+      } else {
+        actions.push({
+          label: `Post All Comments`,
+          description: `Post all ${postableFindings.length} findings`,
+          identifier: 'post-all'
+        });
+      }
+      return actions;
+    }
+
+    postableFindings.forEach((finding, index) => {
       const actionId = `comment-finding-${index}`;
       const state = buttonStates[actionId];
       const truncatedFile = truncateText(finding.file, maxDescLength - 10);
@@ -462,13 +480,13 @@ class CheckRunButtonService {
         actions.push({
           label: `✓ Posted #${index + 1}`,
           description: `Comment posted to ${truncatedFile}`,
-          identifier: `completed-${index}` // Different identifier to prevent re-clicking
+          identifier: `completed-${index}`
         });
       } else if (state === 'error') {
         actions.push({
           label: `✗ Error #${index + 1}`,
           description: `Failed to post to ${truncatedFile}`,
-          identifier: actionId // Keep same ID to allow retry
+          identifier: actionId
         });
       } else {
         actions.push({
@@ -479,7 +497,6 @@ class CheckRunButtonService {
       }
     });
 
-    // Post all button
     const allState = buttonStates['post-all'];
     if (postableFindings.length > 0) {
       if (allState === 'completed') {
@@ -530,7 +547,7 @@ class CheckRunButtonService {
       finding.file !== 'AI_ANALYSIS_ERROR' &&
       finding.line && 
       finding.line > 0 &&
-      !finding.posted // Not already posted
+      !finding.posted
     );
   }
 

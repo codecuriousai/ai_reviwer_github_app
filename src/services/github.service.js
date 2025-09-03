@@ -332,6 +332,38 @@ class GitHubService {
       throw new Error(`Failed to fetch PR comments: ${error.message}`);
     }
   }
+  
+  // NEW: Post multiple comments in a single review
+  async postReviewComments(owner, repo, pullNumber, headSha, comments) {
+    try {
+      if (!Array.isArray(comments) || comments.length === 0) {
+        logger.info('No comments to post, skipping review creation.');
+        return;
+      }
+
+      logger.info(`Posting ${comments.length} review comments for ${owner}/${repo}#${pullNumber}`);
+      
+      const review = await this.octokit.rest.pulls.createReview({
+        owner,
+        repo,
+        pull_number: pullNumber,
+        commit_id: headSha,
+        event: 'COMMENT', // Use 'COMMENT' to submit without approving/requesting changes
+        comments: comments.map(comment => ({
+          path: comment.path,
+          line: comment.line,
+          body: comment.body,
+          // You may also want to include start_line/start_side for multi-line comments
+        })),
+      });
+
+      logger.info(`Review with comments posted successfully: ${review.data.id}`);
+      return review;
+    } catch (error) {
+      logger.error('Error posting review with comments:', error);
+      throw new Error(`Failed to post review with comments: ${error.message}`);
+    }
+  }
 
   // Filter files based on configuration
   filterFiles(files) {
