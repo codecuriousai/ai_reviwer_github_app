@@ -1,11 +1,11 @@
-// src/services/ai.service.js - Fixed JSON Parsing Issues and cleanedResponse Error
+// src/services/ai.service.js - Completely Fixed JSON Parsing with Proper Variable Scoping
 
 const OpenAI = require('openai');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const config = require('../config/config');
 const logger = require('../utils/logger');
 const { getCodeReviewPrompt } = require('../prompts/prompts');
-const { retryWithBackoff, sanitizeForAI, isValidJSON, cleanJSONResponse } = require('../utils/helpers');
+const { retryWithBackoff, sanitizeForAI, isValidJSON } = require('../utils/helpers');
 
 class AIService {
   constructor() {
@@ -41,66 +41,54 @@ class AIService {
     try {
       logger.info(`Starting AI analysis for PR #${prData.pr.number}`);
 
-      console.log('=== AI ANALYSIS INPUT DEBUG ===');
-      console.log('PR Data:', JSON.stringify({
-        pr: prData.pr,
-        fileCount: prData.files?.length || 0,
-        commentCount: existingComments?.length || 0
-      }, null, 2));
-      console.log('=== END INPUT DEBUG ===');
-
       // Prepare data for analysis
       const analysisData = this.prepareAnalysisData(prData, existingComments);
       const prompt = getCodeReviewPrompt(analysisData, existingComments);
       
       // Perform analysis with retry logic
-      const analysis = await retryWithBackoff(async () => {
-        if (this.provider === 'openai') {
-          return await this.analyzeWithOpenAI(prompt);
-        } else if (this.provider === 'gemini') {
-          return await this.analyzeWithGemini(prompt);
-        } else {
-          throw new Error(`Unsupported AI provider: ${this.provider}`);
-        }
-      });
-
-      console.log('=== RAW AI RESPONSE ===');
-      console.log('Response length:', analysis?.length || 0);
-      console.log('Raw response preview:', analysis?.substring(0, 300) || 'No response');
-      console.log('=== END RAW RESPONSE ===');
+      let rawResponse;
+      try {
+        rawResponse = await retryWithBackoff(async () => {
+          if (this.provider === 'openai') {
+            return await this.analyzeWithOpenAI(prompt);
+          } else if (this.provider === 'gemini') {
+            return await this.analyzeWithGemini(prompt);
+          } else {
+            throw new Error(`Unsupported AI provider: ${this.provider}`);
+          }
+        });
+      } catch (aiError) {
+        logger.error('AI provider error:', aiError);
+        return this.createErrorFallbackAnalysis(`AI Provider Error: ${aiError.message}`);
+      }
 
       // Validate and parse response
-      const parsedAnalysis = this.parseAnalysisResponse(analysis);
-      
-      console.log('=== PARSED ANALYSIS ===');
-      console.log('Parsed analysis keys:', Object.keys(parsedAnalysis));
-      console.log('Total issues:', parsedAnalysis?.automatedAnalysis?.totalIssues || 0);
-      console.log('=== END PARSED ANALYSIS ===');
+      let parsedAnalysis;
+      try {
+        parsedAnalysis = this.parseAnalysisResponse(rawResponse);
+      } catch (parseError) {
+        logger.error('Response parsing error:', parseError);
+        return this.createErrorFallbackAnalysis(`Parsing Error: ${parseError.message}`);
+      }
 
       // Enhance analysis with PR context
       const enhancedAnalysis = this.enhanceAnalysisWithContext(parsedAnalysis, prData, existingComments);
-      
-      console.log('=== FINAL ENHANCED ANALYSIS ===');
-      console.log('Enhanced analysis keys:', Object.keys(enhancedAnalysis));
-      console.log('Final total issues:', enhancedAnalysis?.automatedAnalysis?.totalIssues || 0);
-      console.log('=== END FINAL ANALYSIS ===');
 
       logger.info(`AI analysis completed. Found ${enhancedAnalysis.automatedAnalysis.totalIssues} issues`);
       return enhancedAnalysis;
+      
     } catch (error) {
-      logger.error('Error in AI analysis:', error);
-      throw new Error(`AI analysis failed: ${error.message}`);
+      logger.error('Critical error in AI analysis:', error);
+      return this.createErrorFallbackAnalysis(`Critical Error: ${error.message}`);
     }
   }
 
   // Prepare data for AI analysis with safe property access
   prepareAnalysisData(prData, existingComments) {
-    // Safely extract data with fallbacks
     const pr = prData.pr || prData || {};
     const files = prData.files || [];
     const diff = prData.diff || '';
     
-    // Sanitize and truncate data for AI processing
     const sanitizedDiff = diff ? sanitizeForAI(diff) : 'No diff available';
     const truncatedDiff = sanitizedDiff.length > 8000 
       ? sanitizedDiff.substring(0, 8000) + '\n... [truncated for analysis]' 
@@ -131,7 +119,7 @@ class AIService {
     };
   }
 
-  // OpenAI analysis - FIXED: Better JSON handling
+  // OpenAI analysis
   async analyzeWithOpenAI(prompt) {
     try {
       logger.info('Sending request to OpenAI');
@@ -141,13 +129,7 @@ class AIService {
         messages: [
           {
             role: 'system',
-            content: `You are an expert code reviewer specializing in SonarQube standards. 
-            
-CRITICAL: You MUST respond with ONLY valid JSON in the exact format specified. 
-Do not include any markdown formatting, code blocks, or additional text.
-Your response must start with { and end with }.
-            
-Focus on providing a comprehensive analysis in a single structured response.`,
+            content: `You are an expert code reviewer. You MUST respond with ONLY valid JSON in the exact format specified. Do not include markdown formatting or additional text.`,
           },
           {
             role: 'user',
@@ -156,45 +138,25 @@ Focus on providing a comprehensive analysis in a single structured response.`,
         ],
         max_tokens: config.ai.openai.maxTokens,
         temperature: config.ai.openai.temperature,
-        response_format: { type: 'json_object' }, // Force JSON response
+        response_format: { type: 'json_object' },
       });
 
       const content = response.choices[0].message.content.trim();
       logger.info(`OpenAI response received (${content.length} characters)`);
       
-      // Log first 200 chars for debugging
-      logger.debug('OpenAI response preview:', content.substring(0, 200));
-      
       return content;
     } catch (error) {
       logger.error('OpenAI API error:', error);
-      
-      if (error.status === 429) {
-        throw new Error('OpenAI rate limit exceeded. Please try again later.');
-      } else if (error.status === 401) {
-        throw new Error('Invalid OpenAI API key.');
-      } else if (error.status >= 500) {
-        throw new Error('OpenAI service unavailable. Please try again later.');
-      }
-      
-      throw new Error(`OpenAI analysis failed: ${error.message}`);
+      throw new Error(`OpenAI failed: ${error.message}`);
     }
   }
 
-  // Gemini analysis - FIXED: Better JSON handling
+  // Gemini analysis
   async analyzeWithGemini(prompt) {
     try {
       logger.info('Sending request to Gemini');
       
-      const enhancedPrompt = `${prompt}
-
-CRITICAL INSTRUCTIONS:
-- Respond ONLY with valid JSON
-- Do not include any markdown formatting (no \`\`\`json blocks)
-- Do not include any additional text before or after the JSON
-- Your response must start with { and end with }
-- Ensure all strings are properly escaped
-- Make sure all required fields are present`;
+      const enhancedPrompt = `${prompt}\n\nIMPORTANT: Respond ONLY with valid JSON. No markdown formatting.`;
       
       const result = await this.geminiModel.generateContent({
         contents: [{
@@ -208,110 +170,112 @@ CRITICAL INSTRUCTIONS:
       });
 
       const response = await result.response;
-      let content = response.text().trim();
+      const content = response.text().trim();
       
       logger.info(`Gemini response received (${content.length} characters)`);
-      logger.debug('Gemini response preview:', content.substring(0, 200));
       
       return content;
     } catch (error) {
       logger.error('Gemini API error:', error);
-      
-      if (error.message.includes('quota')) {
-        throw new Error('Gemini quota exceeded. Please try again later.');
-      } else if (error.message.includes('authentication')) {
-        throw new Error('Invalid Gemini API key.');
-      }
-      
-      throw new Error(`Gemini analysis failed: ${error.message}`);
+      throw new Error(`Gemini failed: ${error.message}`);
     }
   }
 
-  // FIXED: Enhanced JSON parsing with proper error handling and variable scoping
+  // COMPLETELY REWRITTEN: Safe JSON parsing with proper error handling
   parseAnalysisResponse(responseText) {
-    let cleanedResponse = responseText; // Define at function scope
+    // Initialize variables at the top to avoid scoping issues
+    let originalResponse = '';
+    let cleanedResponse = '';
+    let parseError = null;
     
     try {
-      logger.debug('Parsing AI response:', responseText?.substring(0, 300) || 'No response');
-      
+      // Validate input
       if (!responseText || typeof responseText !== 'string') {
-        throw new Error('Invalid response: empty or non-string response');
+        throw new Error('Invalid response: empty or non-string response received from AI');
       }
-      
-      // Clean response text
+
+      originalResponse = responseText;
       cleanedResponse = responseText.trim();
       
-      // Remove markdown code blocks if present
-      cleanedResponse = cleanedResponse.replace(/```json\s*/g, '').replace(/```\s*/g, '');
+      logger.debug('Starting to parse AI response', { 
+        originalLength: originalResponse.length,
+        preview: originalResponse.substring(0, 200)
+      });
+
+      // Step 1: Remove markdown formatting
+      cleanedResponse = cleanedResponse.replace(/```json\s*/g, '');
+      cleanedResponse = cleanedResponse.replace(/```\s*/g, '');
       
-      // Remove any text before the first {
+      // Step 2: Find JSON boundaries
       const firstBraceIndex = cleanedResponse.indexOf('{');
-      if (firstBraceIndex > 0) {
-        cleanedResponse = cleanedResponse.substring(firstBraceIndex);
-      }
-      
-      // Remove any text after the last }
       const lastBraceIndex = cleanedResponse.lastIndexOf('}');
-      if (lastBraceIndex >= 0 && lastBraceIndex < cleanedResponse.length - 1) {
-        cleanedResponse = cleanedResponse.substring(0, lastBraceIndex + 1);
+      
+      if (firstBraceIndex === -1 || lastBraceIndex === -1) {
+        throw new Error(`No valid JSON object found in response. First brace at: ${firstBraceIndex}, Last brace at: ${lastBraceIndex}`);
       }
       
-      // Additional cleaning for common issues
+      // Extract JSON portion
+      cleanedResponse = cleanedResponse.substring(firstBraceIndex, lastBraceIndex + 1);
+      
+      // Step 3: Clean common JSON issues
       cleanedResponse = cleanedResponse
-        .replace(/\n\s*\/\/.*/g, '') // Remove single-line comments
+        .replace(/\n\s*\/\/.*/g, '') // Remove comments
         .replace(/\/\*[\s\S]*?\*\//g, '') // Remove multi-line comments
-        .replace(/,\s*}/g, '}') // Remove trailing commas
-        .replace(/,\s*]/g, ']'); // Remove trailing commas in arrays
+        .replace(/,(\s*[}\]])/g, '$1'); // Remove trailing commas
       
-      // Validate JSON format
+      logger.debug('Cleaned response for parsing', { 
+        cleanedLength: cleanedResponse.length,
+        preview: cleanedResponse.substring(0, 200)
+      });
+
+      // Step 4: Validate JSON format
       if (!cleanedResponse.startsWith('{') || !cleanedResponse.endsWith('}')) {
-        throw new Error(`Response doesn't appear to be JSON object. Starts with: '${cleanedResponse.substring(0, 20)}', Ends with: '${cleanedResponse.slice(-20)}'`);
+        throw new Error(`Invalid JSON boundaries after cleaning. Starts: '${cleanedResponse.substring(0, 10)}', Ends: '${cleanedResponse.slice(-10)}'`);
       }
-      
-      // Test JSON validity
-      if (!isValidJSON(cleanedResponse)) {
-        throw new Error('Cleaned response is not valid JSON');
+
+      // Step 5: Parse JSON
+      let analysis;
+      try {
+        analysis = JSON.parse(cleanedResponse);
+      } catch (jsonError) {
+        throw new Error(`JSON.parse failed: ${jsonError.message}. Cleaned response: ${cleanedResponse.substring(0, 500)}`);
       }
+
+      // Step 6: Validate structure
+      this.validateAndNormalizeAnalysis(analysis);
       
-      const analysis = JSON.parse(cleanedResponse);
-      
-      // Validate required fields
-      this.validateAnalysisStructure(analysis);
-      
-      logger.info('Successfully parsed AI analysis response');
+      logger.info('Successfully parsed and validated AI analysis response');
       return analysis;
-      
-    } catch (parseError) {
-      logger.error('Error parsing AI response:', parseError);
-      logger.error('Raw response (first 500 chars):', responseText?.substring(0, 500) || 'undefined');
-      logger.error('Cleaned response (first 500 chars):', cleanedResponse?.substring(0, 500) || 'undefined');
-      
-      // Return fallback structure with specific error details
-      return this.getFallbackAnalysis(`JSON parsing failed: ${parseError.message}. Raw response length: ${responseText?.length || 0}. Cleaned response length: ${cleanedResponse?.length || 0}`);
+
+    } catch (error) {
+      parseError = error;
+      logger.error('Failed to parse AI response', {
+        error: error.message,
+        originalResponseLength: originalResponse.length,
+        cleanedResponseLength: cleanedResponse.length,
+        originalPreview: originalResponse.substring(0, 300),
+        cleanedPreview: cleanedResponse.substring(0, 300)
+      });
+
+      // Return fallback analysis with detailed error info
+      return this.createParsingErrorFallback(error.message, originalResponse, cleanedResponse);
     }
   }
 
-  // FIXED: More robust structure validation
-  validateAnalysisStructure(analysis) {
-    const requiredFields = {
-      'prInfo': 'object',
-      'automatedAnalysis': 'object',
-      'humanReviewAnalysis': 'object',
-      'reviewAssessment': 'string',
-      'recommendation': 'string'
-    };
-    
+  // Validate and normalize analysis structure
+  validateAndNormalizeAnalysis(analysis) {
     // Check required top-level fields
-    for (const [field, expectedType] of Object.entries(requiredFields)) {
+    const requiredFields = ['prInfo', 'automatedAnalysis', 'humanReviewAnalysis', 'reviewAssessment', 'recommendation'];
+    
+    for (const field of requiredFields) {
       if (!analysis[field]) {
-        throw new Error(`Missing required field: ${field}`);
-      }
-      if (typeof analysis[field] !== expectedType) {
-        throw new Error(`Field '${field}' should be ${expectedType}, got ${typeof analysis[field]}`);
+        // Create default structure if missing
+        analysis[field] = this.getDefaultFieldValue(field);
+        logger.warn(`Missing required field '${field}', using default value`);
       }
     }
-    
-    // Validate nested structures with defaults
+
+    // Normalize automatedAnalysis
     if (!analysis.automatedAnalysis.severityBreakdown) {
       analysis.automatedAnalysis.severityBreakdown = {
         blocker: 0, critical: 0, major: 0, minor: 0, info: 0
@@ -324,96 +288,120 @@ CRITICAL INSTRUCTIONS:
       };
     }
 
+    // Normalize detailedFindings
     if (!Array.isArray(analysis.detailedFindings)) {
       analysis.detailedFindings = [];
     }
 
-    // FIXED: Normalize detailedFindings properties
-    if (analysis.detailedFindings && analysis.detailedFindings.length > 0) {
-      analysis.detailedFindings = analysis.detailedFindings.map(finding => {
-        // Console log each finding for debugging
-        console.log('Raw finding from AI:', JSON.stringify(finding, null, 2));
-        
-        // Normalize property names - AI might use different names
-        const normalizedFinding = {
-          file: finding.file || finding.filename || finding.fileName || 'unknown-file',
-          line: finding.line || finding.lineNumber || finding.lineNum || 1,
-          issue: finding.issue || finding.description || finding.message || finding.title || 'No description',
-          severity: finding.severity || finding.level || 'INFO',
-          category: finding.category || finding.type || finding.kind || 'CODE_SMELL',
-          suggestion: finding.suggestion || finding.fix || finding.recommendation || finding.solution || 'No suggestion provided'
-        };
-        
-        // Ensure severity is uppercase and valid
-        normalizedFinding.severity = normalizedFinding.severity.toString().toUpperCase();
-        if (!['BLOCKER', 'CRITICAL', 'MAJOR', 'MINOR', 'INFO'].includes(normalizedFinding.severity)) {
-          normalizedFinding.severity = 'INFO';
-        }
-        
-        // Ensure category is uppercase and valid
-        normalizedFinding.category = normalizedFinding.category.toString().toUpperCase();
-        if (!['BUG', 'VULNERABILITY', 'SECURITY_HOTSPOT', 'CODE_SMELL'].includes(normalizedFinding.category)) {
-          normalizedFinding.category = 'CODE_SMELL';
-        }
-        
-        console.log('Normalized finding:', JSON.stringify(normalizedFinding, null, 2));
-        return normalizedFinding;
-      });
-    }
+    // Normalize each finding
+    analysis.detailedFindings = analysis.detailedFindings.map((finding, index) => {
+      return {
+        file: String(finding.file || finding.filename || `unknown-file-${index}`),
+        line: Number(finding.line || finding.lineNumber || 1),
+        issue: String(finding.issue || finding.description || finding.message || 'No description provided'),
+        severity: this.normalizeSeverity(finding.severity || finding.level),
+        category: this.normalizeCategory(finding.category || finding.type),
+        suggestion: String(finding.suggestion || finding.fix || finding.recommendation || 'No suggestion provided')
+      };
+    });
 
-    // Ensure numeric fields are numbers
+    // Ensure numeric fields
     analysis.automatedAnalysis.totalIssues = Number(analysis.automatedAnalysis.totalIssues) || 0;
     analysis.automatedAnalysis.technicalDebtMinutes = Number(analysis.automatedAnalysis.technicalDebtMinutes) || 0;
 
-    // Validate review assessment options
+    // Validate review assessment
     const validAssessments = ['PROPERLY REVIEWED', 'NOT PROPERLY REVIEWED', 'REVIEW REQUIRED'];
     if (!validAssessments.includes(analysis.reviewAssessment)) {
-      logger.warn(`Invalid reviewAssessment: ${analysis.reviewAssessment}, defaulting to REVIEW REQUIRED`);
       analysis.reviewAssessment = 'REVIEW REQUIRED';
     }
-
-    logger.debug('Analysis structure validation passed');
   }
 
-  // Enhance analysis with PR context
-  enhanceAnalysisWithContext(analysis, prData, existingComments) {
-    // Ensure prInfo is populated with actual data
-    analysis.prInfo = {
-      prId: prData.pr.number,
-      title: prData.pr.title,
-      repository: prData.pr.repository,
-      author: prData.pr.author,
-      reviewers: prData.reviewers || [],
-      url: prData.pr.url,
-    };
-
-    // Enhance human review analysis with actual comment data
-    analysis.humanReviewAnalysis = {
-      reviewComments: existingComments.length,
-      issuesAddressedByReviewers: this.countIssuesInComments(existingComments),
-      securityIssuesCaught: this.countSecurityIssuesInComments(existingComments),
-      codeQualityIssuesCaught: this.countCodeQualityIssuesInComments(existingComments),
-    };
-
-    // Set review assessment based on analysis
-    if (existingComments.length === 0) {
-      analysis.reviewAssessment = 'REVIEW REQUIRED';
-    } else if (analysis.automatedAnalysis.totalIssues > analysis.humanReviewAnalysis.issuesAddressedByReviewers) {
-      analysis.reviewAssessment = 'NOT PROPERLY REVIEWED';
-    } else {
-      analysis.reviewAssessment = 'PROPERLY REVIEWED';
-    }
-
-    return analysis;
-  }
-
-  // FIXED: Enhanced fallback analysis with better error context
-  getFallbackAnalysis(errorMessage) {
-    logger.info('Creating fallback analysis due to parsing error');
-    
-    return {
+  // Get default value for missing fields
+  getDefaultFieldValue(fieldName) {
+    const defaults = {
       prInfo: {
         prId: 'unknown',
+        title: 'Unknown',
+        repository: 'unknown/unknown',
+        author: 'unknown',
+        reviewers: [],
+        url: '#'
+      },
+      automatedAnalysis: {
+        totalIssues: 0,
+        severityBreakdown: { blocker: 0, critical: 0, major: 0, minor: 0, info: 0 },
+        categories: { bugs: 0, vulnerabilities: 0, securityHotspots: 0, codeSmells: 0 },
+        technicalDebtMinutes: 0
+      },
+      humanReviewAnalysis: {
+        reviewComments: 0,
+        issuesAddressedByReviewers: 0,
+        securityIssuesCaught: 0,
+        codeQualityIssuesCaught: 0
+      },
+      reviewAssessment: 'REVIEW REQUIRED',
+      recommendation: 'Unable to generate recommendation due to parsing issues',
+      detailedFindings: []
+    };
+
+    return defaults[fieldName] || null;
+  }
+
+  // Normalize severity values
+  normalizeSeverity(severity) {
+    const severityStr = String(severity || 'INFO').toUpperCase();
+    const validSeverities = ['BLOCKER', 'CRITICAL', 'MAJOR', 'MINOR', 'INFO'];
+    return validSeverities.includes(severityStr) ? severityStr : 'INFO';
+  }
+
+  // Normalize category values
+  normalizeCategory(category) {
+    const categoryStr = String(category || 'CODE_SMELL').toUpperCase();
+    const validCategories = ['BUG', 'VULNERABILITY', 'SECURITY_HOTSPOT', 'CODE_SMELL'];
+    return validCategories.includes(categoryStr) ? categoryStr : 'CODE_SMELL';
+  }
+
+  // Create parsing error fallback
+  createParsingErrorFallback(errorMessage, originalResponse, cleanedResponse) {
+    return {
+      prInfo: {
+        prId: 'parsing-error',
+        title: 'AI Response Parsing Error',
+        repository: 'unknown/unknown',
+        author: 'unknown',
+        reviewers: [],
+        url: '#'
+      },
+      automatedAnalysis: {
+        totalIssues: 1,
+        severityBreakdown: { blocker: 0, critical: 0, major: 1, minor: 0, info: 0 },
+        categories: { bugs: 0, vulnerabilities: 0, securityHotspots: 0, codeSmells: 1 },
+        technicalDebtMinutes: 15
+      },
+      humanReviewAnalysis: {
+        reviewComments: 0,
+        issuesAddressedByReviewers: 0,
+        securityIssuesCaught: 0,
+        codeQualityIssuesCaught: 0
+      },
+      reviewAssessment: 'REVIEW REQUIRED',
+      detailedFindings: [{
+        file: 'AI_PARSING_ERROR',
+        line: 1,
+        issue: `Failed to parse AI response: ${errorMessage}`,
+        severity: 'MAJOR',
+        category: 'CODE_SMELL',
+        suggestion: `Check AI service configuration. Original response length: ${originalResponse.length}, Cleaned length: ${cleanedResponse.length}. Review server logs for full details.`
+      }],
+      recommendation: `AI response parsing failed: ${errorMessage}. Please check AI provider configuration, API keys, and network connectivity. See server logs for detailed debugging information.`
+    };
+  }
+
+  // Create general error fallback
+  createErrorFallbackAnalysis(errorMessage) {
+    return {
+      prInfo: {
+        prId: 'error',
         title: 'AI Analysis Error',
         repository: 'unknown/unknown',
         author: 'unknown',
@@ -422,19 +410,8 @@ CRITICAL INSTRUCTIONS:
       },
       automatedAnalysis: {
         totalIssues: 1,
-        severityBreakdown: {
-          blocker: 0,
-          critical: 0,
-          major: 1,
-          minor: 0,
-          info: 0
-        },
-        categories: {
-          bugs: 0,
-          vulnerabilities: 0,
-          securityHotspots: 0,
-          codeSmells: 1
-        },
+        severityBreakdown: { blocker: 0, critical: 1, major: 0, minor: 0, info: 0 },
+        categories: { bugs: 0, vulnerabilities: 0, securityHotspots: 0, codeSmells: 1 },
         technicalDebtMinutes: 30
       },
       humanReviewAnalysis: {
@@ -445,26 +422,49 @@ CRITICAL INSTRUCTIONS:
       },
       reviewAssessment: 'REVIEW REQUIRED',
       detailedFindings: [{
-        file: 'AI_ANALYSIS_ERROR',
+        file: 'AI_SERVICE_ERROR',
         line: 1,
-        issue: `AI analysis parsing error: ${errorMessage}`,
-        severity: 'MAJOR',
+        issue: `AI analysis service error: ${errorMessage}`,
+        severity: 'CRITICAL',
         category: 'CODE_SMELL',
-        suggestion: 'Check AI service configuration, API keys, and ensure the AI model is responding with valid JSON format. Review server logs for detailed error information.'
+        suggestion: 'Check AI service configuration, API keys, and ensure the service is available. Review application logs for detailed error information.'
       }],
-      recommendation: `AI analysis configuration needs attention. Error: ${errorMessage}. Please verify API keys, check network connectivity, and ensure the AI service is responding with properly formatted JSON.`
+      recommendation: `AI analysis encountered an error: ${errorMessage}. Please verify configuration and try again.`
     };
+  }
+
+  // Enhance analysis with PR context
+  enhanceAnalysisWithContext(analysis, prData, existingComments) {
+    // Safely enhance prInfo
+    if (analysis.prInfo && prData.pr) {
+      analysis.prInfo.prId = prData.pr.number;
+      analysis.prInfo.title = prData.pr.title;
+      analysis.prInfo.repository = prData.pr.repository;
+      analysis.prInfo.author = prData.pr.author;
+      analysis.prInfo.url = prData.pr.url;
+      analysis.prInfo.reviewers = prData.reviewers || [];
+    }
+
+    // Enhance human review analysis
+    if (analysis.humanReviewAnalysis) {
+      analysis.humanReviewAnalysis.reviewComments = existingComments.length;
+      analysis.humanReviewAnalysis.issuesAddressedByReviewers = this.countIssuesInComments(existingComments);
+      analysis.humanReviewAnalysis.securityIssuesCaught = this.countSecurityIssuesInComments(existingComments);
+      analysis.humanReviewAnalysis.codeQualityIssuesCaught = this.countCodeQualityIssuesInComments(existingComments);
+    }
+
+    return analysis;
   }
 
   // Check AI service health
   async checkHealth() {
     try {
-      const testPrompt = `Respond with this exact JSON and nothing else: {"status": "OK", "test": true}`;
+      const testPrompt = `{"status": "OK", "test": true}`;
       
-      if (this.provider === 'openai') {
+      if (this.provider === 'openai' && this.openai) {
         const response = await this.openai.chat.completions.create({
           model: config.ai.openai.model,
-          messages: [{ role: 'user', content: testPrompt }],
+          messages: [{ role: 'user', content: `Return exactly: ${testPrompt}` }],
           max_tokens: 50,
           response_format: { type: 'json_object' },
         });
@@ -473,8 +473,8 @@ CRITICAL INSTRUCTIONS:
         const parsed = JSON.parse(content);
         return parsed.status === 'OK';
         
-      } else if (this.provider === 'gemini') {
-        const result = await this.geminiModel.generateContent(testPrompt);
+      } else if (this.provider === 'gemini' && this.geminiModel) {
+        const result = await this.geminiModel.generateContent(`Return exactly: ${testPrompt}`);
         const response = await result.response;
         const content = response.text().trim();
         const parsed = JSON.parse(content);
@@ -488,60 +488,59 @@ CRITICAL INSTRUCTIONS:
     }
   }
 
-  // Count issues mentioned in human review comments
+  // Helper methods for comment analysis
   countIssuesInComments(comments) {
-    const issueKeywords = [
-      'bug', 'issue', 'problem', 'error', 'fix', 'wrong', 'incorrect', 
-      'security', 'vulnerability', 'risk', 'unsafe', 'dangerous'
-    ];
+    if (!Array.isArray(comments)) return 0;
     
-    let issueCount = 0;
+    const issueKeywords = ['bug', 'issue', 'problem', 'error', 'fix', 'wrong'];
+    let count = 0;
+    
     comments.forEach(comment => {
-      const body = comment.body.toLowerCase();
-      issueKeywords.forEach(keyword => {
-        if (body.includes(keyword)) {
-          issueCount++;
+      if (comment.body) {
+        const body = comment.body.toLowerCase();
+        if (issueKeywords.some(keyword => body.includes(keyword))) {
+          count++;
         }
-      });
+      }
     });
     
-    return Math.min(issueCount, comments.length); // Cap at number of comments
+    return count;
   }
 
-  // Count security issues in comments
   countSecurityIssuesInComments(comments) {
-    const securityKeywords = [
-      'security', 'vulnerability', 'exploit', 'injection', 'xss', 'csrf',
-      'authentication', 'authorization', 'encryption', 'password', 'token'
-    ];
+    if (!Array.isArray(comments)) return 0;
     
-    let securityCount = 0;
+    const securityKeywords = ['security', 'vulnerability', 'exploit', 'injection'];
+    let count = 0;
+    
     comments.forEach(comment => {
-      const body = comment.body.toLowerCase();
-      if (securityKeywords.some(keyword => body.includes(keyword))) {
-        securityCount++;
+      if (comment.body) {
+        const body = comment.body.toLowerCase();
+        if (securityKeywords.some(keyword => body.includes(keyword))) {
+          count++;
+        }
       }
     });
     
-    return securityCount;
+    return count;
   }
 
-  // Count code quality issues in comments
   countCodeQualityIssuesInComments(comments) {
-    const qualityKeywords = [
-      'refactor', 'clean', 'readable', 'maintainable', 'complex', 'duplicate',
-      'naming', 'structure', 'design', 'pattern', 'smell'
-    ];
+    if (!Array.isArray(comments)) return 0;
     
-    let qualityCount = 0;
+    const qualityKeywords = ['refactor', 'clean', 'maintainable', 'complex'];
+    let count = 0;
+    
     comments.forEach(comment => {
-      const body = comment.body.toLowerCase();
-      if (qualityKeywords.some(keyword => body.includes(keyword))) {
-        qualityCount++;
+      if (comment.body) {
+        const body = comment.body.toLowerCase();
+        if (qualityKeywords.some(keyword => body.includes(keyword))) {
+          count++;
+        }
       }
     });
     
-    return qualityCount;
+    return count;
   }
 }
 
