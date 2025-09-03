@@ -74,21 +74,11 @@ app.get('/health', async (req, res) => {
 });
 
 // Webhook endpoint
-app.post('/webhook', async (req, res) => {
+app.post('/webhook', authMiddleware.validateWebhookHeaders, async (req, res) => {
   try {
     const signature = req.get('X-Hub-Signature-256');
     const event = req.get('X-GitHub-Event');
     const delivery = req.get('X-GitHub-Delivery');
-
-    // Validate required headers
-    if (!signature || !event) {
-      logger.warn('Missing required GitHub webhook headers', { 
-        hasSignature: !!signature,
-        hasEvent: !!event,
-        hasDelivery: !!delivery 
-      });
-      return res.status(400).json({ error: 'Missing required headers' });
-    }
 
     logger.info(`Received webhook: ${event}`, { delivery });
 
@@ -375,8 +365,8 @@ app.post('/debug/ai-test', async (req, res) => {
         changes: 10
       }],
       diff: `+function testFunction() {
-+  var password = "hardcoded123";
-+  console.log(password);
++  var password = "hardcoded123";
++  console.log(password);
 +}`,
       comments: []
     };

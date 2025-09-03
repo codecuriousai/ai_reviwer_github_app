@@ -426,15 +426,11 @@ class WebhookService {
       await githubService.postStructuredReviewComment(owner, repo, pullNumber, analysis);
 
       // Get PR head SHA for the new check run
-      const { data: pr } = await githubService.octokit.rest.pulls.get({
-        owner,
-        repo,
-        pull_number: pullNumber,
-      });
+      const pr = await githubService.getPullRequestData(owner, repo, pullNumber);
 
       // Create the new interactive check run with buttons
       const interactiveCheckRun = await checkRunButtonService.createInteractiveCheckRun(
-        owner, repo, pullNumber, analysis, pr.head.sha
+        owner, repo, pullNumber, analysis, pr.pr.sourceBranch
       );
 
       // Update the initial check run to point to the interactive one

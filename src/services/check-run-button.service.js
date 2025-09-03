@@ -7,7 +7,6 @@ const { generateTrackingId } = require('../utils/helpers');
 class CheckRunButtonService {
   constructor() {
     this.activeCheckRuns = new Map(); // Store active check runs with button data
-    this.pendingActions = new Map(); // Track pending button actions
   }
 
   // Create enhanced check run with interactive buttons for each finding
@@ -32,7 +31,7 @@ class CheckRunButtonService {
           summary: this.generateInteractiveSummary(analysis, postableFindings),
           text: this.generateDetailedOutput(analysis, postableFindings, trackingId)
         },
-        actions: this.generateCheckRunActions(postableFindings, trackingId)
+        actions: this.generateCheckRunActions(postableFindings)
       };
 
       const checkRun = await githubService.createCheckRun(owner, repo, checkRunData);
@@ -42,12 +41,13 @@ class CheckRunButtonService {
         owner,
         repo,
         pullNumber,
+        headSha,
         trackingId,
         analysis,
         postableFindings,
         createdAt: Date.now(),
         buttonStates: postableFindings.reduce((acc, finding, index) => {
-          acc[`post-finding-${index}`] = 'ready';
+          acc[`comment-finding-${index}`] = 'ready';
           return acc;
         }, { 'post-all': 'ready' })
       });
@@ -66,20 +66,20 @@ class CheckRunButtonService {
   }
 
   // Generate actions (buttons) for the check run
-  generateCheckRunActions(postableFindings, trackingId) {
+  generateCheckRunActions(postableFindings) {
     const actions = [];
+    const maxButtons = 5; // GitHub has a limit of 50 actions per check run
 
     // Individual buttons for each postable finding
-    postableFindings.forEach((finding, index) => {
-      const severityColor = this.getSeverityColor(finding.severity);
+    postableFindings.slice(0, maxButtons).forEach((finding, index) => {
       actions.push({
         label: `Comment #${index + 1}`,
         description: `${finding.severity}: ${finding.file}:${finding.line}`,
-        identifier: `post-finding-${index}`
+        identifier: `comment-finding-${index}`
       });
     });
 
-    // Post all button if there are multiple findings
+    // Post all button if there are multiple findings or more than maxButtons
     if (postableFindings.length > 1) {
       actions.push({
         label: `Post All Comments (${postableFindings.length})`,
@@ -104,7 +104,7 @@ class CheckRunButtonService {
       summary += `**Interactive Comments Available:** ${postableFindings.length} findings can be posted as inline comments\n`;
       summary += `Click the buttons below to post individual or all findings directly to the code.\n\n`;
     } else {
-      summary += `No issues found that can be posted as inline comments.\n`;
+      summary += `No new issues found that can be posted as inline comments.\n`;
     }
     
     summary += `See detailed analysis in PR comments.`;
@@ -149,7 +149,7 @@ class CheckRunButtonService {
         output += `Use "Post All Comments" to post all ${postableFindings.length} findings at once.\n\n`;
       }
     } else {
-      output += `### No Interactive Comments\n`;
+      output += `### No New Interactive Comments\n`;
       output += `All findings are either general issues or have already been addressed by reviewers.\n\n`;
     }
     
@@ -185,32 +185,34 @@ class CheckRunButtonService {
       return true;
     }
 
-    const { owner, repo, pullNumber, postableFindings, buttonStates } = checkRunData;
+    const { owner, repo, pullNumber, headSha, postableFindings, buttonStates } = checkRunData;
 
     try {
       // Update button state to processing
-      buttonStates[actionId] = 'processing';
+      buttonStates[actionId] = 'in_progress';
       await this.updateCheckRunProgress(repository, checkRunId, checkRunData, actionId);
 
       if (actionId === 'post-all') {
         // Post all comments
-        await this.postAllFindings(owner, repo, pullNumber, postableFindings, checkRunData);
+        await this.postAllFindings(owner, repo, pullNumber, headSha, postableFindings, checkRunData);
         
         // Update all button states
         Object.keys(buttonStates).forEach(key => {
-          buttonStates[key] = 'completed';
+          if (buttonStates[key] === 'in_progress') {
+            buttonStates[key] = 'completed';
+          }
         });
         
-      } else if (actionId.startsWith('post-finding-')) {
+      } else if (actionId.startsWith('comment-finding-')) {
         // Post individual comment
-        const findingIndex = parseInt(actionId.replace('post-finding-', ''));
+        const findingIndex = parseInt(actionId.replace('comment-finding-', ''));
         const finding = postableFindings[findingIndex];
         
         if (!finding) {
           throw new Error(`Finding ${findingIndex} not found`);
         }
 
-        await this.postIndividualFinding(owner, repo, pullNumber, finding, checkRunData);
+        await this.postIndividualFinding(owner, repo, pullNumber, headSha, finding, checkRunData);
         
         // Update button state
         buttonStates[actionId] = 'completed';
@@ -234,17 +236,10 @@ class CheckRunButtonService {
   }
 
   // Post individual finding as inline comment
-  async postIndividualFinding(owner, repo, pullNumber, finding, checkRunData) {
+  async postIndividualFinding(owner, repo, pullNumber, headSha, finding, checkRunData) {
     logger.info(`Posting individual finding for ${finding.file}:${finding.line}`, {
       pullNumber,
       trackingId: checkRunData.trackingId
-    });
-
-    // Get PR commit SHA
-    const { data: pr } = await githubService.octokit.rest.pulls.get({
-      owner,
-      repo,
-      pull_number: pullNumber,
     });
 
     // Create inline comment body
@@ -256,7 +251,7 @@ class CheckRunButtonService {
       repo,
       pull_number: pullNumber,
       body: commentBody,
-      commit_id: pr.head.sha,
+      commit_id: headSha,
       path: finding.file,
       line: finding.line,
     });
@@ -275,17 +270,10 @@ class CheckRunButtonService {
   }
 
   // Post all findings as inline comments
-  async postAllFindings(owner, repo, pullNumber, postableFindings, checkRunData) {
+  async postAllFindings(owner, repo, pullNumber, headSha, postableFindings, checkRunData) {
     logger.info(`Posting all findings for PR #${pullNumber}`, {
       count: postableFindings.length,
       trackingId: checkRunData.trackingId
-    });
-
-    // Get PR commit SHA
-    const { data: pr } = await githubService.octokit.rest.pulls.get({
-      owner,
-      repo,
-      pull_number: pullNumber,
     });
 
     let successCount = 0;
@@ -306,7 +294,7 @@ class CheckRunButtonService {
           repo,
           pull_number: pullNumber,
           body: commentBody,
-          commit_id: pr.head.sha,
+          commit_id: headSha,
           path: finding.file,
           line: finding.line,
         });
@@ -383,7 +371,7 @@ class CheckRunButtonService {
     if (actionId === 'post-all') {
       progressMessage = `Posting all ${postableFindings.length} findings as inline comments...`;
     } else {
-      const findingIndex = parseInt(actionId.replace('post-finding-', ''));
+      const findingIndex = parseInt(actionId.replace('comment-finding-', ''));
       const finding = postableFindings[findingIndex];
       progressMessage = `Posting comment for ${finding.file}:${finding.line}...`;
     }
@@ -409,7 +397,7 @@ class CheckRunButtonService {
     if (actionId === 'post-all') {
       completionMessage = `All ${postableFindings.length} findings have been posted as inline comments.`;
     } else {
-      const findingIndex = parseInt(actionId.replace('post-finding-', ''));
+      const findingIndex = parseInt(actionId.replace('comment-finding-', ''));
       const finding = postableFindings[findingIndex];
       completionMessage = `Comment posted for ${finding.file}:${finding.line}. ${completedActions}/${totalActions} actions completed.`;
     }
@@ -432,9 +420,10 @@ class CheckRunButtonService {
   // Generate updated actions reflecting current button states
   generateUpdatedActions(postableFindings, buttonStates) {
     const actions = [];
+    const maxButtons = 5;
 
-    postableFindings.forEach((finding, index) => {
-      const actionId = `post-finding-${index}`;
+    postableFindings.slice(0, maxButtons).forEach((finding, index) => {
+      const actionId = `comment-finding-${index}`;
       const state = buttonStates[actionId];
       
       if (state === 'completed') {
