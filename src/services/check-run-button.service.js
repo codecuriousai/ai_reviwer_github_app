@@ -244,6 +244,16 @@ class CheckRunButtonService {
       trackingId: checkRunData.trackingId
     });
 
+    // NEW: Get the diff hunk for the file and line number
+    const diffHunk = await githubService.findDiffHunk(owner, repo, pullNumber, finding.file, finding.line);
+    
+    if (!diffHunk) {
+      // This is the key fix: if we can't find a valid diff hunk, throw an error
+      const errorMessage = `Could not find a valid diff hunk for file "${finding.file}" at line "${finding.line}". This file/line may not be part of the changes in this pull request.`;
+      logger.error(errorMessage);
+      throw new Error(errorMessage);
+    }
+    
     // Create inline comment body
     const commentBody = this.formatInlineComment(finding, checkRunData.trackingId);
 
@@ -256,6 +266,7 @@ class CheckRunButtonService {
       commit_id: headSha,
       path: finding.file,
       line: finding.line,
+      diff_hunk: diffHunk,
     });
 
     // Mark finding as posted
@@ -289,6 +300,12 @@ class CheckRunButtonService {
       }
 
       try {
+        const diffHunk = await githubService.findDiffHunk(owner, repo, pullNumber, finding.file, finding.line);
+        
+        if (!diffHunk) {
+          throw new Error(`Could not find a valid diff hunk for file "${finding.file}" at line "${finding.line}". Skipping comment.`);
+        }
+        
         const commentBody = this.formatInlineComment(finding, checkRunData.trackingId);
 
         const { data: comment } = await githubService.octokit.rest.pulls.createReviewComment({
@@ -299,6 +316,7 @@ class CheckRunButtonService {
           commit_id: headSha,
           path: finding.file,
           line: finding.line,
+          diff_hunk: diffHunk,
         });
 
         finding.posted = true;

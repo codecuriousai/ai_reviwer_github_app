@@ -122,7 +122,7 @@ class WebhookService {
       logger.info(`Check run action requested: ${actionId} for check run ${check_run.id}`);
 
       // Handle initial AI review trigger
-      if (actionId === 'ai_review') {
+      if (actionId === 'ai_review' || actionId === 'retry_review') {
         await this.handleInitialReviewRequest(payload);
         return;
       }
@@ -310,7 +310,12 @@ class WebhookService {
         output: {
           title: 'AI Review Queued',
           summary: `Analysis queued due to high demand. Currently processing ${this.activeReviews} reviews.\n\nPlease wait and try again in a few minutes.`,
-        }
+        },
+        actions: [{
+          label: 'Retry AI Review',
+          description: 'Re-run the AI code analysis on this PR',
+          identifier: 'retry_review'
+        }]
       });
       return;
     }
@@ -406,7 +411,13 @@ class WebhookService {
         assessment: analysis.reviewAssessment,
       });
 
-      // ENHANCED: Complete with interactive button check run
+      // NEW: Check if AI analysis failed before proceeding
+      if (analysis.detailedFindings.some(f => f.file === 'AI_PARSING_ERROR' || f.file === 'AI_SERVICE_ERROR')) {
+        await this.completeWithRetryButton(owner, repo, pullNumber, initialCheckRun, analysis, prData);
+        return;
+      }
+
+      // If successful, post comment and create interactive check run
       await this.completeWithButtonsCheckRun(owner, repo, pullNumber, initialCheckRun, analysis, headSha);
 
     } catch (error) {
@@ -450,6 +461,39 @@ class WebhookService {
     } catch (error) {
       logger.error('Error creating interactive check run:', error);
       throw error;
+    }
+  }
+
+  // NEW: Complete with a retry button for AI failures
+  async completeWithRetryButton(owner, repo, pullNumber, checkRun, analysis, prData) {
+    try {
+      const errorFinding = analysis.detailedFindings[0];
+
+      await githubService.updateCheckRun(owner, repo, checkRun.id, {
+        status: 'completed',
+        conclusion: 'failure',
+        output: {
+          title: 'AI Review Failed',
+          summary: `The AI analysis failed to produce a valid response.\n\n` + 
+                   `**Reason:** ${errorFinding.issue}\n\n` +
+                   `**Suggestion:** ${errorFinding.suggestion}\n\n` +
+                   `Please click the retry button below to try again.`,
+        },
+        actions: [{
+          label: 'Retry AI Review',
+          description: 'Re-run the AI code analysis on this PR',
+          identifier: 'retry_review'
+        }]
+      });
+
+      logger.warn(`AI review failed for PR #${pullNumber}, check run updated with retry button`, {
+        trackingId: analysis.trackingId,
+        error: errorFinding.issue
+      });
+      
+    } catch (error) {
+      logger.error('Error completing check run with retry button:', error);
+      this.completeWithError(owner, repo, pullNumber, checkRun, error, analysis.trackingId);
     }
   }
 

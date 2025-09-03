@@ -189,6 +189,7 @@ class GitHubService {
           changedFiles: pr.changed_files,
           url: pr.html_url,
           repository: `${owner}/${repo}`,
+          head: { sha: pr.head.sha },
         },
         files: filteredFiles,
         diff,
@@ -237,6 +238,56 @@ class GitHubService {
     } catch (error) {
       logger.error('Error fetching PR diff:', error);
       throw new Error(`Failed to fetch PR diff: ${error.message}`);
+    }
+  }
+  
+  // NEW: Find the diff hunk for a specific file and line number
+  async findDiffHunk(owner, repo, pullNumber, filePath, lineNumber) {
+    try {
+      const { data: files } = await this.octokit.rest.pulls.listFiles({
+        owner,
+        repo,
+        pull_number: pullNumber,
+      });
+
+      const targetFile = files.find(file => file.filename === filePath);
+      if (!targetFile) {
+        logger.warn(`File not found in PR diff: ${filePath}`);
+        return null;
+      }
+
+      // Check if the line number is within the file's changes
+      const diffLines = targetFile.patch.split('\n');
+      let hunkStartLine = 0;
+      let hunkEndLine = 0;
+      let hunk = '';
+      
+      for (const line of diffLines) {
+        // Find the hunk header line
+        if (line.startsWith('@@ -')) {
+          const match = line.match(/@@ -\d+(,\d+)? \+(\d+)(,(\d+))? @@/);
+          if (match) {
+            hunkStartLine = parseInt(match[2]);
+            hunkEndLine = hunkStartLine + (parseInt(match[4]) || 1);
+          }
+        }
+        
+        // If the line number is within this hunk, extract the hunk
+        if (lineNumber >= hunkStartLine && lineNumber <= hunkEndLine) {
+          hunk = targetFile.patch;
+          break;
+        }
+      }
+      
+      if (hunk) {
+        return hunk;
+      }
+      
+      logger.warn(`Line number ${lineNumber} not found in diff for file ${filePath}`);
+      return null;
+    } catch (error) {
+      logger.error(`Error finding diff hunk for ${filePath}:${lineNumber}:`, error);
+      return null;
     }
   }
 
@@ -381,7 +432,7 @@ class GitHubService {
     comment += `• Categories: 🐛 ${categories.bugs || 0} | `;
     comment += `🔒 ${categories.vulnerabilities || 0} | `;
     comment += `⚠️ ${categories.securityHotspots || 0} | `;
-    comment += `💨 ${categories.codeSmells || 0}\n`;
+    comment += `💨 ${categories.codeSmell || 0}\n`;
     comment += `• Technical Debt: ${automatedAnalysis.technicalDebtMinutes || 0} minutes\n\n`;
 
     // Human Review Analysis
