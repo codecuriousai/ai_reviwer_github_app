@@ -211,7 +211,7 @@ class CheckRunButtonService {
         
         // Update all button states
         Object.keys(buttonStates).forEach(key => {
-          if (buttonStates[key] === 'in_progress') {
+          if (buttonStates[key] === 'in_progress' || buttonStates[key] === 'ready') {
             buttonStates[key] = 'completed';
           }
         });
@@ -255,10 +255,10 @@ class CheckRunButtonService {
       trackingId: checkRunData.trackingId
     });
 
-    const diffHunk = await githubService.findDiffHunk(owner, repo, pullNumber, finding.file, finding.line);
+    const commentableLine = await githubService.findCommentableLine(owner, repo, pullNumber, finding.file, finding.line);
     
-    if (!diffHunk) {
-      const errorMessage = `Could not find a valid diff hunk for file "${finding.file}" at line "${finding.line}". This file/line may not be part of the changes in this pull request.`;
+    if (!commentableLine) {
+      const errorMessage = `Could not find a valid diff line for file "${finding.file}" near line "${finding.line}". This file/line may not be part of the changes in this pull request.`;
       logger.error(errorMessage);
       throw new Error(errorMessage);
     }
@@ -268,7 +268,7 @@ class CheckRunButtonService {
     // Post as a review with a single comment
     const commentsToPost = [{
       path: finding.file,
-      line: finding.line,
+      line: commentableLine,
       body: commentBody,
     }];
 
@@ -281,7 +281,7 @@ class CheckRunButtonService {
 
     logger.info(`Individual finding posted as part of a review`, {
       file: finding.file,
-      line: finding.line,
+      line: commentableLine,
       pullNumber
     });
   }
@@ -304,17 +304,17 @@ class CheckRunButtonService {
       }
 
       try {
-        const diffHunk = await githubService.findDiffHunk(owner, repo, pullNumber, finding.file, finding.line);
+        const commentableLine = await githubService.findCommentableLine(owner, repo, pullNumber, finding.file, finding.line);
         
-        if (!diffHunk) {
-          throw new Error(`Could not find a valid diff hunk for file "${finding.file}" at line "${finding.line}". Skipping comment.`);
+        if (!commentableLine) {
+          throw new Error(`Could not find a valid diff line near line ${finding.line} for file "${finding.file}". Skipping comment.`);
         }
         
         const commentBody = this.formatInlineComment(finding, checkRunData.trackingId);
 
         commentsToPost.push({
           path: finding.file,
-          line: finding.line,
+          line: commentableLine,
           body: commentBody,
         });
 
@@ -386,9 +386,9 @@ class CheckRunButtonService {
     return summary;
   }
 
-  // Update check run to show progress
+  // Update check run to show progress WITHOUT changing status
   async updateCheckRunProgress(repository, checkRunId, checkRunData, actionId) {
-    const { postableFindings } = checkRunData;
+    const { analysis, postableFindings, trackingId } = checkRunData;
     
     let progressMessage;
     if (actionId === 'post-all') {
@@ -400,21 +400,17 @@ class CheckRunButtonService {
     }
 
     await githubService.updateCheckRun(repository.owner.login, repository.name, checkRunId, {
-      status: 'in_progress',
       output: {
         title: 'AI Code Review - Posting Comments',
-        summary: progressMessage
+        summary: progressMessage,
+        text: this.generateDetailedOutput(analysis, postableFindings, trackingId)
       }
     });
   }
 
   // Update check run when action completed
   async updateCheckRunCompleted(repository, checkRunId, checkRunData, actionId) {
-    const { postableFindings, buttonStates } = checkRunData;
-    
-    // Count completed actions
-    const completedActions = Object.values(buttonStates).filter(state => state === 'completed').length;
-    const totalActions = Object.keys(buttonStates).length;
+    const { analysis, postableFindings, trackingId } = checkRunData;
     
     let completionMessage;
     if (actionId === 'post-all') {
@@ -422,116 +418,28 @@ class CheckRunButtonService {
     } else {
       const findingIndex = parseInt(actionId.replace('comment-finding-', ''));
       const finding = postableFindings[findingIndex];
-      completionMessage = `Comment posted for ${finding.file}:${finding.line}. ${completedActions}/${totalActions} actions completed.`;
+      completionMessage = `Comment posted for ${finding.file}:${finding.line}.`;
     }
 
-    // Generate updated actions (disable completed buttons)
-    const updatedActions = this.generateUpdatedActions(postableFindings, buttonStates);
-
     await githubService.updateCheckRun(repository.owner.login, repository.name, checkRunId, {
-      status: 'completed',
-      conclusion: 'success',
+      conclusion: 'success', // Conclusion can be updated on a completed run
       output: {
         title: 'AI Code Review - Comments Posted',
         summary: completionMessage,
-        text: this.generateDetailedOutput(checkRunData.analysis, postableFindings, checkRunData.trackingId)
+        text: this.generateDetailedOutput(analysis, postableFindings, trackingId)
       },
-      actions: updatedActions
+      // Note: `actions` and `status` properties are intentionally omitted to avoid validation errors.
     });
   }
-
-  // Generate updated actions reflecting current button states
-  generateUpdatedActions(postableFindings, buttonStates) {
-    const actions = [];
-    const maxButtons = 2;
-    const maxDescLength = 40;
-
-    // Logic for individual buttons vs. "Post All"
-    if (postableFindings.length > 2) {
-      const allState = buttonStates['post-all'];
-      if (allState === 'completed') {
-        actions.push({
-          label: `✓ All Comments Posted`,
-          description: `All ${postableFindings.length} comments have been posted`,
-          identifier: 'all-completed'
-        });
-      } else if (allState === 'error') {
-        actions.push({
-          label: `Post All Comments (Retry)`,
-          description: `Retry posting all findings`,
-          identifier: 'post-all'
-        });
-      } else {
-        actions.push({
-          label: `Post All Comments`,
-          description: `Post all ${postableFindings.length} findings`,
-          identifier: 'post-all'
-        });
-      }
-      return actions;
-    }
-
-    postableFindings.forEach((finding, index) => {
-      const actionId = `comment-finding-${index}`;
-      const state = buttonStates[actionId];
-      const truncatedFile = truncateText(finding.file, maxDescLength - 10);
-      
-      if (state === 'completed') {
-        actions.push({
-          label: `✓ Posted #${index + 1}`,
-          description: `Comment posted to ${truncatedFile}`,
-          identifier: `completed-${index}`
-        });
-      } else if (state === 'error') {
-        actions.push({
-          label: `✗ Error #${index + 1}`,
-          description: `Failed to post to ${truncatedFile}`,
-          identifier: actionId
-        });
-      } else {
-        actions.push({
-          label: `Comment #${index + 1}`,
-          description: `${finding.severity}: ${truncatedFile}`,
-          identifier: actionId
-        });
-      }
-    });
-
-    const allState = buttonStates['post-all'];
-    if (postableFindings.length > 0) {
-      if (allState === 'completed') {
-        actions.push({
-          label: `✓ All Comments Posted`,
-          description: `All ${postableFindings.length} comments have been posted`,
-          identifier: 'all-completed'
-        });
-      } else if (allState === 'error') {
-        actions.push({
-          label: `Post All Comments (Retry)`,
-          description: `Retry posting all findings`,
-          identifier: 'post-all'
-        });
-      } else {
-        actions.push({
-          label: `Post All Comments`,
-          description: `Post all ${postableFindings.length} findings`,
-          identifier: 'post-all'
-        });
-      }
-    }
-
-    return actions;
-  }
-
-  // Update check run with error message
+  
+  // Update check run on error
   async updateCheckRunError(repository, checkRunId, errorMessage) {
     await githubService.updateCheckRun(repository.owner.login, repository.name, checkRunId, {
-      status: 'completed',
       conclusion: 'failure',
       output: {
-        title: 'AI Code Review - Error',
-        summary: errorMessage
-      }
+          title: 'AI Code Review - Action Failed',
+          summary: errorMessage,
+      },
     });
   }
 
@@ -573,7 +481,7 @@ class CheckRunButtonService {
       'MINOR': '🔵',
       'INFO': 'ℹ️'
     };
-    return emojiMap[severity] || 'ℹ️';
+    return emojiMap[severity.toUpperCase()] || 'ℹ️';
   }
 
   getCategoryEmoji(category) {
@@ -583,7 +491,7 @@ class CheckRunButtonService {
       'SECURITY_HOTSPOT': '⚠️',
       'CODE_SMELL': '💨'
     };
-    return emojiMap[category] || '💨';
+    return emojiMap[category.toUpperCase()] || '💨';
   }
 
   getSeverityColor(severity) {
@@ -594,7 +502,7 @@ class CheckRunButtonService {
       'MINOR': 'blue',
       'INFO': 'gray'
     };
-    return colorMap[severity] || 'gray';
+    return colorMap[severity.toUpperCase()] || 'gray';
   }
 
   // Get statistics about active check runs

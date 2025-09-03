@@ -1,4 +1,4 @@
-// src/services/github.service.js - Enhanced with Interactive Comment Support
+// src/services/github.service.js - Enhanced with Interactive Comment Support and Correct Line Finding
 
 const { Octokit } = require('@octokit/rest');
 const { createAppAuth } = require('@octokit/auth-app');
@@ -241,55 +241,73 @@ class GitHubService {
     }
   }
   
-  // NEW: Find the diff hunk for a specific file and line number
-  async findDiffHunk(owner, repo, pullNumber, filePath, lineNumber) {
+  // NEW: Finds the closest line in the diff that can be commented on.
+  async findCommentableLine(owner, repo, pullNumber, filePath, targetLine) {
     try {
-      const { data: files } = await this.octokit.rest.pulls.listFiles({
-        owner,
-        repo,
-        pull_number: pullNumber,
-      });
+        const { data: files } = await this.octokit.rest.pulls.listFiles({
+            owner,
+            repo,
+            pull_number: pullNumber,
+        });
 
-      const targetFile = files.find(file => file.filename === filePath);
-      if (!targetFile) {
-        logger.warn(`File not found in PR diff: ${filePath}`);
-        return null;
-      }
+        const targetFile = files.find(file => file.filename === filePath);
+        if (!targetFile || !targetFile.patch) {
+            logger.warn(`File not found in PR diff or has no patch: ${filePath}`);
+            return null;
+        }
 
-      // Check if the line number is within the file's changes
-      const diffLines = targetFile.patch.split('\n');
-      let hunkStartLine = 0;
-      let hunkEndLine = 0;
-      let hunk = '';
-      
-      for (const line of diffLines) {
-        // Find the hunk header line
-        if (line.startsWith('@@ -')) {
-          const match = line.match(/@@ -\d+(,\d+)? \+(\d+)(,(\d+))? @@/);
-          if (match) {
-            hunkStartLine = parseInt(match[2]);
-            hunkEndLine = hunkStartLine + (parseInt(match[4]) || 1);
-          }
+        const patchLines = targetFile.patch.split('\n');
+        let currentFileLine = 0;
+        let lastAddedLineInHunk = null;
+
+        for (const line of patchLines) {
+            if (line.startsWith('@@')) {
+                const match = line.match(/\+(\d+)/);
+                if (match && match[1]) {
+                    currentFileLine = parseInt(match[1], 10);
+                    lastAddedLineInHunk = null; // Reset for new hunk
+                }
+                continue;
+            }
+
+            if (line.startsWith('-')) {
+                continue; // Deleted lines don't exist in the 'new' file, so don't increment file line counter
+            }
+
+            // If we've passed the target line, and we saw an added line in this hunk, that's our best bet.
+            if (currentFileLine > targetLine && lastAddedLineInHunk) {
+                logger.info(`Target line ${targetLine} for ${filePath} seems to be a context line. Snapping to the last added line in the hunk: ${lastAddedLineInHunk}.`);
+                return lastAddedLineInHunk;
+            }
+
+            if (line.startsWith('+')) {
+                if (currentFileLine === targetLine) {
+                    logger.info(`Found exact match for commentable line ${targetLine} in ${filePath}.`);
+                    return targetLine; // Perfect match on an added line
+                }
+                lastAddedLineInHunk = currentFileLine;
+            }
+            
+            // Increment for any line that exists in the new file ('+' or context ' ')
+            if (!line.startsWith('-')) {
+              currentFileLine++;
+            }
+        }
+
+        // If the target line was after the last change in the last hunk
+        if (lastAddedLineInHunk) {
+            logger.info(`Target line ${targetLine} for ${filePath} is after the last change. Snapping to last added line: ${lastAddedLineInHunk}.`);
+            return lastAddedLineInHunk;
         }
         
-        // If the line number is within this hunk, extract the hunk
-        if (lineNumber >= hunkStartLine && lineNumber <= hunkEndLine) {
-          hunk = targetFile.patch;
-          break;
-        }
-      }
-      
-      if (hunk) {
-        return hunk;
-      }
-      
-      logger.warn(`Line number ${lineNumber} not found in diff for file ${filePath}`);
-      return null;
+        logger.error(`Could not find a commentable line near ${targetLine} for file ${filePath}.`);
+        return null;
     } catch (error) {
-      logger.error(`Error finding diff hunk for ${filePath}:${lineNumber}:`, error);
-      return null;
+        logger.error(`Error in findCommentableLine for ${filePath}:${targetLine}:`, error);
+        return null;
     }
   }
+
 
   // Get pull request review comments
   async getPullRequestComments(owner, repo, pullNumber) {
@@ -693,7 +711,7 @@ class GitHubService {
         ...updateData,
       });
 
-      logger.info(`Check run updated: ${checkRunId} - ${updateData.status}`);
+      logger.info(`Check run updated: ${checkRunId} - Status: ${updateData.status || 'updated'}`);
       return checkRun;
     } catch (error) {
       logger.error(`Error updating check run ${checkRunId}:`, error);
