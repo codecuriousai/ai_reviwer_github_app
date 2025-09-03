@@ -3,6 +3,7 @@ const config = require('./config/config');
 const logger = require('./utils/logger');
 const webhookService = require('./services/webhook.service');
 const authMiddleware = require('./middleware/auth.middleware');
+const interactiveCommentService = require('./services/interactive-comment.service');
 
 const app = express();
 
@@ -16,6 +17,12 @@ app.use(express.json({
     req.rawBody = buf;
   }
 }));
+
+// Security headers
+app.use(authMiddleware.securityHeaders);
+
+// Request logging
+app.use(authMiddleware.requestLogger);
 
 // Health check endpoint
 app.get('/health', async (req, res) => {
@@ -51,6 +58,9 @@ app.get('/health', async (req, res) => {
       health.githubService = 'ERROR';
       health.githubError = error.message;
     }
+
+    // Interactive comment service stats
+    health.interactiveComments = interactiveCommentService.getStats();
 
     res.status(200).json(health);
   } catch (error) {
@@ -137,7 +147,7 @@ app.post('/webhook', async (req, res) => {
   }
 });
 
-// Status endpoint for monitoring
+// Enhanced status endpoint with interactive comment stats
 app.get('/status', (req, res) => {
   const webhookStatus = webhookService.getProcessingStatus();
   res.json({
@@ -148,7 +158,185 @@ app.get('/status', (req, res) => {
       timestamp: new Date().toISOString(),
     },
     webhooks: webhookStatus,
+    interactiveComments: webhookStatus.interactiveComments,
   });
+});
+
+// NEW: Interactive comment management endpoints
+app.get('/api/comments/pending/:owner/:repo/:pullNumber', async (req, res) => {
+  try {
+    const { owner, repo, pullNumber } = req.params;
+    const pendingComments = interactiveCommentService.getPendingComments(owner, repo, parseInt(pullNumber));
+    
+    if (!pendingComments) {
+      return res.status(404).json({
+        error: 'No pending comments found for this PR',
+        pullNumber: parseInt(pullNumber)
+      });
+    }
+
+    res.json({
+      success: true,
+      pullNumber: parseInt(pullNumber),
+      trackingId: pendingComments.trackingId,
+      totalFindings: pendingComments.findings.length,
+      postedFindings: pendingComments.findings.filter(f => f.posted).length,
+      pendingFindings: pendingComments.findings.filter(f => !f.posted).length,
+      allPosted: pendingComments.allPosted,
+      createdAt: pendingComments.createdAt,
+      findings: pendingComments.findings
+    });
+  } catch (error) {
+    logger.error('Error getting pending comments:', error);
+    res.status(500).json({
+      error: 'Failed to get pending comments',
+      message: error.message
+    });
+  }
+});
+
+// NEW: Post individual comment endpoint
+app.post('/api/comments/post-individual', async (req, res) => {
+  try {
+    const { owner, repo, pullNumber, findingId, triggeredBy } = req.body;
+
+    if (!owner || !repo || !pullNumber || !findingId || !triggeredBy) {
+      return res.status(400).json({
+        error: 'Missing required fields: owner, repo, pullNumber, findingId, triggeredBy'
+      });
+    }
+
+    const prKey = `${owner}/${repo}#${pullNumber}`;
+    const pendingComments = interactiveCommentService.getPendingComments(owner, repo, pullNumber);
+    
+    if (!pendingComments) {
+      return res.status(404).json({
+        error: 'No pending comments found for this PR',
+        pullNumber
+      });
+    }
+
+    const finding = pendingComments.findings.find(f => f.id === findingId);
+    if (!finding) {
+      return res.status(404).json({
+        error: 'Finding not found',
+        findingId
+      });
+    }
+
+    if (finding.posted) {
+      return res.status(409).json({
+        error: 'This finding has already been posted',
+        findingId,
+        commentId: finding.commentId
+      });
+    }
+
+    // Post the individual comment
+    await interactiveCommentService.postIndividualComment(owner, repo, pullNumber, finding, triggeredBy);
+
+    res.json({
+      success: true,
+      message: 'Individual comment posted successfully',
+      findingId,
+      file: finding.file,
+      line: finding.line,
+      commentId: finding.commentId
+    });
+
+  } catch (error) {
+    logger.error('Error posting individual comment:', error);
+    res.status(500).json({
+      error: 'Failed to post individual comment',
+      message: error.message
+    });
+  }
+});
+
+// NEW: Post all comments endpoint
+app.post('/api/comments/post-all', async (req, res) => {
+  try {
+    const { owner, repo, pullNumber, triggeredBy } = req.body;
+
+    if (!owner || !repo || !pullNumber || !triggeredBy) {
+      return res.status(400).json({
+        error: 'Missing required fields: owner, repo, pullNumber, triggeredBy'
+      });
+    }
+
+    const pendingComments = interactiveCommentService.getPendingComments(owner, repo, pullNumber);
+    
+    if (!pendingComments) {
+      return res.status(404).json({
+        error: 'No pending comments found for this PR',
+        pullNumber
+      });
+    }
+
+    if (pendingComments.allPosted) {
+      return res.status(409).json({
+        error: 'All comments have already been posted for this PR',
+        pullNumber
+      });
+    }
+
+    // Post all comments
+    await interactiveCommentService.postAllComments(owner, repo, pullNumber, pendingComments, triggeredBy);
+
+    const successCount = pendingComments.findings.filter(f => f.posted).length;
+    const totalCount = pendingComments.findings.length;
+
+    res.json({
+      success: true,
+      message: 'All comments posted successfully',
+      totalFindings: totalCount,
+      postedFindings: successCount,
+      trackingId: pendingComments.trackingId
+    });
+
+  } catch (error) {
+    logger.error('Error posting all comments:', error);
+    res.status(500).json({
+      error: 'Failed to post all comments',
+      message: error.message
+    });
+  }
+});
+
+// NEW: Get interactive comment stats
+app.get('/api/comments/stats', (req, res) => {
+  try {
+    const stats = interactiveCommentService.getStats();
+    res.json({
+      success: true,
+      timestamp: new Date().toISOString(),
+      stats
+    });
+  } catch (error) {
+    logger.error('Error getting comment stats:', error);
+    res.status(500).json({
+      error: 'Failed to get comment stats',
+      message: error.message
+    });
+  }
+});
+
+// NEW: Clean old pending comments (manual trigger for admin)
+app.post('/api/comments/cleanup', (req, res) => {
+  try {
+    interactiveCommentService.cleanOldPendingComments();
+    res.json({
+      success: true,
+      message: 'Cleanup completed',
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    logger.error('Error cleaning comments:', error);
+    res.status(500).json({
+      error: 'Failed to clean comments',
+      message: error.message
+    });
+  }
 });
 
 // Debug endpoint for testing AI service directly
@@ -227,6 +415,7 @@ const server = app.listen(PORT, () => {
   logger.info(`Webhook URL: http://localhost:${PORT}/webhook`);
   logger.info(`Health check: http://localhost:${PORT}/health`);
   logger.info(`Status endpoint: http://localhost:${PORT}/status`);
+  logger.info(`Interactive Comments API: http://localhost:${PORT}/api/comments/*`);
 });
 
 // Graceful shutdown

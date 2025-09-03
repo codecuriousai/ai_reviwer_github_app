@@ -1,4 +1,4 @@
-// src/services/github.service.js - Fixed DETAILED FINDINGS formatting
+// src/services/github.service.js - Enhanced with Interactive Comment Support
 
 const { Octokit } = require('@octokit/rest');
 const { createAppAuth } = require('@octokit/auth-app');
@@ -305,18 +305,28 @@ class GitHubService {
       .slice(0, maxFilesToAnalyze);
   }
 
-  // Post single structured comment (main function) - FIXED detailedFindings formatting
+  // ENHANCED: Post structured comment with interactive buttons
   async postStructuredReviewComment(owner, repo, pullNumber, analysis) {
     try {
-      logger.info(`Posting structured review comment for ${owner}/${repo}#${pullNumber}`);
+      logger.info(`Posting enhanced structured review comment for ${owner}/${repo}#${pullNumber}`);
 
-      // CONSOLE LOG: Debug the analysis object
-      console.log('=== AI ANALYSIS RESPONSE DEBUG ===');
-      console.log('Full analysis object:', JSON.stringify(analysis, null, 2));
-      console.log('DetailedFindings:', JSON.stringify(analysis.detailedFindings, null, 2));
-      console.log('=== END DEBUG ===');
+      // Import interactive comment service
+      const interactiveCommentService = require('./interactive-comment.service');
 
-      const commentBody = this.formatStructuredReviewComment(analysis);
+      // Store pending comments for interactive posting
+      const trackingId = analysis.trackingId || `analysis-${Date.now()}`;
+      analysis.trackingId = trackingId; // Ensure trackingId is set
+      
+      if (analysis.detailedFindings && analysis.detailedFindings.length > 0) {
+        interactiveCommentService.storePendingComments(
+          owner, repo, pullNumber, 
+          analysis.detailedFindings, 
+          trackingId
+        );
+      }
+
+      // Generate enhanced comment with interactive elements
+      const commentBody = this.formatEnhancedStructuredComment(analysis, trackingId);
       
       const { data: comment } = await this.octokit.rest.issues.createComment({
         owner,
@@ -325,16 +335,16 @@ class GitHubService {
         body: commentBody,
       });
 
-      logger.info(`Structured review comment posted: ${comment.id}`);
+      logger.info(`Enhanced structured review comment posted: ${comment.id}`);
       return comment;
     } catch (error) {
-      logger.error('Error posting structured review comment:', error);
-      throw new Error(`Failed to post structured review comment: ${error.message}`);
+      logger.error('Error posting enhanced structured review comment:', error);
+      throw new Error(`Failed to post enhanced structured review comment: ${error.message}`);
     }
   }
 
-  // FIXED: Format the structured review comment with proper detailedFindings handling
-  formatStructuredReviewComment(analysis) {
+  // ENHANCED: Format structured comment with interactive commenting features
+  formatEnhancedStructuredComment(analysis, trackingId) {
     const { 
       prInfo, 
       automatedAnalysis, 
@@ -385,46 +395,84 @@ class GitHubService {
     comment += `⚖️ **REVIEW ASSESSMENT:**\n`;
     comment += `${reviewAssessment || 'REVIEW REQUIRED'}\n\n`;
 
-    // FIXED: Detailed Findings with proper property handling
-    comment += `📝 **DETAILED FINDINGS:**\n`;
+    // ENHANCED: Detailed Findings with Interactive Comment Buttons
+    comment += `🔍 **DETAILED FINDINGS:**\n`;
     
     if (detailedFindings && Array.isArray(detailedFindings) && detailedFindings.length > 0) {
-      detailedFindings.forEach((finding, index) => {
-        // CONSOLE LOG: Debug each finding
-        console.log(`Finding ${index + 1}:`, JSON.stringify(finding, null, 2));
-        
-        // Use safe property access with fallbacks
-        const file = finding.file || finding.filename || 'unknown-file';
-        const line = finding.line || finding.lineNumber || 'unknown';
-        const issue = finding.issue || finding.description || finding.message || 'No description';
-        const severity = finding.severity || 'INFO';
-        const category = finding.category || finding.type || 'CODE_SMELL';
-        const suggestion = finding.suggestion || finding.fix || finding.recommendation || 'No suggestion provided';
-        
-        const severityEmoji = {
-          'BLOCKER': '🚫',
-          'CRITICAL': '🔴', 
-          'MAJOR': '🟡',
-          'MINOR': '🔵',
-          'INFO': 'ℹ️'
-        };
-        
-        const categoryEmoji = {
-          'BUG': '🐛',
-          'VULNERABILITY': '🔒',
-          'SECURITY_HOTSPOT': '⚠️',
-          'CODE_SMELL': '💨'
-        };
+      // Filter postable findings (ones with valid file/line info)
+      const postableFindings = detailedFindings.filter(finding => 
+        finding.file && 
+        finding.file !== 'unknown-file' && 
+        finding.line && 
+        finding.line > 0 &&
+        finding.file !== 'AI_ANALYSIS_ERROR'
+      );
 
-        const emoji = severityEmoji[severity] || 'ℹ️';
-        const catEmoji = categoryEmoji[category] || '💨';
+      const nonPostableFindings = detailedFindings.filter(finding => 
+        !finding.file || 
+        finding.file === 'unknown-file' || 
+        !finding.line || 
+        finding.line <= 0 ||
+        finding.file === 'AI_ANALYSIS_ERROR'
+      );
 
-        comment += `${index + 1}. ${emoji} ${catEmoji} **${file}:${line}**\n`;
-        comment += `   └ ${issue}\n`;
-        comment += `   └ *Suggestion: ${suggestion}*\n\n`;
-      });
+      // Show postable findings with interactive buttons
+      if (postableFindings.length > 0) {
+        comment += `\n**📝 Issues that can be posted as inline comments:**\n\n`;
+        
+        postableFindings.forEach((finding, index) => {
+          const severityEmoji = this.getSeverityEmoji(finding.severity);
+          const categoryEmoji = this.getCategoryEmoji(finding.category);
+          
+          comment += `**${index + 1}.** ${severityEmoji} ${categoryEmoji} **${finding.file}:${finding.line}**\n`;
+          comment += `   └─ **Issue:** ${finding.issue}\n`;
+          comment += `   └─ **Suggestion:** ${finding.suggestion}\n`;
+          comment += `   └─ **Actions:** Comment with \`/ai-comment ${trackingId}-finding-${index}\` to post as inline comment\n\n`;
+        });
+
+        // Post all comments button
+        comment += `🔄 **BULK ACTION:**\n`;
+        comment += `Comment with \`/ai-comment ${trackingId}-all\` to post all ${postableFindings.length} findings as inline comments at once.\n\n`;
+      }
+
+      // Show non-postable findings (general issues)
+      if (nonPostableFindings.length > 0) {
+        comment += `\n**📋 General issues (cannot be posted as inline comments):**\n\n`;
+        
+        nonPostableFindings.forEach((finding, index) => {
+          const severityEmoji = this.getSeverityEmoji(finding.severity);
+          const categoryEmoji = this.getCategoryEmoji(finding.category);
+          
+          comment += `**${postableFindings.length + index + 1}.** ${severityEmoji} ${categoryEmoji} **${finding.file || 'General'}**\n`;
+          comment += `   └─ **Issue:** ${finding.issue}\n`;
+          comment += `   └─ **Suggestion:** ${finding.suggestion}\n\n`;
+        });
+      }
+
+      if (postableFindings.length === 0 && nonPostableFindings.length === 0) {
+        comment += `No specific issues found that were missed by reviewers.\n\n`;
+      }
+
     } else {
       comment += `No additional issues found that were missed by reviewers.\n\n`;
+    }
+
+    // Interactive Instructions Section
+    const postableCount = detailedFindings ? detailedFindings.filter(finding => 
+      finding.file && 
+      finding.file !== 'unknown-file' && 
+      finding.line && 
+      finding.line > 0 &&
+      finding.file !== 'AI_ANALYSIS_ERROR'
+    ).length : 0;
+
+    if (postableCount > 0) {
+      comment += `📝 **HOW TO POST INLINE COMMENTS:**\n`;
+      comment += `1. **Individual Comments:** Reply with \`/ai-comment ${trackingId}-finding-X\` (replace X with finding number 0, 1, 2...)\n`;
+      comment += `2. **All Comments:** Reply with \`/ai-comment ${trackingId}-all\` to post all findings at once\n`;
+      comment += `3. **Result:** AI findings will be posted as line-specific review comments on the affected code\n\n`;
+      comment += `💡 **Example:** To post the first finding as an inline comment, reply with:\n`;
+      comment += `\`/ai-comment ${trackingId}-finding-0\`\n\n`;
     }
 
     // Recommendation
@@ -434,9 +482,33 @@ class GitHubService {
     // Footer
     comment += `---\n`;
     comment += `*🔧 Analysis completed by AI Code Reviewer using SonarQube Standards*\n`;
-    comment += `*⏱️ Generated at: ${new Date().toISOString()}*`;
+    comment += `*⏱️ Generated at: ${new Date().toISOString()}*\n`;
+    comment += `*🆔 Analysis ID: \`${trackingId}\`*`;
 
     return comment;
+  }
+
+  // Helper: Get severity emoji
+  getSeverityEmoji(severity) {
+    const emojiMap = {
+      'BLOCKER': '🚫',
+      'CRITICAL': '🔴',
+      'MAJOR': '🟡',
+      'MINOR': '🔵',
+      'INFO': 'ℹ️'
+    };
+    return emojiMap[severity] || 'ℹ️';
+  }
+
+  // Helper: Get category emoji
+  getCategoryEmoji(category) {
+    const emojiMap = {
+      'BUG': '🐛',
+      'VULNERABILITY': '🔒',
+      'SECURITY_HOTSPOT': '⚠️',
+      'CODE_SMELL': '💨'
+    };
+    return emojiMap[category] || '💨';
   }
 
   // Post a general comment on the PR (for notifications)
@@ -487,9 +559,9 @@ class GitHubService {
       return analysis;
     }
     
-    // If it's the new structured format, use the structured formatter
+    // If it's the new structured format, use the enhanced formatter
     if (analysis.prInfo) {
-      return this.formatStructuredReviewComment(analysis);
+      return this.formatEnhancedStructuredComment(analysis, analysis.trackingId || 'unknown');
     }
     
     // Legacy format handling
