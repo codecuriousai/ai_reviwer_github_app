@@ -1,4 +1,4 @@
-// src/services/ai.service.js - Fixed JSON Parsing Issues
+// src/services/ai.service.js - Fixed JSON Parsing Issues and cleanedResponse Error
 
 const OpenAI = require('openai');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
@@ -64,28 +64,26 @@ class AIService {
         }
       });
 
-      //  // CONSOLE LOG: Debug raw AI response
       console.log('=== RAW AI RESPONSE ===');
-      console.log('Response length:', analysis);
-      console.log('Raw response:', analysis);
+      console.log('Response length:', analysis?.length || 0);
+      console.log('Raw response preview:', analysis?.substring(0, 300) || 'No response');
       console.log('=== END RAW RESPONSE ===');
 
       // Validate and parse response
       const parsedAnalysis = this.parseAnalysisResponse(analysis);
       
-      // CONSOLE LOG: Debug parsed analysis
       console.log('=== PARSED ANALYSIS ===');
-      console.log('Parsed analysis:', JSON.stringify(parsedAnalysis, null, 2));
+      console.log('Parsed analysis keys:', Object.keys(parsedAnalysis));
+      console.log('Total issues:', parsedAnalysis?.automatedAnalysis?.totalIssues || 0);
       console.log('=== END PARSED ANALYSIS ===');
 
       // Enhance analysis with PR context
       const enhancedAnalysis = this.enhanceAnalysisWithContext(parsedAnalysis, prData, existingComments);
       
-      // CONSOLE LOG: Debug final analysis
       console.log('=== FINAL ENHANCED ANALYSIS ===');
-      console.log('Enhanced analysis:', JSON.stringify(enhancedAnalysis, null, 2));
+      console.log('Enhanced analysis keys:', Object.keys(enhancedAnalysis));
+      console.log('Final total issues:', enhancedAnalysis?.automatedAnalysis?.totalIssues || 0);
       console.log('=== END FINAL ANALYSIS ===');
-      
 
       logger.info(`AI analysis completed. Found ${enhancedAnalysis.automatedAnalysis.totalIssues} issues`);
       return enhancedAnalysis;
@@ -213,7 +211,6 @@ CRITICAL INSTRUCTIONS:
       let content = response.text().trim();
       
       logger.info(`Gemini response received (${content.length} characters)`);
-      logger.info(`Gemini response (${response})`);
       logger.debug('Gemini response preview:', content.substring(0, 200));
       
       return content;
@@ -230,13 +227,19 @@ CRITICAL INSTRUCTIONS:
     }
   }
 
-  // FIXED: Enhanced JSON parsing with better error handling
+  // FIXED: Enhanced JSON parsing with proper error handling and variable scoping
   parseAnalysisResponse(responseText) {
+    let cleanedResponse = responseText; // Define at function scope
+    
     try {
-      logger.debug('Parsing AI response:', responseText.substring(0, 300));
+      logger.debug('Parsing AI response:', responseText?.substring(0, 300) || 'No response');
+      
+      if (!responseText || typeof responseText !== 'string') {
+        throw new Error('Invalid response: empty or non-string response');
+      }
       
       // Clean response text
-      let cleanedResponse = responseText.trim();
+      cleanedResponse = responseText.trim();
       
       // Remove markdown code blocks if present
       cleanedResponse = cleanedResponse.replace(/```json\s*/g, '').replace(/```\s*/g, '');
@@ -280,11 +283,11 @@ CRITICAL INSTRUCTIONS:
       
     } catch (parseError) {
       logger.error('Error parsing AI response:', parseError);
-      logger.error('Raw response (first 500 chars):', responseText.substring(0, 500));
-      logger.error('Cleaned response (first 500 chars):', cleanedResponse ? cleanedResponse.substring(0, 500) : 'undefined');
+      logger.error('Raw response (first 500 chars):', responseText?.substring(0, 500) || 'undefined');
+      logger.error('Cleaned response (first 500 chars):', cleanedResponse?.substring(0, 500) || 'undefined');
       
       // Return fallback structure with specific error details
-      return this.getFallbackAnalysis(`JSON parsing failed: ${parseError.message}. Response preview: ${responseText.substring(0, 100)}`);
+      return this.getFallbackAnalysis(`JSON parsing failed: ${parseError.message}. Raw response length: ${responseText?.length || 0}. Cleaned response length: ${cleanedResponse?.length || 0}`);
     }
   }
 
@@ -357,7 +360,6 @@ CRITICAL INSTRUCTIONS:
         return normalizedFinding;
       });
     }
-
 
     // Ensure numeric fields are numbers
     analysis.automatedAnalysis.totalIssues = Number(analysis.automatedAnalysis.totalIssues) || 0;
@@ -448,9 +450,9 @@ CRITICAL INSTRUCTIONS:
         issue: `AI analysis parsing error: ${errorMessage}`,
         severity: 'MAJOR',
         category: 'CODE_SMELL',
-        suggestion: 'Check AI service configuration, API keys, and ensure the AI model is responding with valid JSON format'
+        suggestion: 'Check AI service configuration, API keys, and ensure the AI model is responding with valid JSON format. Review server logs for detailed error information.'
       }],
-      recommendation: 'Fix AI analysis configuration to get proper code review feedback. Verify API keys, check network connectivity, and ensure the AI service is responding with properly formatted JSON.'
+      recommendation: `AI analysis configuration needs attention. Error: ${errorMessage}. Please verify API keys, check network connectivity, and ensure the AI service is responding with properly formatted JSON.`
     };
   }
 
