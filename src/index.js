@@ -3,7 +3,7 @@ const config = require('./config/config');
 const logger = require('./utils/logger');
 const webhookService = require('./services/webhook.service');
 const authMiddleware = require('./middleware/auth.middleware');
-const interactiveCommentService = require('./services/interactive-comment.service');
+const checkRunButtonService = require('./services/check-run-button.service');
 
 const app = express();
 
@@ -24,7 +24,7 @@ app.use(authMiddleware.securityHeaders);
 // Request logging
 app.use(authMiddleware.requestLogger);
 
-// Health check endpoint
+// Enhanced health check endpoint with check run button stats
 app.get('/health', async (req, res) => {
   try {
     const health = {
@@ -59,8 +59,8 @@ app.get('/health', async (req, res) => {
       health.githubError = error.message;
     }
 
-    // Interactive comment service stats
-    health.interactiveComments = interactiveCommentService.getStats();
+    // Check run button service stats
+    health.checkRunButtons = checkRunButtonService.getStats();
 
     res.status(200).json(health);
   } catch (error) {
@@ -147,7 +147,7 @@ app.post('/webhook', async (req, res) => {
   }
 });
 
-// Enhanced status endpoint with interactive comment stats
+// Enhanced status endpoint with check run button stats
 app.get('/status', (req, res) => {
   const webhookStatus = webhookService.getProcessingStatus();
   res.json({
@@ -158,183 +158,192 @@ app.get('/status', (req, res) => {
       timestamp: new Date().toISOString(),
     },
     webhooks: webhookStatus,
-    interactiveComments: webhookStatus.interactiveComments,
+    checkRunButtons: webhookStatus.checkRunButtons,
+    system: {
+      activeReviews: webhookStatus.activeReviews,
+      queueSize: webhookStatus.queueSize,
+      maxConcurrent: webhookStatus.maxConcurrent,
+    }
   });
 });
 
-// NEW: Interactive comment management endpoints
-app.get('/api/comments/pending/:owner/:repo/:pullNumber', async (req, res) => {
+// NEW: Check run button management endpoints
+app.get('/api/check-runs/active', (req, res) => {
   try {
-    const { owner, repo, pullNumber } = req.params;
-    const pendingComments = interactiveCommentService.getPendingComments(owner, repo, parseInt(pullNumber));
-    
-    if (!pendingComments) {
-      return res.status(404).json({
-        error: 'No pending comments found for this PR',
-        pullNumber: parseInt(pullNumber)
-      });
-    }
-
-    res.json({
-      success: true,
-      pullNumber: parseInt(pullNumber),
-      trackingId: pendingComments.trackingId,
-      totalFindings: pendingComments.findings.length,
-      postedFindings: pendingComments.findings.filter(f => f.posted).length,
-      pendingFindings: pendingComments.findings.filter(f => !f.posted).length,
-      allPosted: pendingComments.allPosted,
-      createdAt: pendingComments.createdAt,
-      findings: pendingComments.findings
-    });
-  } catch (error) {
-    logger.error('Error getting pending comments:', error);
-    res.status(500).json({
-      error: 'Failed to get pending comments',
-      message: error.message
-    });
-  }
-});
-
-// NEW: Post individual comment endpoint
-app.post('/api/comments/post-individual', async (req, res) => {
-  try {
-    const { owner, repo, pullNumber, findingId, triggeredBy } = req.body;
-
-    if (!owner || !repo || !pullNumber || !findingId || !triggeredBy) {
-      return res.status(400).json({
-        error: 'Missing required fields: owner, repo, pullNumber, findingId, triggeredBy'
-      });
-    }
-
-    const prKey = `${owner}/${repo}#${pullNumber}`;
-    const pendingComments = interactiveCommentService.getPendingComments(owner, repo, pullNumber);
-    
-    if (!pendingComments) {
-      return res.status(404).json({
-        error: 'No pending comments found for this PR',
-        pullNumber
-      });
-    }
-
-    const finding = pendingComments.findings.find(f => f.id === findingId);
-    if (!finding) {
-      return res.status(404).json({
-        error: 'Finding not found',
-        findingId
-      });
-    }
-
-    if (finding.posted) {
-      return res.status(409).json({
-        error: 'This finding has already been posted',
-        findingId,
-        commentId: finding.commentId
-      });
-    }
-
-    // Post the individual comment
-    await interactiveCommentService.postIndividualComment(owner, repo, pullNumber, finding, triggeredBy);
-
-    res.json({
-      success: true,
-      message: 'Individual comment posted successfully',
-      findingId,
-      file: finding.file,
-      line: finding.line,
-      commentId: finding.commentId
-    });
-
-  } catch (error) {
-    logger.error('Error posting individual comment:', error);
-    res.status(500).json({
-      error: 'Failed to post individual comment',
-      message: error.message
-    });
-  }
-});
-
-// NEW: Post all comments endpoint
-app.post('/api/comments/post-all', async (req, res) => {
-  try {
-    const { owner, repo, pullNumber, triggeredBy } = req.body;
-
-    if (!owner || !repo || !pullNumber || !triggeredBy) {
-      return res.status(400).json({
-        error: 'Missing required fields: owner, repo, pullNumber, triggeredBy'
-      });
-    }
-
-    const pendingComments = interactiveCommentService.getPendingComments(owner, repo, pullNumber);
-    
-    if (!pendingComments) {
-      return res.status(404).json({
-        error: 'No pending comments found for this PR',
-        pullNumber
-      });
-    }
-
-    if (pendingComments.allPosted) {
-      return res.status(409).json({
-        error: 'All comments have already been posted for this PR',
-        pullNumber
-      });
-    }
-
-    // Post all comments
-    await interactiveCommentService.postAllComments(owner, repo, pullNumber, pendingComments, triggeredBy);
-
-    const successCount = pendingComments.findings.filter(f => f.posted).length;
-    const totalCount = pendingComments.findings.length;
-
-    res.json({
-      success: true,
-      message: 'All comments posted successfully',
-      totalFindings: totalCount,
-      postedFindings: successCount,
-      trackingId: pendingComments.trackingId
-    });
-
-  } catch (error) {
-    logger.error('Error posting all comments:', error);
-    res.status(500).json({
-      error: 'Failed to post all comments',
-      message: error.message
-    });
-  }
-});
-
-// NEW: Get interactive comment stats
-app.get('/api/comments/stats', (req, res) => {
-  try {
-    const stats = interactiveCommentService.getStats();
+    const stats = checkRunButtonService.getStats();
     res.json({
       success: true,
       timestamp: new Date().toISOString(),
-      stats
+      stats,
+      activeCheckRuns: Array.from(checkRunButtonService.activeCheckRuns.entries()).map(([id, data]) => ({
+        checkRunId: id,
+        owner: data.owner,
+        repo: data.repo,
+        pullNumber: data.pullNumber,
+        trackingId: data.trackingId,
+        postableFindings: data.postableFindings.length,
+        postedFindings: data.postableFindings.filter(f => f.posted).length,
+        createdAt: data.createdAt,
+        buttonStates: data.buttonStates
+      }))
     });
   } catch (error) {
-    logger.error('Error getting comment stats:', error);
+    logger.error('Error getting active check runs:', error);
     res.status(500).json({
-      error: 'Failed to get comment stats',
+      error: 'Failed to get active check runs',
       message: error.message
     });
   }
 });
 
-// NEW: Clean old pending comments (manual trigger for admin)
-app.post('/api/comments/cleanup', (req, res) => {
+// NEW: Get specific check run data
+app.get('/api/check-runs/:checkRunId', (req, res) => {
   try {
-    interactiveCommentService.cleanOldPendingComments();
+    const { checkRunId } = req.params;
+    const checkRunData = checkRunButtonService.activeCheckRuns.get(parseInt(checkRunId));
+    
+    if (!checkRunData) {
+      return res.status(404).json({
+        error: 'Check run not found',
+        checkRunId: parseInt(checkRunId)
+      });
+    }
+
     res.json({
       success: true,
-      message: 'Cleanup completed',
+      checkRunId: parseInt(checkRunId),
+      data: {
+        owner: checkRunData.owner,
+        repo: checkRunData.repo,
+        pullNumber: checkRunData.pullNumber,
+        trackingId: checkRunData.trackingId,
+        totalFindings: checkRunData.postableFindings.length,
+        postedFindings: checkRunData.postableFindings.filter(f => f.posted).length,
+        pendingFindings: checkRunData.postableFindings.filter(f => !f.posted).length,
+        createdAt: checkRunData.createdAt,
+        buttonStates: checkRunData.buttonStates,
+        findings: checkRunData.postableFindings.map((finding, index) => ({
+          index,
+          file: finding.file,
+          line: finding.line,
+          issue: finding.issue,
+          severity: finding.severity,
+          category: finding.category,
+          posted: finding.posted,
+          commentId: finding.commentId
+        }))
+      }
+    });
+  } catch (error) {
+    logger.error('Error getting check run data:', error);
+    res.status(500).json({
+      error: 'Failed to get check run data',
+      message: error.message
+    });
+  }
+});
+
+// NEW: Manual cleanup endpoint for check runs
+app.post('/api/check-runs/cleanup', (req, res) => {
+  try {
+    checkRunButtonService.cleanOldCheckRuns();
+    res.json({
+      success: true,
+      message: 'Check run cleanup completed',
       timestamp: new Date().toISOString()
     });
   } catch (error) {
-    logger.error('Error cleaning comments:', error);
+    logger.error('Error cleaning check runs:', error);
     res.status(500).json({
-      error: 'Failed to clean comments',
+      error: 'Failed to clean check runs',
       message: error.message
+    });
+  }
+});
+
+// NEW: Test check run button creation (for development/debugging)
+app.post('/debug/test-check-run-buttons', async (req, res) => {
+  try {
+    const { owner, repo, pullNumber, headSha } = req.body;
+    
+    if (!owner || !repo || !pullNumber || !headSha) {
+      return res.status(400).json({
+        error: 'Missing required fields: owner, repo, pullNumber, headSha'
+      });
+    }
+
+    // Create test analysis data
+    const testAnalysis = {
+      trackingId: `test-${Date.now()}`,
+      prInfo: {
+        prId: pullNumber,
+        title: 'Test PR',
+        repository: `${owner}/${repo}`,
+        author: 'test-user',
+        reviewers: [],
+        url: `https://github.com/${owner}/${repo}/pull/${pullNumber}`,
+      },
+      automatedAnalysis: {
+        totalIssues: 3,
+        severityBreakdown: { blocker: 0, critical: 1, major: 1, minor: 1, info: 0 },
+        categories: { bugs: 1, vulnerabilities: 1, securityHotspots: 0, codeSmells: 1 },
+        technicalDebtMinutes: 15
+      },
+      humanReviewAnalysis: {
+        reviewComments: 0,
+        issuesAddressedByReviewers: 0,
+        securityIssuesCaught: 0,
+        codeQualityIssuesCaught: 0
+      },
+      reviewAssessment: 'NOT PROPERLY REVIEWED',
+      detailedFindings: [
+        {
+          file: 'src/test.js',
+          line: 10,
+          issue: 'Test critical issue',
+          severity: 'CRITICAL',
+          category: 'VULNERABILITY',
+          suggestion: 'Fix this critical issue'
+        },
+        {
+          file: 'src/test.js',
+          line: 25,
+          issue: 'Test major issue',
+          severity: 'MAJOR',
+          category: 'BUG',
+          suggestion: 'Fix this major issue'
+        },
+        {
+          file: 'src/utils.js',
+          line: 5,
+          issue: 'Test minor issue',
+          severity: 'MINOR',
+          category: 'CODE_SMELL',
+          suggestion: 'Fix this minor issue'
+        }
+      ],
+      recommendation: 'This is a test check run with interactive buttons.'
+    };
+
+    const checkRun = await checkRunButtonService.createInteractiveCheckRun(
+      owner, repo, pullNumber, testAnalysis, headSha
+    );
+
+    res.json({
+      success: true,
+      message: 'Test check run created with interactive buttons',
+      checkRunId: checkRun.id,
+      trackingId: testAnalysis.trackingId,
+      postableFindings: 3,
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    logger.error('Error creating test check run:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      timestamp: new Date().toISOString()
     });
   }
 });
@@ -391,6 +400,14 @@ app.post('/debug/ai-test', async (req, res) => {
   }
 });
 
+// Dashboard route - serve the check run button dashboard
+app.get('/dashboard', (req, res) => {
+  res.sendFile(path.join(__dirname, '../public/check-run-button-dashboard.html'));
+});
+
+// Static files for dashboard
+app.use('/public', express.static(path.join(__dirname, '../public')));
+
 // Error handling middleware
 app.use((error, req, res, next) => {
   logger.error('Unhandled error:', error);
@@ -415,7 +432,9 @@ const server = app.listen(PORT, () => {
   logger.info(`Webhook URL: http://localhost:${PORT}/webhook`);
   logger.info(`Health check: http://localhost:${PORT}/health`);
   logger.info(`Status endpoint: http://localhost:${PORT}/status`);
-  logger.info(`Interactive Comments API: http://localhost:${PORT}/api/comments/*`);
+  logger.info(`Dashboard: http://localhost:${PORT}/dashboard`);
+  logger.info(`Check Run Button API: http://localhost:${PORT}/api/check-runs/*`);
+  logger.info(`Interactive button system enabled - PR analysis will create clickable buttons for comment posting`);
 });
 
 // Graceful shutdown
