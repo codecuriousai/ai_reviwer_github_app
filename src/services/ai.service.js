@@ -25,8 +25,8 @@ class AIService {
 
       if (this.provider === 'gemini' || config.ai.gemini.apiKey) {
         this.gemini = new GoogleGenerativeAI(config.ai.gemini.apiKey);
-        this.geminiModel = this.gemini.getGenerativeModel({ 
-          model: config.ai.gemini.model 
+        this.geminiModel = this.gemini.getGenerativeModel({
+          model: config.ai.gemini.model
         });
         logger.info('Gemini client initialized');
       }
@@ -44,7 +44,7 @@ class AIService {
       // Prepare data for analysis
       const analysisData = this.prepareAnalysisData(prData, existingComments);
       const prompt = getCodeReviewPrompt(analysisData, existingComments);
-      
+
       // Perform analysis with retry logic
       let rawResponse;
       try {
@@ -76,7 +76,7 @@ class AIService {
 
       logger.info(`AI analysis completed. Found ${enhancedAnalysis.automatedAnalysis.totalIssues} issues`);
       return enhancedAnalysis;
-      
+
     } catch (error) {
       logger.error('Critical error in AI analysis:', error);
       return this.createErrorFallbackAnalysis(`Critical Error: ${error.message}`);
@@ -87,43 +87,256 @@ class AIService {
   prepareAnalysisData(prData, existingComments) {
     const pr = prData.pr || prData || {};
     const files = prData.files || [];
-    const diff = prData.diff || '';
-    
-    const sanitizedDiff = diff ? sanitizeForAI(diff) : 'No diff available';
-    const truncatedDiff = sanitizedDiff.length > 8000 
-      ? sanitizedDiff.substring(0, 8000) + '\n... [truncated for analysis]' 
-      : sanitizedDiff;
+
+    // CRITICAL FIX: Instead of sending raw diff, send structured file data with line mappings
+    const structuredFiles = this.createStructuredFileData(files, prData.diff);
 
     return {
-      pr: {
-        number: pr.number || 0,
+      // Match your Angular app payload structure
+      repo_url: `https://github.com/${pr.repository}`,
+      branch_name: pr.sourceBranch || 'unknown',
+      pr_number: pr.number,
+      pr_id: pr.number,
+      repository: pr.repository,
+      target_branch: pr.targetBranch || 'main',
+      source_branch: pr.sourceBranch || 'unknown',
+
+      // Enhanced PR info matching your Angular structure
+      pr_info: {
+        id: pr.id,
+        number: pr.number,
         title: pr.title || 'No title',
         description: pr.description || 'No description',
         author: pr.author || 'unknown',
-        repository: pr.repository || 'owner/repo',
-        targetBranch: pr.targetBranch || 'unknown',
-        sourceBranch: pr.sourceBranch || 'unknown',
+        url: pr.url || '#',
+        state: pr.state || 'open',
+        created_at: pr.created_at || new Date().toISOString(),
+        updated_at: pr.updated_at || new Date().toISOString(),
         additions: pr.additions || 0,
         deletions: pr.deletions || 0,
-        url: pr.url || '#',
+        changed_files: files.length
       },
-      files: files.map(file => ({
-        filename: file.filename || 'unknown',
-        status: file.status || 'unknown',
-        additions: file.additions || 0,
-        deletions: file.deletions || 0,
-        changes: file.changes || 0,
-      })),
-      diff: truncatedDiff,
-      comments: existingComments || [],
+
+      // CRITICAL: Structured file changes with proper line mapping
+      file_changes: structuredFiles,
+
+      // Include existing comments for context
+      existing_comments: this.formatExistingComments(existingComments),
+
+      // Include reviewer info
+      reviewers: prData.reviewers || [],
+
+      // Analysis parameters
+      analysis_params: {
+        include_security_analysis: true,
+        include_code_quality: true,
+        include_performance_analysis: true,
+        max_issues_per_file: 10,
+        severity_threshold: 'MINOR'
+      }
     };
+  }
+
+  // NEW: Create structured file data with accurate line mappings (like your Angular app expects)
+  createStructuredFileData(files, rawDiff) {
+    const structuredFiles = [];
+
+    files.forEach(file => {
+      if (!file.patch) return; // Skip files without patches
+
+      const fileStructure = {
+        filename: file.filename,
+        status: file.status, // 'added', 'modified', 'deleted'
+        additions: file.additions,
+        deletions: file.deletions,
+        changes: file.changes,
+
+        // CRITICAL: Parse the patch to create line-by-line structure with proper mapping
+        lines: this.parseFileLines(file.patch, file.filename),
+
+        // Include the raw patch for reference but structured
+        patch_summary: this.createPatchSummary(file.patch),
+
+        // File metadata
+        blob_url: file.blob_url,
+        raw_url: file.raw_url,
+        sha: file.sha
+      };
+
+      structuredFiles.push(fileStructure);
+    });
+
+    return structuredFiles;
+  }
+
+  // NEW: Parse file patch into structured lines with proper mapping
+  parseFileLines(patch, filename) {
+    const lines = patch.split('\n');
+    const structuredLines = [];
+    let oldLineNum = 0;
+    let newLineNum = 0;
+    let currentHunk = null;
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+
+      // Parse hunk header
+      if (line.startsWith('@@')) {
+        const hunkMatch = line.match(/@@\s*-(\d+),?\d*\s*\+(\d+),?\d*\s*@@/);
+        if (hunkMatch) {
+          oldLineNum = parseInt(hunkMatch[1]) - 1;
+          newLineNum = parseInt(hunkMatch[2]) - 1;
+          currentHunk = {
+            oldStart: parseInt(hunkMatch[1]),
+            newStart: parseInt(hunkMatch[2]),
+            header: line
+          };
+        }
+        continue;
+      }
+
+      if (!currentHunk) continue;
+
+      const lineType = line.charAt(0);
+      const content = line.slice(1);
+
+      if (lineType === '-') {
+        // Deleted line
+        oldLineNum++;
+        structuredLines.push({
+          type: 'deleted',
+          oldLineNumber: oldLineNum,
+          newLineNumber: null,
+          content: content,
+          raw: line,
+          hunk: currentHunk.oldStart,
+          // CRITICAL: This line cannot receive comments
+          commentable: false
+        });
+      }
+      else if (lineType === '+') {
+        // Added line - THESE ARE THE LINES THAT CAN RECEIVE COMMENTS
+        newLineNum++;
+        structuredLines.push({
+          type: 'added',
+          oldLineNumber: null,
+          newLineNumber: newLineNum,
+          content: content,
+          raw: line,
+          hunk: currentHunk.newStart,
+          // CRITICAL: This is the actual line number for GitHub comments
+          commentable: true,
+          githubCommentLine: newLineNum  // This is what GitHub API expects
+        });
+      }
+      else if (lineType === ' ') {
+        // Context line
+        oldLineNum++;
+        newLineNum++;
+        structuredLines.push({
+          type: 'context',
+          oldLineNumber: oldLineNum,
+          newLineNumber: newLineNum,
+          content: content,
+          raw: line,
+          hunk: currentHunk.newStart,
+          // Context lines typically can't receive comments in PR reviews
+          commentable: false
+        });
+      }
+    }
+
+    logger.debug(`Parsed ${structuredLines.length} lines for ${filename}`, {
+      commentableLines: structuredLines.filter(l => l.commentable).length,
+      addedLines: structuredLines.filter(l => l.type === 'added').length
+    });
+
+    return structuredLines;
+  }
+
+  // NEW: Create patch summary for AI context
+  createPatchSummary(patch) {
+    const lines = patch.split('\n');
+    const hunks = [];
+    let currentHunk = null;
+
+    for (const line of lines) {
+      if (line.startsWith('@@')) {
+        if (currentHunk) hunks.push(currentHunk);
+        const hunkMatch = line.match(/@@\s*-(\d+),?(\d*)\s*\+(\d+),?(\d*)\s*@@(.*)?/);
+        if (hunkMatch) {
+          currentHunk = {
+            header: line,
+            oldStart: parseInt(hunkMatch[1]),
+            oldCount: hunkMatch[2] ? parseInt(hunkMatch[2]) : 1,
+            newStart: parseInt(hunkMatch[3]),
+            newCount: hunkMatch[4] ? parseInt(hunkMatch[4]) : 1,
+            context: hunkMatch[5] ? hunkMatch[5].trim() : '',
+            additions: 0,
+            deletions: 0
+          };
+        }
+      } else if (currentHunk) {
+        if (line.startsWith('+')) currentHunk.additions++;
+        if (line.startsWith('-')) currentHunk.deletions++;
+      }
+    }
+
+    if (currentHunk) hunks.push(currentHunk);
+
+    return {
+      totalHunks: hunks.length,
+      hunks: hunks,
+      totalAdditions: hunks.reduce((sum, h) => sum + h.additions, 0),
+      totalDeletions: hunks.reduce((sum, h) => sum + h.deletions, 0)
+    };
+  }
+
+  // NEW: Format existing comments for AI context
+  formatExistingComments(comments) {
+    return comments.map(comment => ({
+      id: comment.id,
+      user: comment.user,
+      body: comment.body,
+      created_at: comment.createdAt,
+      type: comment.type,
+      file: comment.path || null,
+      line: comment.line || null,
+      // Add context about what this comment addresses
+      context: this.extractCommentContext(comment.body)
+    }));
+  }
+
+  // NEW: Extract context from existing comments
+  extractCommentContext(body) {
+    const context = {
+      severity: null,
+      category: null,
+      isResolved: false
+    };
+
+    // Check for severity indicators
+    if (/critical|high|urgent/i.test(body)) context.severity = 'HIGH';
+    if (/medium|moderate/i.test(body)) context.severity = 'MEDIUM';
+    if (/low|minor|nitpick/i.test(body)) context.severity = 'LOW';
+
+    // Check for category
+    if (/security|vulnerability|exploit/i.test(body)) context.category = 'SECURITY';
+    if (/performance|optimization|slow/i.test(body)) context.category = 'PERFORMANCE';
+    if (/bug|error|issue/i.test(body)) context.category = 'BUG';
+    if (/style|formatting|lint/i.test(body)) context.category = 'STYLE';
+
+    // Check if resolved
+    context.isResolved = /resolved|fixed|addressed|done/i.test(body);
+
+    return context;
   }
 
   // OpenAI analysis
   async analyzeWithOpenAI(prompt) {
     try {
       logger.info('Sending request to OpenAI');
-      
+
       const response = await this.openai.chat.completions.create({
         model: config.ai.openai.model,
         messages: [
@@ -143,7 +356,7 @@ class AIService {
 
       const content = response.choices[0].message.content.trim();
       logger.info(`OpenAI response received (${content.length} characters)`);
-      
+
       return content;
     } catch (error) {
       logger.error('OpenAI API error:', error);
@@ -155,9 +368,9 @@ class AIService {
   async analyzeWithGemini(prompt) {
     try {
       logger.info('Sending request to Gemini');
-      
+
       const enhancedPrompt = `${prompt}\n\nIMPORTANT: Respond ONLY with valid JSON. No markdown formatting.`;
-      
+
       const result = await this.geminiModel.generateContent({
         contents: [{
           role: 'user',
@@ -171,9 +384,9 @@ class AIService {
 
       const response = await result.response;
       const content = response.text().trim();
-      
+
       logger.info(`Gemini response received (${content.length} characters)`);
-      
+
       return content;
     } catch (error) {
       logger.error('Gemini API error:', error);
@@ -187,7 +400,7 @@ class AIService {
     let originalResponse = '';
     let cleanedResponse = '';
     let parseError = null;
-    
+
     try {
       // Validate input
       if (!responseText || typeof responseText !== 'string') {
@@ -196,8 +409,8 @@ class AIService {
 
       originalResponse = responseText;
       cleanedResponse = responseText.trim();
-      
-      logger.debug('Starting to parse AI response', { 
+
+      logger.debug('Starting to parse AI response', {
         originalLength: originalResponse.length,
         preview: originalResponse.substring(0, 200)
       });
@@ -205,25 +418,25 @@ class AIService {
       // Step 1: Remove markdown formatting
       cleanedResponse = cleanedResponse.replace(/```json\s*/g, '');
       cleanedResponse = cleanedResponse.replace(/```\s*/g, '');
-      
+
       // Step 2: Find JSON boundaries
       const firstBraceIndex = cleanedResponse.indexOf('{');
       const lastBraceIndex = cleanedResponse.lastIndexOf('}');
-      
+
       if (firstBraceIndex === -1 || lastBraceIndex === -1) {
         throw new Error(`No valid JSON object found in response. First brace at: ${firstBraceIndex}, Last brace at: ${lastBraceIndex}`);
       }
-      
+
       // Extract JSON portion
       cleanedResponse = cleanedResponse.substring(firstBraceIndex, lastBraceIndex + 1);
-      
+
       // Step 3: Clean common JSON issues
       cleanedResponse = cleanedResponse
         .replace(/\n\s*\/\/.*/g, '') // Remove comments
         .replace(/\/\*[\s\S]*?\*\//g, '') // Remove multi-line comments
         .replace(/,(\s*[}\]])/g, '$1'); // Remove trailing commas
-      
-      logger.debug('Cleaned response for parsing', { 
+
+      logger.debug('Cleaned response for parsing', {
         cleanedLength: cleanedResponse.length,
         preview: cleanedResponse.substring(0, 200)
       });
@@ -243,7 +456,7 @@ class AIService {
 
       // Step 6: Validate structure
       this.validateAndNormalizeAnalysis(analysis);
-      
+
       logger.info('Successfully parsed and validated AI analysis response');
       return analysis;
 
@@ -266,7 +479,7 @@ class AIService {
   validateAndNormalizeAnalysis(analysis) {
     // Check required top-level fields
     const requiredFields = ['prInfo', 'automatedAnalysis', 'humanReviewAnalysis', 'reviewAssessment', 'recommendation'];
-    
+
     for (const field of requiredFields) {
       if (!analysis[field]) {
         // Create default structure if missing
@@ -281,7 +494,7 @@ class AIService {
         blocker: 0, critical: 0, major: 0, minor: 0, info: 0
       };
     }
-    
+
     if (!analysis.automatedAnalysis.categories) {
       analysis.automatedAnalysis.categories = {
         bugs: 0, vulnerabilities: 0, securityHotspots: 0, codeSmells: 0
@@ -460,7 +673,7 @@ class AIService {
   async checkHealth() {
     try {
       const testPrompt = `{"status": "OK", "test": true}`;
-      
+
       if (this.provider === 'openai' && this.openai) {
         const response = await this.openai.chat.completions.create({
           model: config.ai.openai.model,
@@ -468,11 +681,11 @@ class AIService {
           max_tokens: 50,
           response_format: { type: 'json_object' },
         });
-        
+
         const content = response.choices[0].message.content.trim();
         const parsed = JSON.parse(content);
         return parsed.status === 'OK';
-        
+
       } else if (this.provider === 'gemini' && this.geminiModel) {
         const result = await this.geminiModel.generateContent(`Return exactly: ${testPrompt}`);
         const response = await result.response;
@@ -480,7 +693,7 @@ class AIService {
         const parsed = JSON.parse(content);
         return parsed.status === 'OK';
       }
-      
+
       return false;
     } catch (error) {
       logger.error('AI health check failed:', error);
@@ -491,10 +704,10 @@ class AIService {
   // Helper methods for comment analysis
   countIssuesInComments(comments) {
     if (!Array.isArray(comments)) return 0;
-    
+
     const issueKeywords = ['bug', 'issue', 'problem', 'error', 'fix', 'wrong'];
     let count = 0;
-    
+
     comments.forEach(comment => {
       if (comment.body) {
         const body = comment.body.toLowerCase();
@@ -503,16 +716,16 @@ class AIService {
         }
       }
     });
-    
+
     return count;
   }
 
   countSecurityIssuesInComments(comments) {
     if (!Array.isArray(comments)) return 0;
-    
+
     const securityKeywords = ['security', 'vulnerability', 'exploit', 'injection'];
     let count = 0;
-    
+
     comments.forEach(comment => {
       if (comment.body) {
         const body = comment.body.toLowerCase();
@@ -521,16 +734,16 @@ class AIService {
         }
       }
     });
-    
+
     return count;
   }
 
   countCodeQualityIssuesInComments(comments) {
     if (!Array.isArray(comments)) return 0;
-    
+
     const qualityKeywords = ['refactor', 'clean', 'maintainable', 'complex'];
     let count = 0;
-    
+
     comments.forEach(comment => {
       if (comment.body) {
         const body = comment.body.toLowerCase();
@@ -539,7 +752,7 @@ class AIService {
         }
       }
     });
-    
+
     return count;
   }
 }

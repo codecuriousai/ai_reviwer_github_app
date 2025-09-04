@@ -248,7 +248,6 @@ class CheckRunButtonService {
     }
   }
 
-  // Post individual finding as inline comment with proper line validation
   async postIndividualFinding(owner, repo, pullNumber, headSha, finding, checkRunData) {
     logger.info(`Posting individual finding for ${finding.file}:${finding.line}`, {
       pullNumber,
@@ -256,28 +255,27 @@ class CheckRunButtonService {
     });
 
     try {
-      // First validate that the line exists and is commentable
-      const isValidLine = await githubService.validateCommentableLine(owner, repo, pullNumber, finding.file, finding.line);
+      // CRITICAL: Validate the finding against the original structured data
+      const validationResult = await this.validateFindingAgainstStructuredData(
+        owner, repo, pullNumber, finding
+      );
 
-      if (!isValidLine) {
-        // Try to find a commentable line near the target
-        const commentableLine = await githubService.findCommentableLine(owner, repo, pullNumber, finding.file, finding.line);
+      if (!validationResult.isValid) {
+        logger.error(`Invalid finding detected: ${validationResult.error}`);
+        throw new Error(validationResult.error);
+      }
 
-        if (!commentableLine) {
-          const errorMessage = `Cannot post comment for ${finding.file}:${finding.line}. This line is not part of the changes in this PR or cannot receive comments.`;
-          logger.error(errorMessage);
-          throw new Error(errorMessage);
-        }
+      // Use validated line number (might be adjusted)
+      const finalLineNumber = validationResult.validatedLine || finding.line;
+      const finalFileName = validationResult.validatedFile || finding.file;
 
-        // Update the finding with the corrected line number
-        const originalLine = finding.line;
-        finding.line = commentableLine;
-
-        // Add a note about line adjustment in the comment
-        finding.lineAdjusted = true;
-        finding.originalLine = originalLine;
-
-        logger.info(`Adjusted comment line from ${originalLine} to ${commentableLine} for ${finding.file}`);
+      if (finalLineNumber !== finding.line || finalFileName !== finding.file) {
+        logger.info(`Finding adjusted: ${finding.file}:${finding.line} -> ${finalFileName}:${finalLineNumber}`);
+        finding.originalLine = finding.line;
+        finding.originalFile = finding.file;
+        finding.line = finalLineNumber;
+        finding.file = finalFileName;
+        finding.wasAdjusted = true;
       }
 
       const commentBody = this.formatInlineComment(finding, checkRunData.trackingId);
@@ -297,7 +295,8 @@ class CheckRunButtonService {
       logger.info(`Individual finding posted successfully`, {
         file: finding.file,
         line: finding.line,
-        originalLine: finding.originalLine || finding.line,
+        originalLine: finding.originalLine,
+        wasAdjusted: finding.wasAdjusted || false,
         pullNumber
       });
 
@@ -305,6 +304,186 @@ class CheckRunButtonService {
       logger.error(`Error posting individual finding for ${finding.file}:${finding.line}:`, error);
       throw new Error(`Failed to post comment for ${finding.file}:${finding.line} - ${error.message}`);
     }
+  }
+
+  // NEW: Validate finding against the original structured data that was sent to AI
+  async validateFindingAgainstStructuredData(owner, repo, pullNumber, finding) {
+    try {
+      // Get the original PR data with structured file information
+      const prData = await githubService.getPullRequestData(owner, repo, pullNumber);
+      const structuredFiles = this.createStructuredFileDataForValidation(prData.files, prData.diff);
+
+      // Find the target file in structured data
+      const targetFile = structuredFiles.find(f => f.filename === finding.file);
+      if (!targetFile) {
+        return {
+          isValid: false,
+          error: `File ${finding.file} not found in PR changes`
+        };
+      }
+
+      // Find the exact line in structured data
+      const targetLine = targetFile.lines.find(l =>
+        l.newLineNumber === finding.line &&
+        l.commentable === true &&
+        l.type === 'added'
+      );
+
+      if (targetLine) {
+        // Perfect match - the AI got it right
+        return {
+          isValid: true,
+          validatedLine: finding.line,
+          validatedFile: finding.file,
+          lineType: targetLine.type,
+          lineContent: targetLine.content
+        };
+      }
+
+      // Line not found - try to find nearest commentable line
+      const commentableLines = targetFile.lines.filter(l => l.commentable && l.type === 'added');
+
+      if (commentableLines.length === 0) {
+        return {
+          isValid: false,
+          error: `No commentable lines found in file ${finding.file}`
+        };
+      }
+
+      // Find closest commentable line within reasonable distance
+      const maxDistance = 5;
+      let closestLine = null;
+      let minDistance = Infinity;
+
+      commentableLines.forEach(line => {
+        const distance = Math.abs(line.newLineNumber - finding.line);
+        if (distance <= maxDistance && distance < minDistance) {
+          minDistance = distance;
+          closestLine = line;
+        }
+      });
+
+      if (closestLine) {
+        logger.warn(`Adjusting line number for ${finding.file}: ${finding.line} -> ${closestLine.newLineNumber}`);
+        return {
+          isValid: true,
+          validatedLine: closestLine.newLineNumber,
+          validatedFile: finding.file,
+          wasAdjusted: true,
+          adjustment: {
+            originalLine: finding.line,
+            adjustedLine: closestLine.newLineNumber,
+            distance: minDistance
+          },
+          lineContent: closestLine.content
+        };
+      }
+
+      return {
+        isValid: false,
+        error: `No commentable line found near line ${finding.line} in file ${finding.file} (checked within ${maxDistance} lines)`
+      };
+
+    } catch (error) {
+      logger.error('Error validating finding against structured data:', error);
+      return {
+        isValid: false,
+        error: `Validation failed: ${error.message}`
+      };
+    }
+  }
+
+  // NEW: Create structured file data for validation (reuse logic from ai.service.js)
+  createStructuredFileDataForValidation(files, rawDiff) {
+    const structuredFiles = [];
+
+    files.forEach(file => {
+      if (!file.patch) return;
+
+      const lines = this.parseFileLinesForValidation(file.patch);
+
+      structuredFiles.push({
+        filename: file.filename,
+        status: file.status,
+        additions: file.additions,
+        deletions: file.deletions,
+        lines: lines
+      });
+    });
+
+    return structuredFiles;
+  }
+
+  // NEW: Parse file lines for validation (matching the AI service logic)
+  parseFileLinesForValidation(patch) {
+    const lines = patch.split('\n');
+    const structuredLines = [];
+    let oldLineNum = 0;
+    let newLineNum = 0;
+
+    for (const line of lines) {
+      if (line.startsWith('@@')) {
+        const hunkMatch = line.match(/@@\s*-(\d+),?\d*\s*\+(\d+),?\d*\s*@@/);
+        if (hunkMatch) {
+          oldLineNum = parseInt(hunkMatch[1]) - 1;
+          newLineNum = parseInt(hunkMatch[2]) - 1;
+        }
+        continue;
+      }
+
+      const lineType = line.charAt(0);
+      const content = line.slice(1);
+
+      if (lineType === '-') {
+        oldLineNum++;
+        // Deleted lines are not commentable
+      }
+      else if (lineType === '+') {
+        newLineNum++;
+        structuredLines.push({
+          type: 'added',
+          oldLineNumber: null,
+          newLineNumber: newLineNum,
+          content: content,
+          commentable: true
+        });
+      }
+      else if (lineType === ' ') {
+        oldLineNum++;
+        newLineNum++;
+        structuredLines.push({
+          type: 'context',
+          oldLineNumber: oldLineNum,
+          newLineNumber: newLineNum,
+          content: content,
+          commentable: false
+        });
+      }
+    }
+
+    return structuredLines;
+  }
+
+  // Enhanced comment formatting with adjustment info
+  formatInlineComment(finding, trackingId) {
+    const severityEmoji = this.getSeverityEmoji(finding.severity);
+    const categoryEmoji = this.getCategoryEmoji(finding.category);
+
+    let comment = `${severityEmoji} ${categoryEmoji} **AI Code Review Finding**\n\n`;
+    comment += `**Issue:** ${finding.issue}\n\n`;
+    comment += `**Severity:** ${finding.severity}\n`;
+    comment += `**Category:** ${finding.category}\n\n`;
+
+    // Add adjustment notice if line was changed
+    if (finding.wasAdjusted && finding.originalLine) {
+      comment += `**Note:** This issue was detected near line ${finding.originalLine} but commented on line ${finding.line} (closest commentable line in this PR).\n\n`;
+    }
+
+    comment += `**Suggestion:**\n${finding.suggestion}\n\n`;
+    comment += `---\n`;
+    comment += `*Posted via AI Code Reviewer | Analysis ID: \`${trackingId}\`*`;
+
+    return comment;
   }
 
   // Post all findings as inline comments with proper line validation and error handling
