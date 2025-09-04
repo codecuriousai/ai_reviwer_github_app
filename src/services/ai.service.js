@@ -98,7 +98,7 @@ class AIService {
     }
   }
 
-  // NEW: Helper function to get a snippet of code around a specific line
+  // Helper function to get a snippet of code around a specific line
   getLineContent(fullContent, lineNumber, contextLines = 3) {
     if (!fullContent) return '';
     const lines = fullContent.split('\n');
@@ -107,27 +107,50 @@ class AIService {
     return lines.slice(start, end).join('\n');
   }
 
-  // Generate a code fix suggestion using AI
+  // FIXED: generateFixSuggestion with robust JSON parsing to prevent Bug #1
   async generateFixSuggestion(fileSnippet, issueDescription, lineNumber) {
     const prompt = getFixSuggestionPrompt(fileSnippet, issueDescription, lineNumber);
-    let rawResponse;
+    let rawResponse = '';
 
     try {
-      rawResponse = await retryWithBackoff(async () => {
-        if (this.provider === 'openai') {
-          return await this.analyzeWithOpenAI(prompt);
-        } else if (this.provider === 'gemini') {
-          return await this.analyzeWithGemini(prompt);
-        } else {
-          throw new Error(`Unsupported AI provider: ${this.provider}`);
-        }
-      });
+        rawResponse = await retryWithBackoff(async () => {
+            if (this.provider === 'openai') return await this.analyzeWithOpenAI(prompt);
+            if (this.provider === 'gemini') return await this.analyzeWithGemini(prompt);
+            throw new Error(`Unsupported AI provider: ${this.provider}`);
+        });
 
-      const parsed = JSON.parse(rawResponse);
-      return parsed.suggestion || 'No specific fix suggestion provided.';
+        // Use robust parsing logic to handle potential non-JSON text from the AI
+        let cleanedResponse = rawResponse.trim().replace(/```json\s*/g, '').replace(/```\s*$/g, '');
+        const firstBraceIndex = cleanedResponse.indexOf('{');
+        const lastBraceIndex = cleanedResponse.lastIndexOf('}');
+        
+        if (firstBraceIndex === -1 || lastBraceIndex === -1) {
+            // This handles cases where the AI responds with plain text instead of JSON
+            // We can return the raw response as the suggestion in this case.
+            logger.warn('No valid JSON object found in fix suggestion response. Using raw response.', { rawResponse });
+            return rawResponse;
+        }
+        
+        cleanedResponse = cleanedResponse.substring(firstBraceIndex, lastBraceIndex + 1);
+
+        const parsed = JSON.parse(cleanedResponse);
+
+        if (parsed.suggestion && typeof parsed.suggestion === 'string' && parsed.suggestion.trim().length > 0) {
+            return parsed.suggestion.trim();
+        } else {
+            return 'AI returned an empty or invalid suggestion.';
+        }
+
     } catch (error) {
-      logger.error('Error generating fix suggestion:', error);
-      return 'Failed to generate a specific fix suggestion.';
+        logger.error('Error generating fix suggestion:', {
+            errorMessage: error.message,
+            rawResponse: rawResponse ? rawResponse.substring(0, 300) : 'N/A'
+        });
+        // If parsing fails but we have a raw response, return it as a fallback
+        if (rawResponse.trim()) {
+            return rawResponse.trim();
+        }
+        return `Unable to generate a specific code fix. Please review manually. (Reason: ${error.message})`;
     }
   }
 
@@ -594,3 +617,4 @@ class AIService {
 }
 
 module.exports = new AIService();
+

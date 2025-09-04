@@ -1,4 +1,33 @@
-// src/prompts/prompts.js - Fixed for Better JSON Responses
+// src/prompts/prompts.js - Fixed and Consolidated
+
+// FIXED: This prompt is now stricter to ensure a JSON-only response for code suggestions.
+const getFixSuggestionPrompt = (fileSnippet, issueDescription, lineNumber) => {
+  return `
+You are an expert software developer providing a code fix.
+
+CONTEXT:
+- Issue found near line: ${lineNumber}
+- Issue Description: ${issueDescription}
+- Relevant Code Snippet:
+\`\`\`
+${fileSnippet}
+\`\`\`
+
+CRITICAL RESPONSE REQUIREMENTS:
+- Your response MUST BE ONLY A VALID JSON OBJECT.
+- The JSON object must have a single key: "suggestion".
+- The value of "suggestion" must be a string containing ONLY the corrected code snippet.
+- Do NOT include explanations, apologies, markdown, or any text outside the JSON structure.
+- The suggestion should be a direct, drop-in replacement for the problematic code.
+
+EXAMPLE OF A PERFECT RESPONSE:
+{
+  "suggestion": "const securePassword = process.env.DB_PASSWORD;"
+}
+
+Provide the JSON response now.
+`;
+};
 
 const prompts = {
   // Main code review prompt for single structured comment - FIXED for better JSON
@@ -200,4 +229,6 @@ module.exports = {
   prompts,
   buildPrompt: prompts.buildPrompt,
   getCodeReviewPrompt: prompts.getCodeReviewPrompt,
+  getFixSuggestionPrompt, // FIXED: Export the consolidated prompt function
 };
+
