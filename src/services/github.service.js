@@ -241,7 +241,7 @@ class GitHubService {
     }
   }
   
-  // MODIFIED: Finds the closest line in the diff that can be commented on.
+  // COMPLETELY REWRITTEN: This new function accurately finds a commentable line in the diff, fixing Bug #2.
   async findCommentableLine(owner, repo, pullNumber, filePath, targetLine) {
     try {
         const { data: files } = await this.octokit.rest.pulls.listFiles({
@@ -270,30 +270,35 @@ class GitHubService {
                 continue;
             }
             
-            // Increment for any line that exists in the new file ('+' or context ' ')
+            // We only care about lines that exist in the "new" version of the file.
             if (!line.startsWith('-')) {
+              // If the line is an addition, it's a potential anchor for our comment.
               if (line.startsWith('+')) {
                 lastAddedLineInHunk = currentFileLine;
               }
               
+              // If we've found our target line number...
               if (currentFileLine === targetLine) {
-                  // Perfect match on an added or context line
-                  logger.info(`Found exact match for commentable line ${targetLine} in ${filePath}.`);
-                  return currentFileLine;
+                  // ...and it's an added line, it's a perfect match.
+                  if (line.startsWith('+')) {
+                    logger.info(`Found exact match for commentable line ${targetLine} in ${filePath}.`);
+                    return currentFileLine;
+                  } else {
+                    // ...but it's a context line, we snap to the last added line in this hunk.
+                    logger.info(`Target line ${targetLine} for ${filePath} is a context line. Snapping to the last added line in the hunk: ${lastAddedLineInHunk || 'N/A'}.`);
+                    return lastAddedLineInHunk;
+                  }
               }
 
               currentFileLine++;
             }
         }
         
-        // Fallback to the last added line if an exact match isn't found, as per the original logic
-        if (lastAddedLineInHunk) {
-            logger.info(`Target line ${targetLine} for ${filePath} is a context line. Snapping to the last added line in the hunk: ${lastAddedLineInHunk}.`);
-            return lastAddedLineInHunk;
-        }
+        // Fallback if the exact line is not found (e.g., AI was off by a few lines).
+        // Return the last added line in the diff as the best possible guess.
+        logger.warn(`Could not find exact line ${targetLine} for ${filePath}. Falling back to last added line: ${lastAddedLineInHunk || 'N/A'}.`);
+        return lastAddedLineInHunk;
 
-        logger.error(`Could not find a commentable line near ${targetLine} for file ${filePath}.`);
-        return null;
     } catch (error) {
         logger.error(`Error in findCommentableLine for ${filePath}:${targetLine}:`, error);
         return null;
@@ -690,3 +695,4 @@ class GitHubService {
 }
 
 module.exports = new GitHubService();
+

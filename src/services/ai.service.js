@@ -1,596 +1,706 @@
-// src/services/ai.service.js - Completely Fixed JSON Parsing with Proper Variable Scoping
+// src/services/github.service.js - Updated with Hybrid Commenting Workflow
 
-const OpenAI = require('openai');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
+const { Octokit } = require('@octokit/rest');
+const { createAppAuth } = require('@octokit/auth-app');
+const fs = require('fs');
+const path = require('path');
 const config = require('../config/config');
 const logger = require('../utils/logger');
-const { getCodeReviewPrompt, getFixSuggestionPrompt } = require('../prompts/prompts');
-const { retryWithBackoff, sanitizeForAI, isValidJSON } = require('../utils/helpers');
 
-class AIService {
+class GitHubService {
   constructor() {
-    this.provider = config.ai.provider;
-    this.initializeProviders();
-  }
-
-  // Initialize AI providers
-  initializeProviders() {
-    try {
-      if (this.provider === 'openai' || config.ai.openai.apiKey) {
-        this.openai = new OpenAI({
-          apiKey: config.ai.openai.apiKey,
-        });
-        logger.info('OpenAI client initialized');
-      }
-
-      if (this.provider === 'gemini' || config.ai.gemini.apiKey) {
-        this.gemini = new GoogleGenerativeAI(config.ai.gemini.apiKey);
-        this.geminiModel = this.gemini.getGenerativeModel({ 
-          model: config.ai.gemini.model 
-        });
-        logger.info('Gemini client initialized');
-      }
-    } catch (error) {
-      logger.error('Error initializing AI providers:', error);
-      throw new Error('Failed to initialize AI providers');
-    }
-  }
-
-  // Main function to analyze pull request
-  async analyzePullRequest(prData, existingComments = []) {
-    try {
-      logger.info(`Starting AI analysis for PR #${prData.pr.number}`);
-
-      // Prepare data for analysis
-      const analysisData = this.prepareAnalysisData(prData, existingComments);
-      const prompt = getCodeReviewPrompt(analysisData, existingComments);
-      
-      // Perform analysis with retry logic
-      let rawResponse;
-      try {
-        rawResponse = await retryWithBackoff(async () => {
-          if (this.provider === 'openai') {
-            return await this.analyzeWithOpenAI(prompt);
-          } else if (this.provider === 'gemini') {
-            return await this.analyzeWithGemini(prompt);
-          } else {
-            throw new Error(`Unsupported AI provider: ${this.provider}`);
-          }
-        });
-      } catch (aiError) {
-        logger.error('AI provider error:', aiError);
-        return this.createErrorFallbackAnalysis(`AI Provider Error: ${aiError.message}`);
-      }
-
-      // Validate and parse response
-      let parsedAnalysis;
-      try {
-        parsedAnalysis = this.parseAnalysisResponse(rawResponse);
-      } catch (parseError) {
-        logger.error('Response parsing error:', parseError);
-        return this.createErrorFallbackAnalysis(`Parsing Error: ${parseError.message}`);
-      }
-
-      // Enhance analysis with PR context
-      const enhancedAnalysis = this.enhanceAnalysisWithContext(parsedAnalysis, prData, existingComments);
-      
-      // Generate code suggestions for each finding
-      for (const finding of enhancedAnalysis.detailedFindings) {
-        if (finding.file !== 'AI_PARSING_ERROR' && finding.file !== 'AI_SERVICE_ERROR') {
-          try {
-            const fileContent = prData.files.find(f => f.filename === finding.file)?.content || '';
-            const fileSnippet = this.getLineContent(fileContent, finding.line);
-            const fixSuggestion = await this.generateFixSuggestion(fileSnippet, finding.issue, finding.line);
-            finding.suggestion = fixSuggestion;
-          } catch (error) {
-            logger.error(`Failed to generate fix suggestion for finding in ${finding.file}:${finding.line}:`, error);
-            finding.suggestion = 'Unable to generate a specific code fix. Please review manually.';
-          }
-        }
-      }
-
-      logger.info(`AI analysis completed. Found ${enhancedAnalysis.automatedAnalysis.totalIssues} issues`);
-      return enhancedAnalysis;
-      
-    } catch (error) {
-      logger.error('Critical error in AI analysis:', error);
-      return this.createErrorFallbackAnalysis(`Critical Error: ${error.message}`);
-    }
-  }
-
-  // NEW: Helper function to get a snippet of code around a specific line
-  getLineContent(fullContent, lineNumber, contextLines = 3) {
-    if (!fullContent) return '';
-    const lines = fullContent.split('\n');
-    const start = Math.max(0, lineNumber - 1 - contextLines);
-    const end = Math.min(lines.length, lineNumber + contextLines);
-    return lines.slice(start, end).join('\n');
-  }
-
-  // Generate a code fix suggestion using AI
-  async generateFixSuggestion(fileSnippet, issueDescription, lineNumber) {
-    const prompt = getFixSuggestionPrompt(fileSnippet, issueDescription, lineNumber);
-    let rawResponse;
-
-    try {
-      rawResponse = await retryWithBackoff(async () => {
-        if (this.provider === 'openai') {
-          return await this.analyzeWithOpenAI(prompt);
-        } else if (this.provider === 'gemini') {
-          return await this.analyzeWithGemini(prompt);
-        } else {
-          throw new Error(`Unsupported AI provider: ${this.provider}`);
-        }
-      });
-
-      const parsed = JSON.parse(rawResponse);
-      return parsed.suggestion || 'No specific fix suggestion provided.';
-    } catch (error) {
-      logger.error('Error generating fix suggestion:', error);
-      return 'Failed to generate a specific fix suggestion.';
-    }
-  }
-
-  // Prepare data for AI analysis with safe property access
-  prepareAnalysisData(prData, existingComments) {
-    const pr = prData.pr || prData || {};
-    const files = prData.files || [];
-    const diff = prData.diff || '';
-    
-    const sanitizedDiff = diff ? sanitizeForAI(diff) : 'No diff available';
-    const truncatedDiff = sanitizedDiff.length > 8000 
-      ? sanitizedDiff.substring(0, 8000) + '\n... [truncated for analysis]' 
-      : sanitizedDiff;
-
-    return {
-      pr: {
-        number: pr.number || 0,
-        title: pr.title || 'No title',
-        description: pr.description || 'No description',
-        author: pr.author || 'unknown',
-        repository: pr.repository || 'owner/repo',
-        targetBranch: pr.targetBranch || 'unknown',
-        sourceBranch: pr.sourceBranch || 'unknown',
-        additions: pr.additions || 0,
-        deletions: pr.deletions || 0,
-        url: pr.url || '#',
+    this.privateKey = this.getPrivateKey();
+    this.octokit = new Octokit({
+      authStrategy: createAppAuth,
+      auth: {
+        appId: config.github.appId,
+        privateKey: this.privateKey,
+        installationId: config.github.installationId,
       },
-      files: files.map(file => ({
-        filename: file.filename || 'unknown',
-        status: file.status || 'unknown',
-        additions: file.additions || 0,
-        deletions: file.deletions || 0,
-        changes: file.changes || 0,
-        content: file.content || '' // Include file content for fix suggestions
-      })),
-      diff: truncatedDiff,
-      comments: existingComments || [],
-    };
+    });
   }
 
-  // OpenAI analysis
-  async analyzeWithOpenAI(prompt) {
+  // Enhanced private key retrieval with better validation
+  getPrivateKey() {
     try {
-      logger.info('Sending request to OpenAI');
-      
-      const response = await this.openai.chat.completions.create({
-        model: config.ai.openai.model,
-        messages: [
-          {
-            role: 'system',
-            content: `You are an expert code reviewer. You MUST respond with ONLY valid JSON in the exact format specified. Do not include markdown formatting or additional text.`,
-          },
-          {
-            role: 'user',
-            content: prompt,
-          },
-        ],
-        max_tokens: config.ai.openai.maxTokens,
-        temperature: config.ai.openai.temperature,
-        response_format: { type: 'json_object' },
-      });
+      let privateKeyContent = null;
 
-      const content = response.choices[0].message.content.trim();
-      logger.info(`OpenAI response received (${content.length} characters)`);
+      // Method 1: Base64 encoded private key (for Render/Cloud deployment)
+      if (process.env.GITHUB_PRIVATE_KEY_BASE64) {
+        logger.info('Attempting to use base64 encoded private key from environment');
+        
+        try {
+          const base64Key = process.env.GITHUB_PRIVATE_KEY_BASE64.trim();
+          
+          // Validate base64 format
+          if (!this.isValidBase64(base64Key)) {
+            throw new Error('Invalid base64 format');
+          }
+          
+          privateKeyContent = Buffer.from(base64Key, 'base64').toString('utf-8');
+          logger.info('Successfully decoded base64 private key');
+          
+        } catch (decodeError) {
+          logger.error('Failed to decode base64 private key:', decodeError.message);
+          throw new Error(`Base64 private key decode failed: ${decodeError.message}`);
+        }
+      }
       
-      return content;
+      // Method 2: Direct private key content (fallback)
+      else if (process.env.GITHUB_PRIVATE_KEY) {
+        logger.info('Using direct private key content from environment');
+        privateKeyContent = process.env.GITHUB_PRIVATE_KEY.replace(/\\n/g, '\n');
+      }
+      
+      // Method 3: Private key file path (local development)
+      else if (process.env.GITHUB_PRIVATE_KEY_PATH && fs.existsSync(process.env.GITHUB_PRIVATE_KEY_PATH)) {
+        logger.info('Using private key from specified file path');
+        privateKeyContent = fs.readFileSync(process.env.GITHUB_PRIVATE_KEY_PATH, 'utf8');
+      }
+      
+      // Method 4: Default file location (local development fallback)
+      else {
+        const defaultPath = path.join(process.cwd(), 'private-key.pem');
+        if (fs.existsSync(defaultPath)) {
+          logger.info('Using private key from default location');
+          privateKeyContent = fs.readFileSync(defaultPath, 'utf8');
+        }
+      }
+
+      // Validate the private key content
+      if (!privateKeyContent) {
+        throw new Error('No private key content found. Please set GITHUB_PRIVATE_KEY_BASE64 environment variable.');
+      }
+
+      // Validate private key format
+      if (!this.validatePrivateKeyFormat(privateKeyContent)) {
+        logger.error('Private key validation failed');
+        throw new Error('Invalid private key format. Expected PEM format starting with -----BEGIN');
+      }
+
+      logger.info('Private key loaded and validated successfully');
+      return privateKeyContent;
+      
     } catch (error) {
-      logger.error('OpenAI API error:', error);
-      throw new Error(`OpenAI failed: ${error.message}`);
+      logger.error('Error getting GitHub private key:', error);
+      throw new Error(`Failed to load GitHub private key: ${error.message}`);
     }
   }
 
-  // Gemini analysis
-  async analyzeWithGemini(prompt) {
+  // Validate base64 format
+  isValidBase64(str) {
     try {
-      logger.info('Sending request to Gemini');
-      
-      const enhancedPrompt = `${prompt}\n\nIMPORTANT: Respond ONLY with valid JSON. No markdown formatting.`;
-      
-      const result = await this.geminiModel.generateContent({
-        contents: [{
-          role: 'user',
-          parts: [{ text: enhancedPrompt }],
-        }],
-        generationConfig: {
-          maxOutputTokens: config.ai.gemini.maxTokens,
-          temperature: config.ai.gemini.temperature,
+      const decoded = Buffer.from(str, 'base64').toString('base64');
+      return decoded === str;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  // Validate private key format
+  validatePrivateKeyFormat(keyContent) {
+    if (!keyContent || typeof keyContent !== 'string') {
+      return false;
+    }
+
+    const trimmedKey = keyContent.trim();
+    const hasBeginMarker = trimmedKey.includes('-----BEGIN');
+    const hasEndMarker = trimmedKey.includes('-----END');
+    const hasPrivateKeyLabel = trimmedKey.includes('PRIVATE KEY');
+    
+    return hasBeginMarker && hasEndMarker && hasPrivateKeyLabel && trimmedKey.length > 200;
+  }
+
+  // Test GitHub App authentication
+  async testAuthentication() {
+    try {
+      const { data: app } = await this.octokit.rest.apps.getAuthenticated();
+      logger.info(`GitHub App authenticated successfully: ${app.name} (ID: ${app.id})`);
+      return { success: true, app: app.name, id: app.id };
+    } catch (error) {
+      logger.error('GitHub App authentication failed:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  // Health check
+  async healthCheck() {
+    try {
+      const authResult = await this.testAuthentication();
+      return {
+        status: authResult.success ? 'healthy' : 'unhealthy',
+        authenticated: authResult.success,
+        timestamp: new Date().toISOString(),
+        ...(authResult.success ? { appName: authResult.app, appId: authResult.id } : { error: authResult.error })
+      };
+    } catch (error) {
+      return {
+        status: 'unhealthy',
+        error: error.message,
+        timestamp: new Date().toISOString(),
+      };
+    }
+  }
+
+  // Fetch pull request data with additional context
+  async getPullRequestData(owner, repo, pullNumber) {
+    try {
+      logger.info(`Fetching PR data for ${owner}/${repo}#${pullNumber}`);
+
+      // Get PR details
+      const { data: pr } = await this.octokit.rest.pulls.get({
+        owner,
+        repo,
+        pull_number: pullNumber,
+      });
+
+      // Get PR files
+      const { data: files } = await this.octokit.rest.pulls.listFiles({
+        owner,
+        repo,
+        pull_number: pullNumber,
+      });
+
+      // Filter files based on configuration
+      const filteredFiles = this.filterFiles(files);
+
+      // Get PR diff
+      const diff = await this.getPullRequestDiff(owner, repo, pullNumber);
+
+      // Get existing review comments
+      const comments = await this.getPullRequestComments(owner, repo, pullNumber);
+
+      // Get reviewers list
+      const reviewers = await this.getPullRequestReviewers(owner, repo, pullNumber);
+
+      return {
+        pr: {
+          id: pr.id,
+          number: pr.number,
+          title: pr.title,
+          description: pr.body || '',
+          author: pr.user.login,
+          targetBranch: pr.base.ref,
+          sourceBranch: pr.head.ref,
+          state: pr.state,
+          filesChanged: filteredFiles.length,
+          additions: pr.additions,
+          deletions: pr.deletions,
+          changedFiles: pr.changed_files,
+          url: pr.html_url,
+          repository: `${owner}/${repo}`,
+          head: { sha: pr.head.sha },
+        },
+        files: filteredFiles,
+        diff,
+        comments,
+        reviewers,
+      };
+    } catch (error) {
+      logger.error('Error fetching PR data:', error);
+      throw new Error(`Failed to fetch PR data: ${error.message}`);
+    }
+  }
+
+  // Get PR reviewers
+  async getPullRequestReviewers(owner, repo, pullNumber) {
+    try {
+      const { data: reviews } = await this.octokit.rest.pulls.listReviews({
+        owner,
+        repo,
+        pull_number: pullNumber,
+      });
+
+      const reviewers = Array.from(new Set(
+        reviews.map(review => review.user.login)
+      ));
+
+      return reviewers;
+    } catch (error) {
+      logger.error('Error fetching PR reviewers:', error);
+      return [];
+    }
+  }
+
+  // Get pull request diff
+  async getPullRequestDiff(owner, repo, pullNumber) {
+    try {
+      const { data: diff } = await this.octokit.rest.pulls.get({
+        owner,
+        repo,
+        pull_number: pullNumber,
+        mediaType: {
+          format: 'diff',
         },
       });
 
-      const response = await result.response;
-      const content = response.text().trim();
-      
-      logger.info(`Gemini response received (${content.length} characters)`);
-      
-      return content;
+      return diff;
     } catch (error) {
-      logger.error('Gemini API error:', error);
-      throw new Error(`Gemini failed: ${error.message}`);
+      logger.error('Error fetching PR diff:', error);
+      throw new Error(`Failed to fetch PR diff: ${error.message}`);
     }
   }
-
-  // COMPLETELY REWRITTEN: Safe JSON parsing with proper error handling
-  parseAnalysisResponse(responseText) {
-    // Initialize variables at the top to avoid scoping issues
-    let originalResponse = '';
-    let cleanedResponse = '';
-    let parseError = null;
-    
+  
+  // COMPLETELY REWRITTEN: findCommentableLine to accurately map comments and fix Bug #2
+  async findCommentableLine(owner, repo, pullNumber, filePath, targetLine) {
     try {
-      // Validate input
-      if (!responseText || typeof responseText !== 'string') {
-        throw new Error('Invalid response: empty or non-string response received from AI');
-      }
+        const { data: files } = await this.octokit.rest.pulls.listFiles({ owner, repo, pull_number: pullNumber });
+        const targetFile = files.find(file => file.filename === filePath);
 
-      originalResponse = responseText;
-      cleanedResponse = responseText.trim();
-      
-      logger.debug('Starting to parse AI response', { 
-        originalLength: originalResponse.length,
-        preview: originalResponse.substring(0, 200)
-      });
+        if (!targetFile || !targetFile.patch) {
+            logger.warn(`File not found in PR diff or has no patch: ${filePath}`);
+            return null;
+        }
 
-      // Step 1: Remove markdown formatting
-      cleanedResponse = cleanedResponse.replace(/```json\s*/g, '');
-      cleanedResponse = cleanedResponse.replace(/```\s*/g, '');
-      
-      // Step 2: Find JSON boundaries
-      const firstBraceIndex = cleanedResponse.indexOf('{');
-      const lastBraceIndex = cleanedResponse.lastIndexOf('}');
-      
-      if (firstBraceIndex === -1 || lastBraceIndex === -1) {
-        throw new Error(`No valid JSON object found in response. First brace at: ${firstBraceIndex}, Last brace at: ${lastBraceIndex}`);
-      }
-      
-      // Extract JSON portion
-      cleanedResponse = cleanedResponse.substring(firstBraceIndex, lastBraceIndex + 1);
-      
-      // Step 3: Clean common JSON issues
-      cleanedResponse = cleanedResponse
-        .replace(/\n\s*\/\/.*/g, '') // Remove comments
-        .replace(/\/\*[\s\S]*?\*\//g, '') // Remove multi-line comments
-        .replace(/,(\s*[}\]])/g, '$1'); // Remove trailing commas
-      
-      logger.debug('Cleaned response for parsing', { 
-        cleanedLength: cleanedResponse.length,
-        preview: cleanedResponse.substring(0, 200)
-      });
+        const patchLines = targetFile.patch.split('\n');
+        let fileLineCounter = 0;
+        let closestAddedLineInHunk = null;
 
-      // Step 4: Validate JSON format
-      if (!cleanedResponse.startsWith('{') || !cleanedResponse.endsWith('}')) {
-        throw new Error(`Invalid JSON boundaries after cleaning. Starts: '${cleanedResponse.substring(0, 10)}', Ends: '${cleanedResponse.slice(-10)}'`);
-      }
+        for (const line of patchLines) {
+            // Check for hunk header to reset the line counter
+            if (line.startsWith('@@')) {
+                const match = line.match(/\+(\d+)/);
+                if (match && match[1]) {
+                    fileLineCounter = parseInt(match[1], 10);
+                    closestAddedLineInHunk = null; // Reset for each new hunk
+                }
+                continue;
+            }
 
-      // Step 5: Parse JSON
-      let analysis;
-      try {
-        analysis = JSON.parse(cleanedResponse);
-      } catch (jsonError) {
-        throw new Error(`JSON.parse failed: ${jsonError.message}. Cleaned response: ${cleanedResponse.substring(0, 500)}`);
-      }
+            // Skip deleted lines as they don't affect the new file's line count
+            if (line.startsWith('-')) {
+                continue;
+            }
 
-      // Step 6: Validate structure
-      this.validateAndNormalizeAnalysis(analysis);
-      
-      logger.info('Successfully parsed and validated AI analysis response');
-      return analysis;
+            // Track the most recent added line in this hunk
+            if (line.startsWith('+')) {
+                closestAddedLineInHunk = fileLineCounter;
+            }
+            
+            // Check if the current line in the new file is our target
+            if (fileLineCounter === targetLine) {
+                // If the target line itself was added, it's the perfect place to comment.
+                if (line.startsWith('+')) {
+                    logger.info(`Found exact added line for comment: ${filePath}:${targetLine}`);
+                    return targetLine;
+                }
+                // If it's a context line, use the closest preceding added line in this hunk.
+                if (closestAddedLineInHunk) {
+                    logger.warn(`Target line ${targetLine} in ${filePath} is a context line. Snapping to nearest preceding added line: ${closestAddedLineInHunk}.`);
+                    return closestAddedLineInHunk;
+                }
+                // If it's a context line with no preceding added line in the hunk, it's un-commentable.
+                // We'll let the loop continue to see if a later hunk works.
+            }
 
+            // Increment the line counter for any line that exists in the new file ('+' or context ' ')
+            fileLineCounter++;
+        }
+        
+        // Fallback: If the target line was never reached (e.g., it's beyond the last change),
+        // use the last added line from the final hunk as the best guess.
+        if (closestAddedLineInHunk) {
+            logger.warn(`Target line ${targetLine} for ${filePath} not directly found or was un-commentable. Using last available added line in file: ${closestAddedLineInHunk}.`);
+            return closestAddedLineInHunk;
+        }
+
+        logger.error(`Could not find any commentable 'added' line near ${targetLine} for file ${filePath}.`);
+        return null;
     } catch (error) {
-      parseError = error;
-      logger.error('Failed to parse AI response', {
-        error: error.message,
-        originalResponseLength: originalResponse.length,
-        cleanedResponseLength: cleanedResponse.length,
-        originalPreview: originalResponse.substring(0, 300),
-        cleanedPreview: cleanedResponse.substring(0, 300)
+        logger.error(`Critical error in findCommentableLine for ${filePath}:${targetLine}:`, error);
+        return null;
+    }
+  }
+
+
+  // Get pull request review comments
+  async getPullRequestComments(owner, repo, pullNumber) {
+    try {
+      const [reviewComments, issueComments] = await Promise.all([
+        this.octokit.rest.pulls.listReviewComments({
+          owner,
+          repo,
+          pull_number: pullNumber,
+        }),
+        this.octokit.rest.issues.listComments({
+          owner,
+          repo,
+          issue_number: pullNumber,
+        }),
+      ]);
+
+      const allComments = [
+        ...reviewComments.data.map(comment => ({
+          id: comment.id,
+          body: comment.body,
+          user: comment.user.login,
+          createdAt: comment.created_at,
+          path: comment.path,
+          line: comment.line,
+          type: 'review',
+        })),
+        ...issueComments.data.map(comment => ({
+          id: comment.id,
+          body: comment.body,
+          user: comment.user.login,
+          createdAt: comment.created_at,
+          type: 'issue',
+        })),
+      ];
+
+      return allComments.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+    } catch (error) {
+      logger.error('Error fetching PR comments:', error);
+      throw new Error(`Failed to fetch PR comments: ${error.message}`);
+    }
+  }
+
+  // MODIFIED: Posts a single review comment. This is used for individual comments.
+  async postIndividualReviewComment(owner, repo, pullNumber, headSha, filePath, line, body) {
+    try {
+      const { data: comment } = await this.octokit.rest.pulls.createReviewComment({
+        owner,
+        repo,
+        pull_number: pullNumber,
+        commit_id: headSha,
+        path: filePath,
+        line: line,
+        body: body,
+      });
+      logger.info(`Individual review comment posted: ${comment.id}`);
+      return comment;
+    } catch (error) {
+      logger.error('Error posting individual review comment:', error);
+      throw new Error(`Failed to post individual review comment: ${error.message}`);
+    }
+  }
+  
+  // NEW: Posts a full review with a main body and multiple threaded comments.
+  // This is used for the "Post All Comments" action.
+  async postThreadedReview(owner, repo, pullNumber, headSha, body, inlineComments) {
+    try {
+      logger.info(`Posting threaded review with ${inlineComments.length} comments for ${owner}/${repo}#${pullNumber}`);
+      
+      const review = await this.octokit.rest.pulls.createReview({
+        owner,
+        repo,
+        pull_number: pullNumber,
+        commit_id: headSha,
+        event: 'COMMENT', // Use 'COMMENT' to submit without approving/requesting changes
+        body: body, // The main review comment body
+        comments: inlineComments.map(comment => ({
+          path: comment.path,
+          line: comment.line,
+          body: comment.body,
+        })),
       });
 
-      // Return fallback analysis with detailed error info
-      return this.createParsingErrorFallback(error.message, originalResponse, cleanedResponse);
+      logger.info(`Threaded review posted successfully: ${review.data.id}`);
+      return review;
+    } catch (error) {
+      logger.error('Error posting threaded review:', error);
+      throw new Error(`Failed to post threaded review: ${error.message}`);
     }
   }
 
-  // Validate and normalize analysis structure
-  validateAndNormalizeAnalysis(analysis) {
-    // Check required top-level fields
-    const requiredFields = ['prInfo', 'automatedAnalysis', 'humanReviewAnalysis', 'reviewAssessment', 'recommendation'];
+  // Filter files based on configuration
+  filterFiles(files) {
+    const { excludeFiles, maxFilesToAnalyze, maxFileSizeBytes } = config.review;
     
-    for (const field of requiredFields) {
-      if (!analysis[field]) {
-        // Create default structure if missing
-        analysis[field] = this.getDefaultFieldValue(field);
-        logger.warn(`Missing required field '${field}', using default value`);
-      }
-    }
-
-    // Normalize automatedAnalysis
-    if (!analysis.automatedAnalysis.severityBreakdown) {
-      analysis.automatedAnalysis.severityBreakdown = {
-        blocker: 0, critical: 0, major: 0, minor: 0, info: 0
-      };
-    }
-    
-    if (!analysis.automatedAnalysis.categories) {
-      analysis.automatedAnalysis.categories = {
-        bugs: 0, vulnerabilities: 0, securityHotspots: 0, codeSmells: 0
-      };
-    }
-
-    // Normalize detailedFindings
-    if (!Array.isArray(analysis.detailedFindings)) {
-      analysis.detailedFindings = [];
-    }
-
-    // Normalize each finding
-    analysis.detailedFindings = analysis.detailedFindings.map((finding, index) => {
-      return {
-        file: String(finding.file || finding.filename || `unknown-file-${index}`),
-        line: Number(finding.line || finding.lineNumber || 1),
-        issue: String(finding.issue || finding.description || finding.message || 'No description provided'),
-        severity: this.normalizeSeverity(finding.severity || finding.level),
-        category: this.normalizeCategory(finding.category || finding.type),
-        suggestion: String(finding.suggestion || finding.fix || finding.recommendation || 'No suggestion provided')
-      };
-    });
-
-    // Ensure numeric fields
-    analysis.automatedAnalysis.totalIssues = Number(analysis.automatedAnalysis.totalIssues) || 0;
-    analysis.automatedAnalysis.technicalDebtMinutes = Number(analysis.automatedAnalysis.technicalDebtMinutes) || 0;
-
-    // Validate review assessment
-    const validAssessments = ['PROPERLY REVIEWED', 'NOT PROPERLY REVIEWED', 'REVIEW REQUIRED'];
-    if (!validAssessments.includes(analysis.reviewAssessment)) {
-      analysis.reviewAssessment = 'REVIEW REQUIRED';
-    }
-  }
-
-  // Get default value for missing fields
-  getDefaultFieldValue(fieldName) {
-    const defaults = {
-      prInfo: {
-        prId: 'unknown',
-        title: 'Unknown',
-        repository: 'unknown/unknown',
-        author: 'unknown',
-        reviewers: [],
-        url: '#'
-      },
-      automatedAnalysis: {
-        totalIssues: 0,
-        severityBreakdown: { blocker: 0, critical: 0, major: 0, minor: 0, info: 0 },
-        categories: { bugs: 0, vulnerabilities: 0, securityHotspots: 0, codeSmells: 0 },
-        technicalDebtMinutes: 0
-      },
-      humanReviewAnalysis: {
-        reviewComments: 0,
-        issuesAddressedByReviewers: 0,
-        securityIssuesCaught: 0,
-        codeQualityIssuesCaught: 0
-      },
-      reviewAssessment: 'REVIEW REQUIRED',
-      recommendation: 'Unable to generate recommendation due to parsing issues',
-      detailedFindings: []
-    };
-
-    return defaults[fieldName] || null;
-  }
-
-  // Normalize severity values
-  normalizeSeverity(severity) {
-    const severityStr = String(severity || 'INFO').toUpperCase();
-    const validSeverities = ['BLOCKER', 'CRITICAL', 'MAJOR', 'MINOR', 'INFO'];
-    return validSeverities.includes(severityStr) ? severityStr : 'INFO';
-  }
-
-  // Normalize category values
-  normalizeCategory(category) {
-    const categoryStr = String(category || 'CODE_SMELL').toUpperCase();
-    const validCategories = ['BUG', 'VULNERABILITY', 'SECURITY_HOTSPOT', 'CODE_SMELL'];
-    return validCategories.includes(categoryStr) ? categoryStr : 'CODE_SMELL';
-  }
-
-  // Create parsing error fallback
-  createParsingErrorFallback(errorMessage, originalResponse, cleanedResponse) {
-    return {
-      prInfo: {
-        prId: 'parsing-error',
-        title: 'AI Response Parsing Error',
-        repository: 'unknown/unknown',
-        author: 'unknown',
-        reviewers: [],
-        url: '#'
-      },
-      automatedAnalysis: {
-        totalIssues: 1,
-        severityBreakdown: { blocker: 0, critical: 0, major: 1, minor: 0, info: 0 },
-        categories: { bugs: 0, vulnerabilities: 0, securityHotspots: 0, codeSmells: 1 },
-        technicalDebtMinutes: 15
-      },
-      humanReviewAnalysis: {
-        reviewComments: 0,
-        issuesAddressedByReviewers: 0,
-        securityIssuesCaught: 0,
-        codeQualityIssuesCaught: 0
-      },
-      reviewAssessment: 'REVIEW REQUIRED',
-      detailedFindings: [{
-        file: 'AI_PARSING_ERROR',
-        line: 1,
-        issue: `Failed to parse AI response: ${errorMessage}`,
-        severity: 'MAJOR',
-        category: 'CODE_SMELL',
-        suggestion: `Check AI service configuration. Original response length: ${originalResponse.length}, Cleaned length: ${cleanedResponse.length}. Review server logs for full details.`
-      }],
-      recommendation: `AI response parsing failed: ${errorMessage}. Please check AI provider configuration, API keys, and network connectivity. See server logs for detailed debugging information.`
-    };
-  }
-
-  // Create general error fallback
-  createErrorFallbackAnalysis(errorMessage) {
-    return {
-      prInfo: {
-        prId: 'error',
-        title: 'AI Analysis Error',
-        repository: 'unknown/unknown',
-        author: 'unknown',
-        reviewers: [],
-        url: '#'
-      },
-      automatedAnalysis: {
-        totalIssues: 1,
-        severityBreakdown: { blocker: 0, critical: 1, major: 0, minor: 0, info: 0 },
-        categories: { bugs: 0, vulnerabilities: 0, securityHotspots: 0, codeSmells: 1 },
-        technicalDebtMinutes: 30
-      },
-      humanReviewAnalysis: {
-        reviewComments: 0,
-        issuesAddressedByReviewers: 0,
-        securityIssuesCaught: 0,
-        codeQualityIssuesCaught: 0
-      },
-      reviewAssessment: 'REVIEW REQUIRED',
-      detailedFindings: [{
-        file: 'AI_SERVICE_ERROR',
-        line: 1,
-        issue: `AI analysis service error: ${errorMessage}`,
-        severity: 'CRITICAL',
-        category: 'CODE_SMELL',
-        suggestion: 'Check AI service configuration, API keys, and ensure the service is available. Review application logs for detailed error information.'
-      }],
-      recommendation: `AI analysis encountered an error: ${errorMessage}. Please verify configuration and try again.`
-    };
-  }
-
-  // Enhance analysis with PR context
-  enhanceAnalysisWithContext(analysis, prData, existingComments) {
-    // Safely enhance prInfo
-    if (analysis.prInfo && prData.pr) {
-      analysis.prInfo.prId = prData.pr.number;
-      analysis.prInfo.title = prData.pr.title;
-      analysis.prInfo.repository = prData.pr.repository;
-      analysis.prInfo.author = prData.pr.author;
-      analysis.prInfo.url = prData.pr.url;
-      analysis.prInfo.reviewers = prData.reviewers || [];
-    }
-
-    // Enhance human review analysis
-    if (analysis.humanReviewAnalysis) {
-      analysis.humanReviewAnalysis.reviewComments = existingComments.length;
-      analysis.humanReviewAnalysis.issuesAddressedByReviewers = this.countIssuesInComments(existingComments);
-      analysis.humanReviewAnalysis.securityIssuesCaught = this.countSecurityIssuesInComments(existingComments);
-      analysis.humanReviewAnalysis.codeQualityIssuesCaught = this.countCodeQualityIssuesInComments(existingComments);
-    }
-
-    return analysis;
-  }
-
-  // Check AI service health
-  async checkHealth() {
-    try {
-      const testPrompt = `{"status": "OK", "test": true}`;
-      
-      if (this.provider === 'openai' && this.openai) {
-        const response = await this.openai.chat.completions.create({
-          model: config.ai.openai.model,
-          messages: [{ role: 'user', content: `Return exactly: ${testPrompt}` }],
-          max_tokens: 50,
-          response_format: { type: 'json_object' },
+    return files
+      .filter(file => {
+        // Check file extension exclusions
+        const isExcluded = excludeFiles.some(pattern => {
+          const regex = new RegExp(pattern.replace('*', '.*'));
+          return regex.test(file.filename);
         });
         
-        const content = response.choices[0].message.content.trim();
-        const parsed = JSON.parse(content);
-        return parsed.status === 'OK';
+        // Check file size
+        const isTooLarge = file.changes > maxFileSizeBytes;
         
-      } else if (this.provider === 'gemini' && this.geminiModel) {
-        const result = await this.geminiModel.generateContent(`Return exactly: ${testPrompt}`);
-        const response = await result.response;
-        const content = response.text().trim();
-        const parsed = JSON.parse(content);
-        return parsed.status === 'OK';
-      }
+        // Only include added or modified files
+        const isRelevant = ['added', 'modified'].includes(file.status);
+        
+        return !isExcluded && !isTooLarge && isRelevant;
+      })
+      .slice(0, maxFilesToAnalyze);
+  }
+
+  // MODIFIED: Post structured comment as a general comment on the PR.
+  // This is for the initial review summary, as requested.
+  async postStructuredReviewComment(owner, repo, pullNumber, analysis) {
+    try {
+      logger.info(`Posting enhanced structured review as general comment for ${owner}/${repo}#${pullNumber}`);
+
+      // Generate the main comment body
+      const commentBody = this.formatEnhancedStructuredComment(analysis);
       
-      return false;
+      const { data: comment } = await this.octokit.rest.issues.createComment({
+        owner,
+        repo,
+        issue_number: pullNumber,
+        body: commentBody,
+      });
+
+      logger.info(`Enhanced structured review as general comment posted: ${comment.id}`);
+      return comment;
     } catch (error) {
-      logger.error('AI health check failed:', error);
-      return false;
+      logger.error('Error posting enhanced structured review comment:', error);
+      throw new Error(`Failed to post enhanced structured review comment: ${error.message}`);
     }
   }
 
-  // Helper methods for comment analysis
-  countIssuesInComments(comments) {
-    if (!Array.isArray(comments)) return 0;
+  // MODIFIED: Format structured comment (for main review body)
+  formatEnhancedStructuredComment(analysis) {
+    const { 
+      prInfo, 
+      automatedAnalysis, 
+      humanReviewAnalysis, 
+      reviewAssessment, 
+      recommendation 
+    } = analysis;
+
+    let comment = `🔍 **MERGE REQUEST REVIEW ANALYSIS**\n`;
+    comment += `==================================================\n\n`;
     
-    const issueKeywords = ['bug', 'issue', 'problem', 'error', 'fix', 'wrong'];
-    let count = 0;
+    // PR Information Section
+    comment += `📋 **Pull Request Information:**\n`;
+    comment += `• PR ID: ${prInfo.prId || 'unknown'}\n`;
+    comment += `• Title: ${prInfo.title || 'No title'}\n`;
+    comment += `• Repository: ${prInfo.repository || 'unknown/unknown'}\n`;
+    comment += `• Author: ${prInfo.author || 'unknown'}\n`;
+    comment += `• Reviewer(s): ${(prInfo.reviewers && prInfo.reviewers.length > 0) ? prInfo.reviewers.join(', ') : 'None yet'}\n`;
+    comment += `• URL: ${prInfo.url || '#'}\n\n`;
+
+    // Automated Analysis Results
+    comment += `🤖 **AUTOMATED ANALYSIS RESULTS:**\n`;
+    comment += `• Issues Found: ${automatedAnalysis.totalIssues || 0}\n`;
     
-    comments.forEach(comment => {
-      if (comment.body) {
-        const body = comment.body.toLowerCase();
-        if (issueKeywords.some(keyword => body.includes(keyword))) {
-          count++;
-        }
-      }
-    });
+    const severity = automatedAnalysis.severityBreakdown || {};
+    comment += `• Severity Breakdown: 🚫 ${severity.blocker || 0} | `;
+    comment += `🔴 ${severity.critical || 0} | `;
+    comment += `🟡 ${severity.major || 0} | `;
+    comment += `🔵 ${severity.minor || 0} | `;
+    comment += `ℹ️ ${severity.info || 0}\n`;
     
-    return count;
+    const categories = automatedAnalysis.categories || {};
+    comment += `• Categories: 🐛 ${categories.bugs || 0} | `;
+    comment += `🔒 ${categories.vulnerabilities || 0} | `;
+    comment += `⚠️ ${categories.securityHotspots || 0} | `;
+    comment += `💨 ${categories.codeSmell || 0}\n`;
+    comment += `• Technical Debt: ${automatedAnalysis.technicalDebtMinutes || 0} minutes\n\n`;
+
+    // Human Review Analysis
+    comment += `👥 **HUMAN REVIEW ANALYSIS:**\n`;
+    comment += `• Review Comments: ${humanReviewAnalysis.reviewComments || 0}\n`;
+    comment += `• Issues Addressed by Reviewers: ${humanReviewAnalysis.issuesAddressedByReviewers || 0}\n`;
+    comment += `• Security Issues Caught: ${humanReviewAnalysis.securityIssuesCaught || 0}\n`;
+    comment += `• Code Quality Issues Caught: ${humanReviewAnalysis.codeQualityIssuesCaught || 0}\n\n`;
+
+    // Review Assessment
+    comment += `⚖️ **REVIEW ASSESSMENT:**\n`;
+    comment += `${reviewAssessment || 'REVIEW REQUIRED'}\n\n`;
+
+    // Recommendation
+    comment += `🎯 **RECOMMENDATION:**\n`;
+    comment += `${recommendation || 'No specific recommendation available'}\n\n`;
+    
+    // Interactive Commenting Instructions (now as a footer)
+    comment += `---
+    *🔧 Analysis completed by AI Code Reviewer using SonarQube Standards*
+    *⏱️ Generated at: ${new Date().toISOString()}*
+    *🆔 Analysis ID: \`${analysis.trackingId}\`*\n\n`;
+    
+    comment += `💬 **How to Post Code Suggestions:**
+    *Use the interactive buttons in the AI Code Review check run to post individual or all findings directly to the code.*
+    *Individual comments will be posted as separate review comments. Clicking "Post All Comments" will create a single, consolidated review with threaded comments.*`;
+
+    return comment;
   }
 
-  countSecurityIssuesInComments(comments) {
-    if (!Array.isArray(comments)) return 0;
-    
-    const securityKeywords = ['security', 'vulnerability', 'exploit', 'injection'];
-    let count = 0;
-    
-    comments.forEach(comment => {
-      if (comment.body) {
-        const body = comment.body.toLowerCase();
-        if (securityKeywords.some(keyword => body.includes(keyword))) {
-          count++;
-        }
-      }
-    });
-    
-    return count;
+  // MODIFIED: Format inline comment with code suggestions
+  formatInlineComment(finding, trackingId) {
+    const severityEmoji = this.getSeverityEmoji(finding.severity);
+    const categoryEmoji = this.getCategoryEmoji(finding.category);
+
+    let comment = `${severityEmoji} ${categoryEmoji} **AI Code Review Finding**\n\n`;
+    comment += `**Issue:** ${finding.issue}\n\n`;
+    comment += `**Severity:** ${finding.severity}\n`;
+    comment += `**Category:** ${finding.category}\n\n`;
+    comment += `**Suggestion:**\n\`\`\`suggestion\n${finding.suggestion}\n\`\`\`\n\n`;
+    comment += `---\n`;
+    comment += `*Posted via AI Code Reviewer | Analysis ID: \`${trackingId}\`*`;
+
+    return comment;
   }
 
-  countCodeQualityIssuesInComments(comments) {
-    if (!Array.isArray(comments)) return 0;
+  // Helper: Get severity emoji
+  getSeverityEmoji(severity) {
+    const emojiMap = {
+      'BLOCKER': '🚫',
+      'CRITICAL': '🔴',
+      'MAJOR': '🟡',
+      'MINOR': '🔵',
+      'INFO': 'ℹ️'
+    };
+    return emojiMap[severity] || 'ℹ️';
+  }
+
+  // Helper: Get category emoji
+  getCategoryEmoji(category) {
+    const emojiMap = {
+      'BUG': '🐛',
+      'VULNERABILITY': '🔒',
+      'SECURITY_HOTSPOT': '⚠️',
+      'CODE_SMELL': '💨'
+    };
+    return emojiMap[category] || '💨';
+  }
+
+  // Post a general comment on the PR (for notifications)
+  async postGeneralComment(owner, repo, pullNumber, body) {
+    try {
+      const { data: comment } = await this.octokit.rest.issues.createComment({
+        owner,
+        repo,
+        issue_number: pullNumber,
+        body,
+      });
+
+      logger.info(`General comment posted: ${comment.id}`);
+      return comment;
+    } catch (error) {
+      logger.error('Error posting general comment:', error);
+      throw new Error(`Failed to post general comment: ${error.message}`);
+    }
+  }
+
+  // Post review comment (for compatibility)
+  async postReviewComment(owner, repo, pullNumber, comments) {
+    try {
+      logger.info(`Posting review comments for ${owner}/${repo}#${pullNumber}`);
+
+      const reviewBody = typeof comments === 'string' ? comments : this.formatReviewBody(comments);
+      
+      const { data: review } = await this.octokit.rest.pulls.createReview({
+        owner,
+        repo,
+        pull_number: pullNumber,
+        event: 'COMMENT',
+        body: reviewBody,
+        comments: comments.inlineComments || [],
+      });
+
+      logger.info(`Review posted successfully: ${review.id}`);
+      return review;
+    } catch (error) {
+      logger.error('Error posting review comment:', error);
+      throw new Error(`Failed to post review comment: ${error.message}`);
+    }
+  }
+
+  // Format review body (legacy compatibility)
+  formatReviewBody(analysis) {
+    if (typeof analysis === 'string') {
+      return analysis;
+    }
     
-    const qualityKeywords = ['refactor', 'clean', 'maintainable', 'complex'];
-    let count = 0;
+    // If it's the new structured format, use the enhanced formatter
+    if (analysis.prInfo) {
+      return this.formatEnhancedStructuredComment(analysis, analysis.trackingId || 'unknown');
+    }
     
-    comments.forEach(comment => {
-      if (comment.body) {
-        const body = comment.body.toLowerCase();
-        if (qualityKeywords.some(keyword => body.includes(keyword))) {
-          count++;
-        }
-      }
-    });
+    // Legacy format handling
+    const { summary, issues, recommendations } = analysis;
     
-    return count;
+    let body = `## 🤖 AI Code Review Summary\n\n`;
+    body += `**Overall Rating:** ${summary?.overallRating || 'UNKNOWN'}\n`;
+    body += `**Total Issues:** ${summary?.totalIssues || 0}\n\n`;
+    
+    if (recommendations && recommendations.length > 0) {
+      body += `### 💡 Recommendations\n`;
+      recommendations.forEach(rec => {
+        body += `- ${rec}\n`;
+      });
+    }
+    
+    return body;
+  }
+
+  // Create check run for AI Review button
+  async createCheckRun(owner, repo, checkRunData) {
+    try {
+      logger.info(`Creating check run: ${checkRunData.name} for ${owner}/${repo}`);
+      
+      const { data: checkRun } = await this.octokit.rest.checks.create({
+        owner,
+        repo,
+        ...checkRunData,
+      });
+
+      logger.info(`Check run created: ${checkRun.id}`);
+      return checkRun;
+    } catch (error) {
+      logger.error('Error creating check run:', error);
+      throw new Error(`Failed to create check run: ${error.message}`);
+    }
+  }
+
+  // Update existing check run
+  async updateCheckRun(owner, repo, checkRunId, updateData) {
+    try {
+      const { data: checkRun } = await this.octokit.rest.checks.update({
+        owner,
+        repo,
+        check_run_id: checkRunId,
+        ...updateData,
+      });
+
+      logger.info(`Check run updated: ${checkRunId} - Status: ${updateData.status || 'updated'}`);
+      return checkRun;
+    } catch (error) {
+      logger.error(`Error updating check run ${checkRunId}:`, error);
+      throw new Error(`Failed to update check run: ${error.message}`);
+    }
+  }
+
+  // Update an existing comment
+  async updateComment(owner, repo, commentId, body) {
+    try {
+      const { data: comment } = await this.octokit.rest.issues.updateComment({
+        owner,
+        repo,
+        comment_id: commentId,
+        body,
+      });
+
+      logger.info(`Comment updated: ${commentId}`);
+      return comment;
+    } catch (error) {
+      logger.error('Error updating comment:', error);
+      throw new Error(`Failed to update comment: ${error.message}`);
+    }
+  }
+
+  // Delete a comment
+  async deleteComment(owner, repo, commentId) {
+    try {
+      await this.octokit.rest.issues.deleteComment({
+        owner,
+        repo,
+        comment_id: commentId,
+      });
+      logger.info(`Comment deleted: ${commentId}`);
+    } catch (error) {
+      logger.warn(`Failed to delete comment ${commentId}:`, error.message);
+    }
+  }
+
+  // Check if branch is in target branches list
+  isTargetBranch(branch) {
+    return config.review.targetBranches.includes(branch);
   }
 }
 
-module.exports = new AIService();
+module.exports = new GitHubService();
+
