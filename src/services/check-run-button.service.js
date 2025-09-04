@@ -206,7 +206,7 @@ class CheckRunButtonService {
       await this.updateCheckRunProgress(repository, checkRunId, checkRunData, actionId);
 
       if (actionId === 'post-all') {
-        // Post all comments
+        // Post all comments as a single threaded review
         await this.postAllFindings(owner, repo, pullNumber, headSha, postableFindings, checkRunData);
         
         // Update all button states
@@ -217,7 +217,7 @@ class CheckRunButtonService {
         });
         
       } else if (actionId.startsWith('comment-finding-')) {
-        // Post individual comment
+        // Post individual comment as a single review comment
         const findingIndex = parseInt(actionId.replace('comment-finding-', ''));
         const finding = postableFindings[findingIndex];
         
@@ -248,7 +248,7 @@ class CheckRunButtonService {
     }
   }
 
-  // Post individual finding as inline comment
+  // MODIFIED: Post individual finding as a single, unthreaded review comment.
   async postIndividualFinding(owner, repo, pullNumber, headSha, finding, checkRunData) {
     logger.info(`Posting individual finding for ${finding.file}:${finding.line}`, {
       pullNumber,
@@ -263,30 +263,32 @@ class CheckRunButtonService {
       throw new Error(errorMessage);
     }
     
-    const commentBody = this.formatInlineComment(finding, checkRunData.trackingId);
+    const commentBody = githubService.formatInlineComment(finding, checkRunData.trackingId);
 
-    // Post as a review with a single comment
-    const commentsToPost = [{
-      path: finding.file,
-      line: commentableLine,
-      body: commentBody,
-    }];
-
-    await githubService.postReviewComments(owner, repo, pullNumber, headSha, commentsToPost);
+    // Post as a single, unthreaded review comment
+    const comment = await githubService.postIndividualReviewComment(
+      owner, 
+      repo, 
+      pullNumber, 
+      headSha, 
+      finding.file, 
+      commentableLine, 
+      commentBody
+    );
 
     // Mark finding as posted
     finding.posted = true;
-    // We don't get a comment ID back easily from the review API for a single comment, so this is left out for now.
-    // finding.commentId = comment.id;
+    finding.commentId = comment.id;
 
-    logger.info(`Individual finding posted as part of a review`, {
+    logger.info(`Individual finding posted as a single review comment`, {
       file: finding.file,
       line: commentableLine,
-      pullNumber
+      pullNumber,
+      commentId: comment.id
     });
   }
 
-  // Post all findings as inline comments
+  // MODIFIED: Post all findings as a single, threaded review.
   async postAllFindings(owner, repo, pullNumber, headSha, postableFindings, checkRunData) {
     logger.info(`Posting all findings for PR #${pullNumber}`, {
       count: postableFindings.length,
@@ -310,7 +312,7 @@ class CheckRunButtonService {
           throw new Error(`Could not find a valid diff line near line ${finding.line} for file "${finding.file}". Skipping comment.`);
         }
         
-        const commentBody = this.formatInlineComment(finding, checkRunData.trackingId);
+        const commentBody = githubService.formatInlineComment(finding, checkRunData.trackingId);
 
         commentsToPost.push({
           path: finding.file,
@@ -329,17 +331,14 @@ class CheckRunButtonService {
     
     // Post all comments in a single review
     if (commentsToPost.length > 0) {
+      const reviewBody = this.formatBulkPostSummary(successCount, errors.length, errors, checkRunData.trackingId);
       try {
-        await githubService.postReviewComments(owner, repo, pullNumber, headSha, commentsToPost);
+        await githubService.postThreadedReview(owner, repo, pullNumber, headSha, reviewBody, commentsToPost);
       } catch (bulkPostError) {
         logger.error('Error in bulk posting to GitHub:', bulkPostError);
         errors.push(`Bulk posting failed: ${bulkPostError.message}`);
       }
     }
-
-    // Post summary comment
-    const summaryMessage = this.formatBulkPostSummary(successCount, errors.length, errors, checkRunData.trackingId);
-    await githubService.postGeneralComment(owner, repo, pullNumber, summaryMessage);
 
     logger.info(`Bulk posting completed`, {
       pullNumber,
@@ -349,22 +348,6 @@ class CheckRunButtonService {
     });
 
     return { successCount, errorCount: errors.length, errors };
-  }
-
-  // Format inline comment for a finding
-  formatInlineComment(finding, trackingId) {
-    const severityEmoji = this.getSeverityEmoji(finding.severity);
-    const categoryEmoji = this.getCategoryEmoji(finding.category);
-
-    let comment = `${severityEmoji} ${categoryEmoji} **AI Code Review Finding**\n\n`;
-    comment += `**Issue:** ${finding.issue}\n\n`;
-    comment += `**Severity:** ${finding.severity}\n`;
-    comment += `**Category:** ${finding.category}\n\n`;
-    comment += `**Suggestion:**\n${finding.suggestion}\n\n`;
-    comment += `---\n`;
-    comment += `*Posted via AI Code Reviewer | Analysis ID: \`${trackingId}\`*`;
-
-    return comment;
   }
 
   // Format bulk posting summary

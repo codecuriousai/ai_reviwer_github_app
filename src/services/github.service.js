@@ -1,4 +1,4 @@
-// src/services/github.service.js - Enhanced with Interactive Comment Support and Correct Line Finding
+// src/services/github.service.js - Updated with Hybrid Commenting Workflow
 
 const { Octokit } = require('@octokit/rest');
 const { createAppAuth } = require('@octokit/auth-app');
@@ -269,37 +269,29 @@ class GitHubService {
                 }
                 continue;
             }
-
-            if (line.startsWith('-')) {
-                continue; // Deleted lines don't exist in the 'new' file, so don't increment file line counter
-            }
-
-            // If we've passed the target line, and we saw an added line in this hunk, that's our best bet.
-            if (currentFileLine > targetLine && lastAddedLineInHunk) {
-                logger.info(`Target line ${targetLine} for ${filePath} seems to be a context line. Snapping to the last added line in the hunk: ${lastAddedLineInHunk}.`);
-                return lastAddedLineInHunk;
-            }
-
-            if (line.startsWith('+')) {
-                if (currentFileLine === targetLine) {
-                    logger.info(`Found exact match for commentable line ${targetLine} in ${filePath}.`);
-                    return targetLine; // Perfect match on an added line
-                }
-                lastAddedLineInHunk = currentFileLine;
-            }
             
             // Increment for any line that exists in the new file ('+' or context ' ')
             if (!line.startsWith('-')) {
+              if (line.startsWith('+')) {
+                lastAddedLineInHunk = currentFileLine;
+              }
+              
+              if (currentFileLine === targetLine) {
+                  // Perfect match on an added or context line
+                  logger.info(`Found exact match for commentable line ${targetLine} in ${filePath}.`);
+                  return currentFileLine;
+              }
+
               currentFileLine++;
             }
         }
-
-        // If the target line was after the last change in the last hunk
+        
+        // Fallback to the last added line if an exact match isn't found, as per the original logic
         if (lastAddedLineInHunk) {
-            logger.info(`Target line ${targetLine} for ${filePath} is after the last change. Snapping to last added line: ${lastAddedLineInHunk}.`);
+            logger.info(`Target line ${targetLine} for ${filePath} is a context line. Snapping to the last added line in the hunk: ${lastAddedLineInHunk}.`);
             return lastAddedLineInHunk;
         }
-        
+
         logger.error(`Could not find a commentable line near ${targetLine} for file ${filePath}.`);
         return null;
     } catch (error) {
@@ -307,7 +299,6 @@ class GitHubService {
         return null;
     }
   }
-
 
   // Get pull request review comments
   async getPullRequestComments(owner, repo, pullNumber) {
@@ -350,16 +341,32 @@ class GitHubService {
       throw new Error(`Failed to fetch PR comments: ${error.message}`);
     }
   }
-  
-  // NEW: Post multiple comments in a single review
-  async postReviewComments(owner, repo, pullNumber, headSha, comments) {
-    try {
-      if (!Array.isArray(comments) || comments.length === 0) {
-        logger.info('No comments to post, skipping review creation.');
-        return;
-      }
 
-      logger.info(`Posting ${comments.length} review comments for ${owner}/${repo}#${pullNumber}`);
+  // MODIFIED: Posts a single review comment. This is used for individual comments.
+  async postIndividualReviewComment(owner, repo, pullNumber, headSha, filePath, line, body) {
+    try {
+      const { data: comment } = await this.octokit.rest.pulls.createReviewComment({
+        owner,
+        repo,
+        pull_number: pullNumber,
+        commit_id: headSha,
+        path: filePath,
+        line: line,
+        body: body,
+      });
+      logger.info(`Individual review comment posted: ${comment.id}`);
+      return comment;
+    } catch (error) {
+      logger.error('Error posting individual review comment:', error);
+      throw new Error(`Failed to post individual review comment: ${error.message}`);
+    }
+  }
+  
+  // NEW: Posts a full review with a main body and multiple threaded comments.
+  // This is used for the "Post All Comments" action.
+  async postThreadedReview(owner, repo, pullNumber, headSha, body, inlineComments) {
+    try {
+      logger.info(`Posting threaded review with ${inlineComments.length} comments for ${owner}/${repo}#${pullNumber}`);
       
       const review = await this.octokit.rest.pulls.createReview({
         owner,
@@ -367,19 +374,19 @@ class GitHubService {
         pull_number: pullNumber,
         commit_id: headSha,
         event: 'COMMENT', // Use 'COMMENT' to submit without approving/requesting changes
-        comments: comments.map(comment => ({
+        body: body, // The main review comment body
+        comments: inlineComments.map(comment => ({
           path: comment.path,
           line: comment.line,
           body: comment.body,
-          // You may also want to include start_line/start_side for multi-line comments
         })),
       });
 
-      logger.info(`Review with comments posted successfully: ${review.data.id}`);
+      logger.info(`Threaded review posted successfully: ${review.data.id}`);
       return review;
     } catch (error) {
-      logger.error('Error posting review with comments:', error);
-      throw new Error(`Failed to post review with comments: ${error.message}`);
+      logger.error('Error posting threaded review:', error);
+      throw new Error(`Failed to post threaded review: ${error.message}`);
     }
   }
 
@@ -406,28 +413,14 @@ class GitHubService {
       .slice(0, maxFilesToAnalyze);
   }
 
-  // ENHANCED: Post structured comment with interactive buttons
+  // MODIFIED: Post structured comment as a general comment on the PR.
+  // This is for the initial review summary, as requested.
   async postStructuredReviewComment(owner, repo, pullNumber, analysis) {
     try {
-      logger.info(`Posting enhanced structured review comment for ${owner}/${repo}#${pullNumber}`);
+      logger.info(`Posting enhanced structured review as general comment for ${owner}/${repo}#${pullNumber}`);
 
-      // Import interactive comment service
-      const interactiveCommentService = require('./interactive-comment.service');
-
-      // Store pending comments for interactive posting
-      const trackingId = analysis.trackingId || `analysis-${Date.now()}`;
-      analysis.trackingId = trackingId; // Ensure trackingId is set
-      
-      if (analysis.detailedFindings && analysis.detailedFindings.length > 0) {
-        interactiveCommentService.storePendingComments(
-          owner, repo, pullNumber, 
-          analysis.detailedFindings, 
-          trackingId
-        );
-      }
-
-      // Generate enhanced comment with interactive elements
-      const commentBody = this.formatEnhancedStructuredComment(analysis, trackingId);
+      // Generate the main comment body
+      const commentBody = this.formatEnhancedStructuredComment(analysis);
       
       const { data: comment } = await this.octokit.rest.issues.createComment({
         owner,
@@ -436,7 +429,7 @@ class GitHubService {
         body: commentBody,
       });
 
-      logger.info(`Enhanced structured review comment posted: ${comment.id}`);
+      logger.info(`Enhanced structured review as general comment posted: ${comment.id}`);
       return comment;
     } catch (error) {
       logger.error('Error posting enhanced structured review comment:', error);
@@ -444,14 +437,13 @@ class GitHubService {
     }
   }
 
-  // ENHANCED: Format structured comment with interactive commenting features
-  formatEnhancedStructuredComment(analysis, trackingId) {
+  // MODIFIED: Format structured comment (for main review body)
+  formatEnhancedStructuredComment(analysis) {
     const { 
       prInfo, 
       automatedAnalysis, 
       humanReviewAnalysis, 
       reviewAssessment, 
-      detailedFindings, 
       recommendation 
     } = analysis;
 
@@ -496,95 +488,35 @@ class GitHubService {
     comment += `⚖️ **REVIEW ASSESSMENT:**\n`;
     comment += `${reviewAssessment || 'REVIEW REQUIRED'}\n\n`;
 
-    // ENHANCED: Detailed Findings with Interactive Comment Buttons
-    comment += `🔍 **DETAILED FINDINGS:**\n`;
-    
-    if (detailedFindings && Array.isArray(detailedFindings) && detailedFindings.length > 0) {
-      // Filter postable findings (ones with valid file/line info)
-      const postableFindings = detailedFindings.filter(finding => 
-        finding.file && 
-        finding.file !== 'unknown-file' && 
-        finding.line && 
-        finding.line > 0 &&
-        finding.file !== 'AI_ANALYSIS_ERROR'
-      );
-
-      const nonPostableFindings = detailedFindings.filter(finding => 
-        !finding.file || 
-        finding.file === 'unknown-file' || 
-        !finding.line || 
-        finding.line <= 0 ||
-        finding.file === 'AI_ANALYSIS_ERROR'
-      );
-
-      // Show postable findings with interactive buttons
-      if (postableFindings.length > 0) {
-        comment += `\n**📝 Issues that can be posted as inline comments:**\n\n`;
-        
-        postableFindings.forEach((finding, index) => {
-          const severityEmoji = this.getSeverityEmoji(finding.severity);
-          const categoryEmoji = this.getCategoryEmoji(finding.category);
-          
-          comment += `**${index + 1}.** ${severityEmoji} ${categoryEmoji} **${finding.file}:${finding.line}**\n`;
-          comment += `   └─ **Issue:** ${finding.issue}\n`;
-          comment += `   └─ **Suggestion:** ${finding.suggestion}\n`;
-          comment += `   └─ **Actions:** Comment with \`/ai-comment ${trackingId}-finding-${index}\` to post as inline comment\n\n`;
-        });
-
-        // Post all comments button
-        comment += `🔄 **BULK ACTION:**\n`;
-        comment += `Comment with \`/ai-comment ${trackingId}-all\` to post all ${postableFindings.length} findings as inline comments at once.\n\n`;
-      }
-
-      // Show non-postable findings (general issues)
-      if (nonPostableFindings.length > 0) {
-        comment += `\n**📋 General issues (cannot be posted as inline comments):**\n\n`;
-        
-        nonPostableFindings.forEach((finding, index) => {
-          const severityEmoji = this.getSeverityEmoji(finding.severity);
-          const categoryEmoji = this.getCategoryEmoji(finding.category);
-          
-          comment += `**${postableFindings.length + index + 1}.** ${severityEmoji} ${categoryEmoji} **${finding.file || 'General'}**\n`;
-          comment += `   └─ **Issue:** ${finding.issue}\n`;
-          comment += `   └─ **Suggestion:** ${finding.suggestion}\n\n`;
-        });
-      }
-
-      if (postableFindings.length === 0 && nonPostableFindings.length === 0) {
-        comment += `No specific issues found that were missed by reviewers.\n\n`;
-      }
-
-    } else {
-      comment += `No additional issues found that were missed by reviewers.\n\n`;
-    }
-
-    // Interactive Instructions Section
-    const postableCount = detailedFindings ? detailedFindings.filter(finding => 
-      finding.file && 
-      finding.file !== 'unknown-file' && 
-      finding.line && 
-      finding.line > 0 &&
-      finding.file !== 'AI_ANALYSIS_ERROR'
-    ).length : 0;
-
-    if (postableCount > 0) {
-      comment += `📝 **HOW TO POST INLINE COMMENTS:**\n`;
-      comment += `1. **Individual Comments:** Reply with \`/ai-comment ${trackingId}-finding-X\` (replace X with finding number 0, 1, 2...)\n`;
-      comment += `2. **All Comments:** Reply with \`/ai-comment ${trackingId}-all\` to post all findings at once\n`;
-      comment += `3. **Result:** AI findings will be posted as line-specific review comments on the affected code\n\n`;
-      comment += `💡 **Example:** To post the first finding as an inline comment, reply with:\n`;
-      comment += `\`/ai-comment ${trackingId}-finding-0\`\n\n`;
-    }
-
     // Recommendation
     comment += `🎯 **RECOMMENDATION:**\n`;
     comment += `${recommendation || 'No specific recommendation available'}\n\n`;
+    
+    // Interactive Commenting Instructions (now as a footer)
+    comment += `---
+    *🔧 Analysis completed by AI Code Reviewer using SonarQube Standards*
+    *⏱️ Generated at: ${new Date().toISOString()}*
+    *🆔 Analysis ID: \`${analysis.trackingId}\`*\n\n`;
+    
+    comment += `💬 **How to Post Code Suggestions:**
+    *Use the interactive buttons in the AI Code Review check run to post individual or all findings directly to the code.*
+    *Individual comments will be posted as separate review comments. Clicking "Post All Comments" will create a single, consolidated review with threaded comments.*`;
 
-    // Footer
+    return comment;
+  }
+
+  // MODIFIED: Format inline comment with code suggestions
+  formatInlineComment(finding, trackingId) {
+    const severityEmoji = this.getSeverityEmoji(finding.severity);
+    const categoryEmoji = this.getCategoryEmoji(finding.category);
+
+    let comment = `${severityEmoji} ${categoryEmoji} **AI Code Review Finding**\n\n`;
+    comment += `**Issue:** ${finding.issue}\n\n`;
+    comment += `**Severity:** ${finding.severity}\n`;
+    comment += `**Category:** ${finding.category}\n\n`;
+    comment += `**Suggestion:**\n\`\`\`suggestion\n${finding.suggestion}\n\`\`\`\n\n`;
     comment += `---\n`;
-    comment += `*🔧 Analysis completed by AI Code Reviewer using SonarQube Standards*\n`;
-    comment += `*⏱️ Generated at: ${new Date().toISOString()}*\n`;
-    comment += `*🆔 Analysis ID: \`${trackingId}\`*`;
+    comment += `*Posted via AI Code Reviewer | Analysis ID: \`${trackingId}\`*`;
 
     return comment;
   }

@@ -1,4 +1,4 @@
-// src/services/webhook.service.js - Enhanced with Check Run Button Support
+// src/services/webhook.service.js - Updated with Check Run Button Support
 
 const githubService = require('./github.service');
 const aiService = require('./ai.service');
@@ -105,8 +105,6 @@ class WebhookService {
         pullRequest.number,
         `**AI Code Review Available**\n\n` +
         `Click the "Start AI Review" button above or comment \`/ai-review\` to trigger analysis.\n\n` +
-        `**Files to analyze:** ${pullRequest.changed_files}\n` +
-        `**Lines changed:** +${pullRequest.additions} -${pullRequest.deletions}\n\n` +
         `*Analysis will create interactive buttons for posting AI findings directly to your code.*`
       );
     }
@@ -351,7 +349,7 @@ class WebhookService {
     }
   }
 
-  // ENHANCED: Process AI review and create interactive button check run
+  // MODIFIED: Process AI review and create interactive button check run.
   async processAIReviewWithButtons(repository, pullRequest, initialCheckRun, trackingId) {
     const owner = repository.owner.login;
     const repo = repository.name;
@@ -417,7 +415,7 @@ class WebhookService {
         return;
       }
 
-      // If successful, post comment and create interactive check run
+      // If successful, post general comment and create interactive check run
       await this.completeWithButtonsCheckRun(owner, repo, pullNumber, initialCheckRun, analysis, headSha);
 
     } catch (error) {
@@ -426,7 +424,7 @@ class WebhookService {
     }
   }
 
-  // ENHANCED: Complete with interactive button check run
+  // MODIFIED: Complete with interactive button check run and post general comment first.
   async completeWithButtonsCheckRun(owner, repo, pullNumber, initialCheckRun, analysis, headSha) {
     try {
       logger.info(`Creating interactive check run for PR #${pullNumber}`, { 
@@ -434,7 +432,7 @@ class WebhookService {
         totalIssues: analysis.automatedAnalysis.totalIssues
       });
 
-      // Post the traditional structured comment first
+      // Post the structured comment as a general comment first, as requested
       await githubService.postStructuredReviewComment(owner, repo, pullNumber, analysis);
 
       // Create the new interactive check run with buttons

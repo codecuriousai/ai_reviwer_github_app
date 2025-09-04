@@ -4,7 +4,7 @@ const OpenAI = require('openai');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const config = require('../config/config');
 const logger = require('../utils/logger');
-const { getCodeReviewPrompt } = require('../prompts/prompts');
+const { getCodeReviewPrompt, getFixSuggestionPrompt } = require('../prompts/prompts');
 const { retryWithBackoff, sanitizeForAI, isValidJSON } = require('../utils/helpers');
 
 class AIService {
@@ -73,6 +73,20 @@ class AIService {
 
       // Enhance analysis with PR context
       const enhancedAnalysis = this.enhanceAnalysisWithContext(parsedAnalysis, prData, existingComments);
+      
+      // Generate code suggestions for each finding
+      for (const finding of enhancedAnalysis.detailedFindings) {
+        if (finding.file !== 'AI_PARSING_ERROR' && finding.file !== 'AI_SERVICE_ERROR') {
+          try {
+            const fileContent = prData.files.find(f => f.filename === finding.file)?.content || '';
+            const fixSuggestion = await this.generateFixSuggestion(fileContent, finding.issue, finding.line);
+            finding.suggestion = fixSuggestion;
+          } catch (error) {
+            logger.error(`Failed to generate fix suggestion for finding in ${finding.file}:${finding.line}:`, error);
+            finding.suggestion = 'Unable to generate a specific code fix. Please review manually.';
+          }
+        }
+      }
 
       logger.info(`AI analysis completed. Found ${enhancedAnalysis.automatedAnalysis.totalIssues} issues`);
       return enhancedAnalysis;
@@ -80,6 +94,30 @@ class AIService {
     } catch (error) {
       logger.error('Critical error in AI analysis:', error);
       return this.createErrorFallbackAnalysis(`Critical Error: ${error.message}`);
+    }
+  }
+
+  // Generate a code fix suggestion using AI
+  async generateFixSuggestion(fileContent, issueDescription, lineNumber) {
+    const prompt = getFixSuggestionPrompt(fileContent, issueDescription, lineNumber);
+    let rawResponse;
+
+    try {
+      rawResponse = await retryWithBackoff(async () => {
+        if (this.provider === 'openai') {
+          return await this.analyzeWithOpenAI(prompt);
+        } else if (this.provider === 'gemini') {
+          return await this.analyzeWithGemini(prompt);
+        } else {
+          throw new Error(`Unsupported AI provider: ${this.provider}`);
+        }
+      });
+
+      const parsed = JSON.parse(rawResponse);
+      return parsed.suggestion || 'No specific fix suggestion provided.';
+    } catch (error) {
+      logger.error('Error generating fix suggestion:', error);
+      return 'Failed to generate a specific fix suggestion.';
     }
   }
 
@@ -113,6 +151,7 @@ class AIService {
         additions: file.additions || 0,
         deletions: file.deletions || 0,
         changes: file.changes || 0,
+        content: file.content || '' // Include file content for fix suggestions
       })),
       diff: truncatedDiff,
       comments: existingComments || [],
