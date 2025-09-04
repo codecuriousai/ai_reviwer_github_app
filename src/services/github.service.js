@@ -28,36 +28,36 @@ class GitHubService {
       // Method 1: Base64 encoded private key (for Render/Cloud deployment)
       if (process.env.GITHUB_PRIVATE_KEY_BASE64) {
         logger.info('Attempting to use base64 encoded private key from environment');
-        
+
         try {
           const base64Key = process.env.GITHUB_PRIVATE_KEY_BASE64.trim();
-          
+
           // Validate base64 format
           if (!this.isValidBase64(base64Key)) {
             throw new Error('Invalid base64 format');
           }
-          
+
           privateKeyContent = Buffer.from(base64Key, 'base64').toString('utf-8');
           logger.info('Successfully decoded base64 private key');
-          
+
         } catch (decodeError) {
           logger.error('Failed to decode base64 private key:', decodeError.message);
           throw new Error(`Base64 private key decode failed: ${decodeError.message}`);
         }
       }
-      
+
       // Method 2: Direct private key content (fallback)
       else if (process.env.GITHUB_PRIVATE_KEY) {
         logger.info('Using direct private key content from environment');
         privateKeyContent = process.env.GITHUB_PRIVATE_KEY.replace(/\\n/g, '\n');
       }
-      
+
       // Method 3: Private key file path (local development)
       else if (process.env.GITHUB_PRIVATE_KEY_PATH && fs.existsSync(process.env.GITHUB_PRIVATE_KEY_PATH)) {
         logger.info('Using private key from specified file path');
         privateKeyContent = fs.readFileSync(process.env.GITHUB_PRIVATE_KEY_PATH, 'utf8');
       }
-      
+
       // Method 4: Default file location (local development fallback)
       else {
         const defaultPath = path.join(process.cwd(), 'private-key.pem');
@@ -80,7 +80,7 @@ class GitHubService {
 
       logger.info('Private key loaded and validated successfully');
       return privateKeyContent;
-      
+
     } catch (error) {
       logger.error('Error getting GitHub private key:', error);
       throw new Error(`Failed to load GitHub private key: ${error.message}`);
@@ -107,7 +107,7 @@ class GitHubService {
     const hasBeginMarker = trimmedKey.includes('-----BEGIN');
     const hasEndMarker = trimmedKey.includes('-----END');
     const hasPrivateKeyLabel = trimmedKey.includes('PRIVATE KEY');
-    
+
     return hasBeginMarker && hasEndMarker && hasPrivateKeyLabel && trimmedKey.length > 200;
   }
 
@@ -240,74 +240,212 @@ class GitHubService {
       throw new Error(`Failed to fetch PR diff: ${error.message}`);
     }
   }
-  
+
   // NEW: Finds the closest line in the diff that can be commented on.
   async findCommentableLine(owner, repo, pullNumber, filePath, targetLine) {
     try {
-        const { data: files } = await this.octokit.rest.pulls.listFiles({
-            owner,
-            repo,
-            pull_number: pullNumber,
-        });
+      logger.info(`Finding commentable line for ${filePath}:${targetLine} in PR #${pullNumber}`);
 
-        const targetFile = files.find(file => file.filename === filePath);
-        if (!targetFile || !targetFile.patch) {
-            logger.warn(`File not found in PR diff or has no patch: ${filePath}`);
-            return null;
-        }
+      const { data: files } = await this.octokit.rest.pulls.listFiles({
+        owner,
+        repo,
+        pull_number: pullNumber,
+      });
 
-        const patchLines = targetFile.patch.split('\n');
-        let currentFileLine = 0;
-        let lastAddedLineInHunk = null;
-
-        for (const line of patchLines) {
-            if (line.startsWith('@@')) {
-                const match = line.match(/\+(\d+)/);
-                if (match && match[1]) {
-                    currentFileLine = parseInt(match[1], 10);
-                    lastAddedLineInHunk = null; // Reset for new hunk
-                }
-                continue;
-            }
-
-            if (line.startsWith('-')) {
-                continue; // Deleted lines don't exist in the 'new' file, so don't increment file line counter
-            }
-
-            // If we've passed the target line, and we saw an added line in this hunk, that's our best bet.
-            if (currentFileLine > targetLine && lastAddedLineInHunk) {
-                logger.info(`Target line ${targetLine} for ${filePath} seems to be a context line. Snapping to the last added line in the hunk: ${lastAddedLineInHunk}.`);
-                return lastAddedLineInHunk;
-            }
-
-            if (line.startsWith('+')) {
-                if (currentFileLine === targetLine) {
-                    logger.info(`Found exact match for commentable line ${targetLine} in ${filePath}.`);
-                    return targetLine; // Perfect match on an added line
-                }
-                lastAddedLineInHunk = currentFileLine;
-            }
-            
-            // Increment for any line that exists in the new file ('+' or context ' ')
-            if (!line.startsWith('-')) {
-              currentFileLine++;
-            }
-        }
-
-        // If the target line was after the last change in the last hunk
-        if (lastAddedLineInHunk) {
-            logger.info(`Target line ${targetLine} for ${filePath} is after the last change. Snapping to last added line: ${lastAddedLineInHunk}.`);
-            return lastAddedLineInHunk;
-        }
-        
-        logger.error(`Could not find a commentable line near ${targetLine} for file ${filePath}.`);
+      const targetFile = files.find(file => file.filename === filePath);
+      if (!targetFile || !targetFile.patch) {
+        logger.warn(`File not found in PR diff or has no patch: ${filePath}`);
         return null;
+      }
+
+      // Parse the diff to build accurate line mapping
+      const lineMapping = this.parseDiffLineMapping(targetFile.patch);
+
+      // Find the exact commentable line for the target
+      const commentableLine = this.findExactCommentableLine(lineMapping, targetLine);
+
+      if (commentableLine) {
+        logger.info(`Found exact commentable line ${commentableLine} for target ${targetLine} in ${filePath}`);
+        return commentableLine;
+      }
+
+      // If exact line not found, try to find nearest commentable line in same context
+      const nearestLine = this.findNearestCommentableLine(lineMapping, targetLine);
+
+      if (nearestLine) {
+        logger.info(`Using nearest commentable line ${nearestLine} for target ${targetLine} in ${filePath} (original line not in diff)`);
+        return nearestLine;
+      }
+
+      logger.error(`No commentable line found near ${targetLine} for file ${filePath}`);
+      return null;
+
     } catch (error) {
-        logger.error(`Error in findCommentableLine for ${filePath}:${targetLine}:`, error);
-        return null;
+      logger.error(`Error finding commentable line for ${filePath}:${targetLine}:`, error);
+      return null;
     }
   }
 
+  // NEW: Parse diff patch to create accurate line mapping
+  parseDiffLineMapping(patch) {
+    const lines = patch.split('\n');
+    const mapping = {
+      commentableLines: new Set(), // Lines that can receive comments (added or modified)
+      fileLineToCommentLine: new Map(), // Maps file line number to commentable line number
+      contextLines: new Map(), // Maps file line to context info
+      hunks: []
+    };
+
+    let currentHunk = null;
+    let oldLineNum = 0;
+    let newLineNum = 0;
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+
+      // Parse hunk header: @@ -oldStart,oldCount +newStart,newCount @@
+      if (line.startsWith('@@')) {
+        const hunkMatch = line.match(/@@\s*-(\d+),?\d*\s*\+(\d+),?\d*\s*@@/);
+        if (hunkMatch) {
+          oldLineNum = parseInt(hunkMatch[1]) - 1; // -1 because we increment before processing
+          newLineNum = parseInt(hunkMatch[2]) - 1; // -1 because we increment before processing
+
+          currentHunk = {
+            oldStart: parseInt(hunkMatch[1]),
+            newStart: parseInt(hunkMatch[2]),
+            lines: []
+          };
+          mapping.hunks.push(currentHunk);
+        }
+        continue;
+      }
+
+      if (!currentHunk) continue;
+
+      const lineType = line.charAt(0);
+      const content = line.slice(1);
+
+      if (lineType === '-') {
+        // Deleted line - only increment old line number
+        oldLineNum++;
+        currentHunk.lines.push({
+          type: 'deleted',
+          oldLine: oldLineNum,
+          newLine: null,
+          content
+        });
+      }
+      else if (lineType === '+') {
+        // Added line - increment new line number and mark as commentable
+        newLineNum++;
+        mapping.commentableLines.add(newLineNum);
+        mapping.fileLineToCommentLine.set(newLineNum, newLineNum);
+
+        currentHunk.lines.push({
+          type: 'added',
+          oldLine: null,
+          newLine: newLineNum,
+          content,
+          commentable: true
+        });
+      }
+      else if (lineType === ' ') {
+        // Context line - increment both line numbers
+        oldLineNum++;
+        newLineNum++;
+        mapping.contextLines.set(newLineNum, {
+          oldLine: oldLineNum,
+          newLine: newLineNum,
+          content
+        });
+
+        currentHunk.lines.push({
+          type: 'context',
+          oldLine: oldLineNum,
+          newLine: newLineNum,
+          content
+        });
+      }
+    }
+
+    logger.debug(`Parsed diff mapping for file`, {
+      commentableLines: Array.from(mapping.commentableLines),
+      totalHunks: mapping.hunks.length,
+      fileLineMapping: Array.from(mapping.fileLineToCommentLine.entries())
+    });
+
+    return mapping;
+  }
+
+  // NEW: Find exact commentable line for target
+  findExactCommentableLine(mapping, targetLine) {
+    // Check if target line is directly commentable (was added/modified)
+    if (mapping.commentableLines.has(targetLine)) {
+      return targetLine;
+    }
+
+    // Check if we have a direct mapping
+    if (mapping.fileLineToCommentLine.has(targetLine)) {
+      return mapping.fileLineToCommentLine.get(targetLine);
+    }
+
+    return null;
+  }
+
+  // NEW: Find nearest commentable line within reasonable range
+  findNearestCommentableLine(mapping, targetLine) {
+    const commentableLines = Array.from(mapping.commentableLines).sort((a, b) => a - b);
+
+    if (commentableLines.length === 0) {
+      return null;
+    }
+
+    // Find the closest commentable line within a reasonable range (±10 lines)
+    const maxDistance = 10;
+    let closest = null;
+    let minDistance = Infinity;
+
+    for (const commentableLine of commentableLines) {
+      const distance = Math.abs(commentableLine - targetLine);
+      if (distance <= maxDistance && distance < minDistance) {
+        minDistance = distance;
+        closest = commentableLine;
+      }
+    }
+
+    // Prefer lines after the target over lines before (more natural for code review)
+    if (closest === null) {
+      const linesAfter = commentableLines.filter(line => line > targetLine && line - targetLine <= maxDistance);
+      if (linesAfter.length > 0) {
+        closest = linesAfter[0]; // First line after target
+      }
+    }
+
+    return closest;
+  }
+
+  // NEW: Validate that a line can receive comments
+  async validateCommentableLine(owner, repo, pullNumber, filePath, lineNumber) {
+    try {
+      const { data: files } = await this.octokit.rest.pulls.listFiles({
+        owner,
+        repo,
+        pull_number: pullNumber,
+      });
+
+      const targetFile = files.find(file => file.filename === filePath);
+      if (!targetFile || !targetFile.patch) {
+        return false;
+      }
+
+      const mapping = this.parseDiffLineMapping(targetFile.patch);
+      return mapping.commentableLines.has(lineNumber);
+
+    } catch (error) {
+      logger.error(`Error validating commentable line ${filePath}:${lineNumber}:`, error);
+      return false;
+    }
+  }
 
   // Get pull request review comments
   async getPullRequestComments(owner, repo, pullNumber) {
@@ -350,7 +488,7 @@ class GitHubService {
       throw new Error(`Failed to fetch PR comments: ${error.message}`);
     }
   }
-  
+
   // NEW: Post multiple comments in a single review
   async postReviewComments(owner, repo, pullNumber, headSha, comments) {
     try {
@@ -360,7 +498,7 @@ class GitHubService {
       }
 
       logger.info(`Posting ${comments.length} review comments for ${owner}/${repo}#${pullNumber}`);
-      
+
       const review = await this.octokit.rest.pulls.createReview({
         owner,
         repo,
@@ -386,7 +524,7 @@ class GitHubService {
   // Filter files based on configuration
   filterFiles(files) {
     const { excludeFiles, maxFilesToAnalyze, maxFileSizeBytes } = config.review;
-    
+
     return files
       .filter(file => {
         // Check file extension exclusions
@@ -394,13 +532,13 @@ class GitHubService {
           const regex = new RegExp(pattern.replace('*', '.*'));
           return regex.test(file.filename);
         });
-        
+
         // Check file size
         const isTooLarge = file.changes > maxFileSizeBytes;
-        
+
         // Only include added or modified files
         const isRelevant = ['added', 'modified'].includes(file.status);
-        
+
         return !isExcluded && !isTooLarge && isRelevant;
       })
       .slice(0, maxFilesToAnalyze);
@@ -417,18 +555,18 @@ class GitHubService {
       // Store pending comments for interactive posting
       const trackingId = analysis.trackingId || `analysis-${Date.now()}`;
       analysis.trackingId = trackingId; // Ensure trackingId is set
-      
+
       if (analysis.detailedFindings && analysis.detailedFindings.length > 0) {
         interactiveCommentService.storePendingComments(
-          owner, repo, pullNumber, 
-          analysis.detailedFindings, 
+          owner, repo, pullNumber,
+          analysis.detailedFindings,
           trackingId
         );
       }
 
       // Generate enhanced comment with interactive elements
       const commentBody = this.formatEnhancedStructuredComment(analysis, trackingId);
-      
+
       const { data: comment } = await this.octokit.rest.issues.createComment({
         owner,
         repo,
@@ -446,18 +584,18 @@ class GitHubService {
 
   // ENHANCED: Format structured comment with interactive commenting features
   formatEnhancedStructuredComment(analysis, trackingId) {
-    const { 
-      prInfo, 
-      automatedAnalysis, 
-      humanReviewAnalysis, 
-      reviewAssessment, 
-      detailedFindings, 
-      recommendation 
+    const {
+      prInfo,
+      automatedAnalysis,
+      humanReviewAnalysis,
+      reviewAssessment,
+      detailedFindings,
+      recommendation
     } = analysis;
 
     let comment = `🔍 **MERGE REQUEST REVIEW ANALYSIS**\n`;
     comment += `==================================================\n\n`;
-    
+
     // PR Information Section
     comment += `📋 **Pull Request Information:**\n`;
     comment += `• PR ID: ${prInfo.prId || 'unknown'}\n`;
@@ -470,14 +608,14 @@ class GitHubService {
     // Automated Analysis Results
     comment += `🤖 **AUTOMATED ANALYSIS RESULTS:**\n`;
     comment += `• Issues Found: ${automatedAnalysis.totalIssues || 0}\n`;
-    
+
     const severity = automatedAnalysis.severityBreakdown || {};
     comment += `• Severity Breakdown: 🚫 ${severity.blocker || 0} | `;
     comment += `🔴 ${severity.critical || 0} | `;
     comment += `🟡 ${severity.major || 0} | `;
     comment += `🔵 ${severity.minor || 0} | `;
     comment += `ℹ️ ${severity.info || 0}\n`;
-    
+
     const categories = automatedAnalysis.categories || {};
     comment += `• Categories: 🐛 ${categories.bugs || 0} | `;
     comment += `🔒 ${categories.vulnerabilities || 0} | `;
@@ -498,21 +636,21 @@ class GitHubService {
 
     // ENHANCED: Detailed Findings with Interactive Comment Buttons
     comment += `🔍 **DETAILED FINDINGS:**\n`;
-    
+
     if (detailedFindings && Array.isArray(detailedFindings) && detailedFindings.length > 0) {
       // Filter postable findings (ones with valid file/line info)
-      const postableFindings = detailedFindings.filter(finding => 
-        finding.file && 
-        finding.file !== 'unknown-file' && 
-        finding.line && 
+      const postableFindings = detailedFindings.filter(finding =>
+        finding.file &&
+        finding.file !== 'unknown-file' &&
+        finding.line &&
         finding.line > 0 &&
         finding.file !== 'AI_ANALYSIS_ERROR'
       );
 
-      const nonPostableFindings = detailedFindings.filter(finding => 
-        !finding.file || 
-        finding.file === 'unknown-file' || 
-        !finding.line || 
+      const nonPostableFindings = detailedFindings.filter(finding =>
+        !finding.file ||
+        finding.file === 'unknown-file' ||
+        !finding.line ||
         finding.line <= 0 ||
         finding.file === 'AI_ANALYSIS_ERROR'
       );
@@ -520,11 +658,11 @@ class GitHubService {
       // Show postable findings with interactive buttons
       if (postableFindings.length > 0) {
         comment += `\n**📝 Issues that can be posted as inline comments:**\n\n`;
-        
+
         postableFindings.forEach((finding, index) => {
           const severityEmoji = this.getSeverityEmoji(finding.severity);
           const categoryEmoji = this.getCategoryEmoji(finding.category);
-          
+
           comment += `**${index + 1}.** ${severityEmoji} ${categoryEmoji} **${finding.file}:${finding.line}**\n`;
           comment += `   └─ **Issue:** ${finding.issue}\n`;
           comment += `   └─ **Suggestion:** ${finding.suggestion}\n`;
@@ -539,11 +677,11 @@ class GitHubService {
       // Show non-postable findings (general issues)
       if (nonPostableFindings.length > 0) {
         comment += `\n**📋 General issues (cannot be posted as inline comments):**\n\n`;
-        
+
         nonPostableFindings.forEach((finding, index) => {
           const severityEmoji = this.getSeverityEmoji(finding.severity);
           const categoryEmoji = this.getCategoryEmoji(finding.category);
-          
+
           comment += `**${postableFindings.length + index + 1}.** ${severityEmoji} ${categoryEmoji} **${finding.file || 'General'}**\n`;
           comment += `   └─ **Issue:** ${finding.issue}\n`;
           comment += `   └─ **Suggestion:** ${finding.suggestion}\n\n`;
@@ -559,10 +697,10 @@ class GitHubService {
     }
 
     // Interactive Instructions Section
-    const postableCount = detailedFindings ? detailedFindings.filter(finding => 
-      finding.file && 
-      finding.file !== 'unknown-file' && 
-      finding.line && 
+    const postableCount = detailedFindings ? detailedFindings.filter(finding =>
+      finding.file &&
+      finding.file !== 'unknown-file' &&
+      finding.line &&
       finding.line > 0 &&
       finding.file !== 'AI_ANALYSIS_ERROR'
     ).length : 0;
@@ -636,7 +774,7 @@ class GitHubService {
       logger.info(`Posting review comments for ${owner}/${repo}#${pullNumber}`);
 
       const reviewBody = typeof comments === 'string' ? comments : this.formatReviewBody(comments);
-      
+
       const { data: review } = await this.octokit.rest.pulls.createReview({
         owner,
         repo,
@@ -659,26 +797,26 @@ class GitHubService {
     if (typeof analysis === 'string') {
       return analysis;
     }
-    
+
     // If it's the new structured format, use the enhanced formatter
     if (analysis.prInfo) {
       return this.formatEnhancedStructuredComment(analysis, analysis.trackingId || 'unknown');
     }
-    
+
     // Legacy format handling
     const { summary, issues, recommendations } = analysis;
-    
+
     let body = `## 🤖 AI Code Review Summary\n\n`;
     body += `**Overall Rating:** ${summary?.overallRating || 'UNKNOWN'}\n`;
     body += `**Total Issues:** ${summary?.totalIssues || 0}\n\n`;
-    
+
     if (recommendations && recommendations.length > 0) {
       body += `### 💡 Recommendations\n`;
       recommendations.forEach(rec => {
         body += `- ${rec}\n`;
       });
     }
-    
+
     return body;
   }
 
@@ -686,7 +824,7 @@ class GitHubService {
   async createCheckRun(owner, repo, checkRunData) {
     try {
       logger.info(`Creating check run: ${checkRunData.name} for ${owner}/${repo}`);
-      
+
       const { data: checkRun } = await this.octokit.rest.checks.create({
         owner,
         repo,
@@ -754,6 +892,202 @@ class GitHubService {
   // Check if branch is in target branches list
   isTargetBranch(branch) {
     return config.review.targetBranches.includes(branch);
+  }
+
+
+
+  // Debug method to analyze line mapping issues
+  async debugLineMapping(owner, repo, pullNumber, filePath) {
+    try {
+      logger.info(`Debugging line mapping for ${filePath} in PR #${pullNumber}`);
+
+      const { data: files } = await this.octokit.rest.pulls.listFiles({
+        owner,
+        repo,
+        pull_number: pullNumber,
+      });
+
+      const targetFile = files.find(file => file.filename === filePath);
+      if (!targetFile) {
+        logger.error(`File ${filePath} not found in PR #${pullNumber}`);
+        return null;
+      }
+
+      if (!targetFile.patch) {
+        logger.warn(`No patch data for ${filePath} in PR #${pullNumber}`);
+        return { file: filePath, hasPatch: false, status: targetFile.status };
+      }
+
+      // Parse and analyze the diff
+      const mapping = this.parseDiffLineMapping(targetFile.patch);
+
+      const debugInfo = {
+        file: filePath,
+        status: targetFile.status,
+        additions: targetFile.additions,
+        deletions: targetFile.deletions,
+        changes: targetFile.changes,
+        hasPatch: true,
+        commentableLines: Array.from(mapping.commentableLines).sort((a, b) => a - b),
+        totalHunks: mapping.hunks.length,
+        hunks: mapping.hunks.map(hunk => ({
+          oldStart: hunk.oldStart,
+          newStart: hunk.newStart,
+          lineCount: hunk.lines.length,
+          addedLines: hunk.lines.filter(l => l.type === 'added').map(l => l.newLine),
+          contextLines: hunk.lines.filter(l => l.type === 'context').map(l => l.newLine)
+        })),
+        patchPreview: targetFile.patch.split('\n').slice(0, 10).join('\n')
+      };
+
+      logger.info(`Line mapping debug info for ${filePath}:`, debugInfo);
+      return debugInfo;
+
+    } catch (error) {
+      logger.error(`Error debugging line mapping for ${filePath}:`, error);
+      return { error: error.message };
+    }
+  }
+
+  // Enhanced validation with detailed error reporting
+  async validateAndReportLineIssues(owner, repo, pullNumber, findings) {
+    const validationReport = {
+      totalFindings: findings.length,
+      validFindings: 0,
+      invalidFindings: 0,
+      adjustableFindings: 0,
+      unadjustableFindings: 0,
+      issues: []
+    };
+
+    for (let i = 0; i < findings.length; i++) {
+      const finding = findings[i];
+
+      try {
+        const isValid = await this.validateCommentableLine(owner, repo, pullNumber, finding.file, finding.line);
+
+        if (isValid) {
+          validationReport.validFindings++;
+        } else {
+          validationReport.invalidFindings++;
+
+          // Try to find an alternative
+          const adjustedLine = await this.findCommentableLine(owner, repo, pullNumber, finding.file, finding.line);
+
+          if (adjustedLine) {
+            validationReport.adjustableFindings++;
+            validationReport.issues.push({
+              index: i,
+              file: finding.file,
+              originalLine: finding.line,
+              adjustedLine: adjustedLine,
+              type: 'adjustable',
+              message: `Line ${finding.line} not commentable, can adjust to line ${adjustedLine}`
+            });
+          } else {
+            validationReport.unadjustableFindings++;
+            validationReport.issues.push({
+              index: i,
+              file: finding.file,
+              originalLine: finding.line,
+              type: 'unadjustable',
+              message: `Line ${finding.line} not commentable and no nearby alternative found`
+            });
+          }
+        }
+      } catch (error) {
+        validationReport.unadjustableFindings++;
+        validationReport.issues.push({
+          index: i,
+          file: finding.file,
+          originalLine: finding.line,
+          type: 'error',
+          message: `Validation error: ${error.message}`
+        });
+      }
+    }
+
+    logger.info(`Line validation report for PR #${pullNumber}:`, {
+      summary: {
+        total: validationReport.totalFindings,
+        valid: validationReport.validFindings,
+        adjustable: validationReport.adjustableFindings,
+        problematic: validationReport.unadjustableFindings
+      },
+      issueCount: validationReport.issues.length
+    });
+
+    return validationReport;
+  }
+
+  // Add to ai.service.js for better error context in analysis
+  enhanceAnalysisWithLineValidation(analysis, owner, repo, pullNumber) {
+    // Add a validation promise that can be awaited later
+    analysis.lineValidation = this.validateFindings(analysis.detailedFindings, owner, repo, pullNumber);
+    return analysis;
+  }
+
+  async validateFindings(findings, owner, repo, pullNumber) {
+    if (!findings || findings.length === 0) {
+      return { valid: true, issues: [] };
+    }
+
+    const issues = [];
+    let validCount = 0;
+
+    for (const finding of findings) {
+      if (!finding.file || !finding.line || finding.line <= 0) {
+        issues.push({
+          file: finding.file || 'unknown',
+          line: finding.line || 0,
+          issue: 'Missing or invalid file/line information',
+          severity: 'warning'
+        });
+        continue;
+      }
+
+      try {
+        const githubService = require('./github.service');
+        const isValid = await githubService.validateCommentableLine(owner, repo, pullNumber, finding.file, finding.line);
+
+        if (isValid) {
+          validCount++;
+        } else {
+          const adjustedLine = await githubService.findCommentableLine(owner, repo, pullNumber, finding.file, finding.line);
+
+          if (adjustedLine) {
+            issues.push({
+              file: finding.file,
+              line: finding.line,
+              adjustedLine: adjustedLine,
+              issue: 'Line not in diff, can be adjusted',
+              severity: 'info'
+            });
+          } else {
+            issues.push({
+              file: finding.file,
+              line: finding.line,
+              issue: 'Line not in PR changes and no nearby alternative',
+              severity: 'warning'
+            });
+          }
+        }
+      } catch (error) {
+        issues.push({
+          file: finding.file,
+          line: finding.line,
+          issue: `Validation error: ${error.message}`,
+          severity: 'error'
+        });
+      }
+    }
+
+    return {
+      valid: issues.filter(i => i.severity === 'error').length === 0,
+      validCount,
+      totalCount: findings.length,
+      issues
+    };
   }
 }
 
