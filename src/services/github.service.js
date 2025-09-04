@@ -242,71 +242,49 @@ class GitHubService {
   }
   
   // NEW: Finds the closest line in the diff that can be commented on.
-  async findCommentableLine(owner, repo, pullNumber, filePath, targetLine) {
-    try {
-        const { data: files } = await this.octokit.rest.pulls.listFiles({
-            owner,
-            repo,
-            pull_number: pullNumber,
-        });
-
-        const targetFile = files.find(file => file.filename === filePath);
-        if (!targetFile || !targetFile.patch) {
-            logger.warn(`File not found in PR diff or has no patch: ${filePath}`);
-            return null;
-        }
-
-        const patchLines = targetFile.patch.split('\n');
-        let currentFileLine = 0;
-        let lastAddedLineInHunk = null;
-
-        for (const line of patchLines) {
-            if (line.startsWith('@@')) {
-                const match = line.match(/\+(\d+)/);
-                if (match && match[1]) {
-                    currentFileLine = parseInt(match[1], 10);
-                    lastAddedLineInHunk = null; // Reset for new hunk
-                }
-                continue;
-            }
-
-            if (line.startsWith('-')) {
-                continue; // Deleted lines don't exist in the 'new' file, so don't increment file line counter
-            }
-
-            // If we've passed the target line, and we saw an added line in this hunk, that's our best bet.
-            if (currentFileLine > targetLine && lastAddedLineInHunk) {
-                logger.info(`Target line ${targetLine} for ${filePath} seems to be a context line. Snapping to the last added line in the hunk: ${lastAddedLineInHunk}.`);
-                return lastAddedLineInHunk;
-            }
-
-            if (line.startsWith('+')) {
-                if (currentFileLine === targetLine) {
-                    logger.info(`Found exact match for commentable line ${targetLine} in ${filePath}.`);
-                    return targetLine; // Perfect match on an added line
-                }
-                lastAddedLineInHunk = currentFileLine;
-            }
-            
-            // Increment for any line that exists in the new file ('+' or context ' ')
-            if (!line.startsWith('-')) {
-              currentFileLine++;
-            }
-        }
-
-        // If the target line was after the last change in the last hunk
-        if (lastAddedLineInHunk) {
-            logger.info(`Target line ${targetLine} for ${filePath} is after the last change. Snapping to last added line: ${lastAddedLineInHunk}.`);
-            return lastAddedLineInHunk;
-        }
-        
-        logger.error(`Could not find a commentable line near ${targetLine} for file ${filePath}.`);
-        return null;
-    } catch (error) {
-        logger.error(`Error in findCommentableLine for ${filePath}:${targetLine}:`, error);
+ async findCommentableLine(owner, repo, pullNumber, filePath, targetLine) {
+    // Fetch PR files and find the target file
+    const { data: files } = await this.octokit.rest.pulls.listFiles({ owner, repo, pull_number: pullNumber });
+    const targetFile = files.find(file => file.filename === filePath);
+    if (!targetFile || !targetFile.patch) {
+        logger.warn(`File not found in PR diff or no patch: ${filePath}`);
         return null;
     }
-  }
+
+    // Parse patch hunk lines
+    const patchLines = targetFile.patch.split('\n');
+    let newFileLine = 0;
+    let lastCommentableLine = null;
+
+    for (const line of patchLines) {
+        // Hunk header
+        if (line.startsWith('@@')) {
+            const match = line.match(/\+(\d+)/);
+            newFileLine = match ? parseInt(match[1], 10) : 0;
+            continue;
+        }
+        // Deleted lines don't exist in new file
+        if (line.startsWith('-')) continue;
+
+        // If line is added or context, increment newFileLine
+        if (!line.startsWith('-')) {
+            // Only added ('+') lines can be commented on
+            if (line.startsWith('+')) {
+                if (newFileLine === targetLine) return newFileLine;
+                lastCommentableLine = newFileLine;
+            }
+            // Context lines (' ') cannot be commented; but still increment to keep track
+            newFileLine++;
+        }
+    }
+    // If not found, snap to last added line in the hunk if close to target
+    if (lastCommentableLine) {
+        logger.info(`Snapping comment for ${filePath}:${targetLine} to last added line: ${lastCommentableLine}`);
+        return lastCommentableLine;
+    }
+    logger.error(`Could not map commentable line for ${filePath}:${targetLine}`);
+    return null;
+}
 
 
   // Get pull request review comments

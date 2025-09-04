@@ -25,8 +25,8 @@ class AIService {
 
       if (this.provider === 'gemini' || config.ai.gemini.apiKey) {
         this.gemini = new GoogleGenerativeAI(config.ai.gemini.apiKey);
-        this.geminiModel = this.gemini.getGenerativeModel({ 
-          model: config.ai.gemini.model 
+        this.geminiModel = this.gemini.getGenerativeModel({
+          model: config.ai.gemini.model
         });
         logger.info('Gemini client initialized');
       }
@@ -44,7 +44,7 @@ class AIService {
       // Prepare data for analysis
       const analysisData = this.prepareAnalysisData(prData, existingComments);
       const prompt = getCodeReviewPrompt(analysisData, existingComments);
-      
+
       // Perform analysis with retry logic
       let rawResponse;
       try {
@@ -76,7 +76,7 @@ class AIService {
 
       logger.info(`AI analysis completed. Found ${enhancedAnalysis.automatedAnalysis.totalIssues} issues`);
       return enhancedAnalysis;
-      
+
     } catch (error) {
       logger.error('Critical error in AI analysis:', error);
       return this.createErrorFallbackAnalysis(`Critical Error: ${error.message}`);
@@ -88,10 +88,10 @@ class AIService {
     const pr = prData.pr || prData || {};
     const files = prData.files || [];
     const diff = prData.diff || '';
-    
+
     const sanitizedDiff = diff ? sanitizeForAI(diff) : 'No diff available';
-    const truncatedDiff = sanitizedDiff.length > 8000 
-      ? sanitizedDiff.substring(0, 8000) + '\n... [truncated for analysis]' 
+    const truncatedDiff = sanitizedDiff.length > 8000
+      ? sanitizedDiff.substring(0, 8000) + '\n... [truncated for analysis]'
       : sanitizedDiff;
 
     return {
@@ -123,7 +123,7 @@ class AIService {
   async analyzeWithOpenAI(prompt) {
     try {
       logger.info('Sending request to OpenAI');
-      
+
       const response = await this.openai.chat.completions.create({
         model: config.ai.openai.model,
         messages: [
@@ -143,7 +143,7 @@ class AIService {
 
       const content = response.choices[0].message.content.trim();
       logger.info(`OpenAI response received (${content.length} characters)`);
-      
+
       return content;
     } catch (error) {
       logger.error('OpenAI API error:', error);
@@ -155,9 +155,9 @@ class AIService {
   async analyzeWithGemini(prompt) {
     try {
       logger.info('Sending request to Gemini');
-      
+
       const enhancedPrompt = `${prompt}\n\nIMPORTANT: Respond ONLY with valid JSON. No markdown formatting.`;
-      
+
       const result = await this.geminiModel.generateContent({
         contents: [{
           role: 'user',
@@ -171,9 +171,9 @@ class AIService {
 
       const response = await result.response;
       const content = response.text().trim();
-      
+
       logger.info(`Gemini response received (${content.length} characters)`);
-      
+
       return content;
     } catch (error) {
       logger.error('Gemini API error:', error);
@@ -187,7 +187,7 @@ class AIService {
     let originalResponse = '';
     let cleanedResponse = '';
     let parseError = null;
-    
+
     try {
       // Validate input
       if (!responseText || typeof responseText !== 'string') {
@@ -196,8 +196,8 @@ class AIService {
 
       originalResponse = responseText;
       cleanedResponse = responseText.trim();
-      
-      logger.debug('Starting to parse AI response', { 
+
+      logger.debug('Starting to parse AI response', {
         originalLength: originalResponse.length,
         preview: originalResponse.substring(0, 200)
       });
@@ -205,25 +205,25 @@ class AIService {
       // Step 1: Remove markdown formatting
       cleanedResponse = cleanedResponse.replace(/```json\s*/g, '');
       cleanedResponse = cleanedResponse.replace(/```\s*/g, '');
-      
+
       // Step 2: Find JSON boundaries
       const firstBraceIndex = cleanedResponse.indexOf('{');
       const lastBraceIndex = cleanedResponse.lastIndexOf('}');
-      
+
       if (firstBraceIndex === -1 || lastBraceIndex === -1) {
         throw new Error(`No valid JSON object found in response. First brace at: ${firstBraceIndex}, Last brace at: ${lastBraceIndex}`);
       }
-      
+
       // Extract JSON portion
       cleanedResponse = cleanedResponse.substring(firstBraceIndex, lastBraceIndex + 1);
-      
+
       // Step 3: Clean common JSON issues
       cleanedResponse = cleanedResponse
         .replace(/\n\s*\/\/.*/g, '') // Remove comments
         .replace(/\/\*[\s\S]*?\*\//g, '') // Remove multi-line comments
         .replace(/,(\s*[}\]])/g, '$1'); // Remove trailing commas
-      
-      logger.debug('Cleaned response for parsing', { 
+
+      logger.debug('Cleaned response for parsing', {
         cleanedLength: cleanedResponse.length,
         preview: cleanedResponse.substring(0, 200)
       });
@@ -243,7 +243,7 @@ class AIService {
 
       // Step 6: Validate structure
       this.validateAndNormalizeAnalysis(analysis);
-      
+
       logger.info('Successfully parsed and validated AI analysis response');
       return analysis;
 
@@ -266,7 +266,7 @@ class AIService {
   validateAndNormalizeAnalysis(analysis) {
     // Check required top-level fields
     const requiredFields = ['prInfo', 'automatedAnalysis', 'humanReviewAnalysis', 'reviewAssessment', 'recommendation'];
-    
+
     for (const field of requiredFields) {
       if (!analysis[field]) {
         // Create default structure if missing
@@ -281,7 +281,7 @@ class AIService {
         blocker: 0, critical: 0, major: 0, minor: 0, info: 0
       };
     }
-    
+
     if (!analysis.automatedAnalysis.categories) {
       analysis.automatedAnalysis.categories = {
         bugs: 0, vulnerabilities: 0, securityHotspots: 0, codeSmells: 0
@@ -294,17 +294,15 @@ class AIService {
     }
 
     // Normalize each finding
-    analysis.detailedFindings = analysis.detailedFindings.map((finding, index) => {
-      return {
-        file: String(finding.file || finding.filename || `unknown-file-${index}`),
-        line: Number(finding.line || finding.lineNumber || 1),
-        issue: String(finding.issue || finding.description || finding.message || 'No description provided'),
-        severity: this.normalizeSeverity(finding.severity || finding.level),
-        category: this.normalizeCategory(finding.category || finding.type),
-        suggestion: String(finding.suggestion || finding.fix || finding.recommendation || 'No suggestion provided')
-      };
-    });
-
+    analysis.detailedFindings = analysis.detailedFindings.map((finding, index) => ({
+      file: String(finding.file || finding.filename || `unknown-file-${index}`),
+      line: Number(finding.line || finding.lineNumber || 1),
+      issue: String(finding.issue || finding.description || finding.message || 'No description provided'),
+      severity: this.normalizeSeverity(finding.severity || finding.level),
+      category: this.normalizeCategory(finding.category || finding.type),
+      suggestion: String(finding.suggestion || finding.fix || finding.recommendation || 'No suggestion provided'),
+      codeExample: String(finding.codeExample || finding.code || '') // <-- Ensure this is present!
+    }));
     // Ensure numeric fields
     analysis.automatedAnalysis.totalIssues = Number(analysis.automatedAnalysis.totalIssues) || 0;
     analysis.automatedAnalysis.technicalDebtMinutes = Number(analysis.automatedAnalysis.technicalDebtMinutes) || 0;
@@ -460,7 +458,7 @@ class AIService {
   async checkHealth() {
     try {
       const testPrompt = `{"status": "OK", "test": true}`;
-      
+
       if (this.provider === 'openai' && this.openai) {
         const response = await this.openai.chat.completions.create({
           model: config.ai.openai.model,
@@ -468,11 +466,11 @@ class AIService {
           max_tokens: 50,
           response_format: { type: 'json_object' },
         });
-        
+
         const content = response.choices[0].message.content.trim();
         const parsed = JSON.parse(content);
         return parsed.status === 'OK';
-        
+
       } else if (this.provider === 'gemini' && this.geminiModel) {
         const result = await this.geminiModel.generateContent(`Return exactly: ${testPrompt}`);
         const response = await result.response;
@@ -480,7 +478,7 @@ class AIService {
         const parsed = JSON.parse(content);
         return parsed.status === 'OK';
       }
-      
+
       return false;
     } catch (error) {
       logger.error('AI health check failed:', error);
@@ -491,10 +489,10 @@ class AIService {
   // Helper methods for comment analysis
   countIssuesInComments(comments) {
     if (!Array.isArray(comments)) return 0;
-    
+
     const issueKeywords = ['bug', 'issue', 'problem', 'error', 'fix', 'wrong'];
     let count = 0;
-    
+
     comments.forEach(comment => {
       if (comment.body) {
         const body = comment.body.toLowerCase();
@@ -503,16 +501,16 @@ class AIService {
         }
       }
     });
-    
+
     return count;
   }
 
   countSecurityIssuesInComments(comments) {
     if (!Array.isArray(comments)) return 0;
-    
+
     const securityKeywords = ['security', 'vulnerability', 'exploit', 'injection'];
     let count = 0;
-    
+
     comments.forEach(comment => {
       if (comment.body) {
         const body = comment.body.toLowerCase();
@@ -521,16 +519,16 @@ class AIService {
         }
       }
     });
-    
+
     return count;
   }
 
   countCodeQualityIssuesInComments(comments) {
     if (!Array.isArray(comments)) return 0;
-    
+
     const qualityKeywords = ['refactor', 'clean', 'maintainable', 'complex'];
     let count = 0;
-    
+
     comments.forEach(comment => {
       if (comment.body) {
         const body = comment.body.toLowerCase();
@@ -539,7 +537,7 @@ class AIService {
         }
       }
     });
-    
+
     return count;
   }
 }

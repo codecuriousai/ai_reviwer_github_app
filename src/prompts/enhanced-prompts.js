@@ -358,7 +358,7 @@ IMPORTANT:
 4. Consider the PR's context and scope
 5. Balance thoroughness with practicality
 6. Focus on issues that matter for production deployment
-
+7. For each issue, provide a specific code snippet ("codeExample") showing the correction. Do not respond with generic fallback text.
 IMPORTANT: Return ONLY valid JSON in the exact format specified above. No markdown formatting or additional text.`;
 
     return basePrompt;

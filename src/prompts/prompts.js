@@ -64,13 +64,14 @@ REQUIRED JSON STRUCTURE - EXACT FORMAT REQUIRED:
   "reviewAssessment": "REVIEW REQUIRED",
   "detailedFindings": [
     {
-      "file": "exact-filename.js",
-      "line": 42,
-      "issue": "Detailed description of the specific issue found",
-      "severity": "CRITICAL",
-      "category": "VULNERABILITY",
-      "suggestion": "Specific actionable fix recommendation"
-    }
+  "file": "exact-filename.js",
+  "line": 42,
+  "issue": "Detailed description of the specific issue found",
+  "severity": "CRITICAL",
+  "category": "VULNERABILITY",
+  "suggestion": "Specific actionable fix recommendation",
+  "codeExample": "Code snippet showing the fix"
+}
   ],
   "recommendation": "Detailed recommendation text"
 }
@@ -112,12 +113,13 @@ IMPORTANT ANALYSIS RULES:
 
 EXAMPLE detailedFindings entry:
 {
-  "file": "src/auth/login.js",
-  "line": 23,
-  "issue": "Hard-coded password found in authentication logic",
-  "severity": "CRITICAL", 
+  "file": "exact-filename.js",
+  "line": 42,
+  "issue": "Detailed description of the specific issue found",
+  "severity": "CRITICAL",
   "category": "VULNERABILITY",
-  "suggestion": "Move password to environment variable and use secure storage"
+  "suggestion": "Specific actionable fix recommendation",
+  "codeExample": "Code snippet showing the fix" 
 }`,
 
   // Helper function to build dynamic prompts

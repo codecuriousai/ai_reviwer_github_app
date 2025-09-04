@@ -19,7 +19,7 @@ class CheckRunButtonService {
 
       // Filter postable findings (ones that can be posted as inline comments)
       const postableFindings = this.getPostableFindings(analysis.detailedFindings || []);
-      
+
       // Create check run with completion status and interactive buttons
       const checkRunData = {
         name: 'AI Code Review',
@@ -52,9 +52,9 @@ class CheckRunButtonService {
         }, { 'post-all': 'ready' })
       });
 
-      logger.info(`Interactive check run created: ${checkRun.id}`, { 
-        trackingId, 
-        postableCount: postableFindings.length 
+      logger.info(`Interactive check run created: ${checkRun.id}`, {
+        trackingId,
+        postableCount: postableFindings.length
       });
 
       return checkRun;
@@ -70,8 +70,8 @@ class CheckRunButtonService {
     const actions = [];
     // GitHub API only allows a max of 3 buttons in a check run
     const maxButtons = 2;
-    const maxDescLength = 40; 
-    
+    const maxDescLength = 40;
+
     // If there are more than two findings, only show the "Post All" button
     if (postableFindings.length > 2) {
       actions.push({
@@ -107,36 +107,36 @@ class CheckRunButtonService {
   // Generate interactive summary for check run
   generateInteractiveSummary(analysis, postableFindings) {
     const { automatedAnalysis, reviewAssessment } = analysis;
-    
+
     let summary = `Analysis completed successfully!\n\n`;
     summary += `**Issues Found:** ${automatedAnalysis.totalIssues}\n`;
     summary += `**Critical:** ${automatedAnalysis.severityBreakdown.critical}\n`;
     summary += `**Assessment:** ${reviewAssessment}\n\n`;
-    
+
     if (postableFindings.length > 0) {
       summary += `**Interactive Comments Available:** ${postableFindings.length} findings can be posted as inline comments\n`;
       summary += `Click the buttons below to post individual or all findings directly to the code.\n\n`;
     } else {
       summary += `No new issues found that can be posted as inline comments.\n`;
     }
-    
+
     summary += `See detailed analysis in PR comments.`;
-    
+
     return summary;
   }
 
   // Generate detailed output showing each finding with clear formatting
   generateDetailedOutput(analysis, postableFindings, trackingId) {
     let output = `## AI Code Review Results\n\n`;
-    
+
     const { automatedAnalysis, reviewAssessment, recommendation } = analysis;
-    
+
     // Summary section
     output += `### Summary\n`;
     output += `- **Total Issues:** ${automatedAnalysis.totalIssues}\n`;
     output += `- **Review Assessment:** ${reviewAssessment}\n`;
     output += `- **Technical Debt:** ${automatedAnalysis.technicalDebtMinutes} minutes\n\n`;
-    
+
     // Severity breakdown
     const severity = automatedAnalysis.severityBreakdown || {};
     output += `### Severity Breakdown\n`;
@@ -150,14 +150,14 @@ class CheckRunButtonService {
     if (postableFindings.length > 0) {
       output += `### Interactive Comment Options\n`;
       output += `Click the buttons above to post these findings as inline code comments:\n\n`;
-      
+
       postableFindings.forEach((finding, index) => {
         output += `**#${index + 1} - ${finding.severity} ${finding.category}**\n`;
         output += `- File: \`${finding.file}:${finding.line}\`\n`;
         output += `- Issue: ${finding.issue}\n`;
         output += `- Suggestion: ${finding.suggestion}\n\n`;
       });
-      
+
       if (postableFindings.length > 1) {
         output += `Use "Post All Comments" to post all ${postableFindings.length} findings at once.\n\n`;
       }
@@ -165,15 +165,15 @@ class CheckRunButtonService {
       output += `### No New Interactive Comments\n`;
       output += `All findings are either general issues or have already been addressed by reviewers.\n\n`;
     }
-    
+
     // Recommendation
     output += `### Recommendation\n`;
     output += `${recommendation}\n\n`;
-    
+
     output += `---\n`;
     output += `Analysis ID: ${trackingId}\n`;
     output += `Generated: ${new Date().toISOString()}`;
-    
+
     return output;
   }
 
@@ -187,7 +187,7 @@ class CheckRunButtonService {
 
     const checkRunId = check_run.id;
     const actionId = requested_action.identifier;
-    
+
     logger.info(`Button action requested: ${actionId} for check run ${checkRunId}`);
 
     // Get stored check run data
@@ -208,42 +208,42 @@ class CheckRunButtonService {
       if (actionId === 'post-all') {
         // Post all comments
         await this.postAllFindings(owner, repo, pullNumber, headSha, postableFindings, checkRunData);
-        
+
         // Update all button states
         Object.keys(buttonStates).forEach(key => {
           if (buttonStates[key] === 'in_progress' || buttonStates[key] === 'ready') {
             buttonStates[key] = 'completed';
           }
         });
-        
+
       } else if (actionId.startsWith('comment-finding-')) {
         // Post individual comment
         const findingIndex = parseInt(actionId.replace('comment-finding-', ''));
         const finding = postableFindings[findingIndex];
-        
+
         if (!finding) {
           throw new Error(`Finding ${findingIndex} not found`);
         }
 
         await this.postIndividualFinding(owner, repo, pullNumber, headSha, finding, checkRunData);
-        
+
         // Update button state
         buttonStates[actionId] = 'completed';
       }
 
       // Update check run with completion status
       await this.updateCheckRunCompleted(repository, checkRunId, checkRunData, actionId);
-      
+
       logger.info(`Button action completed: ${actionId} for PR #${pullNumber}`);
       return true;
 
     } catch (error) {
       logger.error(`Error handling button action ${actionId}:`, error);
-      
+
       // Update button state to error
       buttonStates[actionId] = 'error';
       await this.updateCheckRunError(repository, checkRunId, `Failed to ${actionId}: ${error.message}`);
-      
+
       return true;
     }
   }
@@ -256,13 +256,13 @@ class CheckRunButtonService {
     });
 
     const commentableLine = await githubService.findCommentableLine(owner, repo, pullNumber, finding.file, finding.line);
-    
+
     if (!commentableLine) {
       const errorMessage = `Could not find a valid diff line for file "${finding.file}" near line "${finding.line}". This file/line may not be part of the changes in this pull request.`;
       logger.error(errorMessage);
       throw new Error(errorMessage);
     }
-    
+
     const commentBody = this.formatInlineComment(finding, checkRunData.trackingId);
 
     // Post as a review with a single comment
@@ -305,11 +305,11 @@ class CheckRunButtonService {
 
       try {
         const commentableLine = await githubService.findCommentableLine(owner, repo, pullNumber, finding.file, finding.line);
-        
+
         if (!commentableLine) {
           throw new Error(`Could not find a valid diff line near line ${finding.line} for file "${finding.file}". Skipping comment.`);
         }
-        
+
         const commentBody = this.formatInlineComment(finding, checkRunData.trackingId);
 
         commentsToPost.push({
@@ -326,7 +326,7 @@ class CheckRunButtonService {
         errors.push(`${finding.file}:${finding.line} - ${error.message}`);
       }
     }
-    
+
     // Post all comments in a single review
     if (commentsToPost.length > 0) {
       try {
@@ -361,6 +361,9 @@ class CheckRunButtonService {
     comment += `**Severity:** ${finding.severity}\n`;
     comment += `**Category:** ${finding.category}\n\n`;
     comment += `**Suggestion:**\n${finding.suggestion}\n\n`;
+    if (finding.codeExample && finding.codeExample.length > 3) {
+      comment += `**Code Example:**\n\`\`\`\n${finding.codeExample}\n\`\`\`\n\n`;
+    }
     comment += `---\n`;
     comment += `*Posted via AI Code Reviewer | Analysis ID: \`${trackingId}\`*`;
 
@@ -371,7 +374,7 @@ class CheckRunButtonService {
   formatBulkPostSummary(successCount, errorCount, errors, trackingId) {
     let summary = `**All AI Comments Posted**\n\n`;
     summary += `Successfully posted: ${successCount} comments\n`;
-    
+
     if (errorCount > 0) {
       summary += `Failed to post: ${errorCount} comments\n\n`;
       errors.forEach(error => {
@@ -389,7 +392,7 @@ class CheckRunButtonService {
   // Update check run to show progress WITHOUT changing status
   async updateCheckRunProgress(repository, checkRunId, checkRunData, actionId) {
     const { analysis, postableFindings, trackingId } = checkRunData;
-    
+
     let progressMessage;
     if (actionId === 'post-all') {
       progressMessage = `Posting all ${postableFindings.length} findings as inline comments...`;
@@ -411,7 +414,7 @@ class CheckRunButtonService {
   // Update check run when action completed
   async updateCheckRunCompleted(repository, checkRunId, checkRunData, actionId) {
     const { analysis, postableFindings, trackingId } = checkRunData;
-    
+
     let completionMessage;
     if (actionId === 'post-all') {
       completionMessage = `All ${postableFindings.length} findings have been posted as inline comments.`;
@@ -431,14 +434,14 @@ class CheckRunButtonService {
       // Note: `actions` and `status` properties are intentionally omitted to avoid validation errors.
     });
   }
-  
+
   // Update check run on error
   async updateCheckRunError(repository, checkRunId, errorMessage) {
     await githubService.updateCheckRun(repository.owner.login, repository.name, checkRunId, {
       conclusion: 'failure',
       output: {
-          title: 'AI Code Review - Action Failed',
-          summary: errorMessage,
+        title: 'AI Code Review - Action Failed',
+        summary: errorMessage,
       },
     });
   }
@@ -449,11 +452,11 @@ class CheckRunButtonService {
       return [];
     }
 
-    return detailedFindings.filter(finding => 
-      finding.file && 
-      finding.file !== 'unknown-file' && 
+    return detailedFindings.filter(finding =>
+      finding.file &&
+      finding.file !== 'unknown-file' &&
       finding.file !== 'AI_ANALYSIS_ERROR' &&
-      finding.line && 
+      finding.line &&
       finding.line > 0 &&
       !finding.posted
     );
@@ -462,10 +465,10 @@ class CheckRunButtonService {
   // Determine check run conclusion based on analysis
   determineConclusion(analysis) {
     const { automatedAnalysis, reviewAssessment } = analysis;
-    
+
     const hasBlockerIssues = automatedAnalysis.severityBreakdown.blocker > 0;
     const hasCriticalIssues = automatedAnalysis.severityBreakdown.critical > 0;
-    
+
     if (hasBlockerIssues) return 'failure';
     if (hasCriticalIssues) return 'neutral';
     if (reviewAssessment === 'PROPERLY REVIEWED') return 'success';
