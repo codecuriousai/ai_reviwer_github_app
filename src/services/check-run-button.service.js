@@ -19,7 +19,7 @@ class CheckRunButtonService {
 
       // Filter postable findings (ones that can be posted as inline comments)
       const postableFindings = this.getPostableFindings(analysis.detailedFindings || []);
-      
+
       // Create check run with completion status and interactive buttons
       const checkRunData = {
         name: 'AI Code Review',
@@ -52,9 +52,9 @@ class CheckRunButtonService {
         }, { 'post-all': 'ready' })
       });
 
-      logger.info(`Interactive check run created: ${checkRun.id}`, { 
-        trackingId, 
-        postableCount: postableFindings.length 
+      logger.info(`Interactive check run created: ${checkRun.id}`, {
+        trackingId,
+        postableCount: postableFindings.length
       });
 
       return checkRun;
@@ -70,8 +70,8 @@ class CheckRunButtonService {
     const actions = [];
     // GitHub API only allows a max of 3 buttons in a check run
     const maxButtons = 2;
-    const maxDescLength = 40; 
-    
+    const maxDescLength = 40;
+
     // If there are more than two findings, only show the "Post All" button
     if (postableFindings.length > 2) {
       actions.push({
@@ -107,36 +107,36 @@ class CheckRunButtonService {
   // Generate interactive summary for check run
   generateInteractiveSummary(analysis, postableFindings) {
     const { automatedAnalysis, reviewAssessment } = analysis;
-    
+
     let summary = `Analysis completed successfully!\n\n`;
     summary += `**Issues Found:** ${automatedAnalysis.totalIssues}\n`;
     summary += `**Critical:** ${automatedAnalysis.severityBreakdown.critical}\n`;
     summary += `**Assessment:** ${reviewAssessment}\n\n`;
-    
+
     if (postableFindings.length > 0) {
       summary += `**Interactive Comments Available:** ${postableFindings.length} findings can be posted as inline comments\n`;
       summary += `Click the buttons below to post individual or all findings directly to the code.\n\n`;
     } else {
       summary += `No new issues found that can be posted as inline comments.\n`;
     }
-    
+
     summary += `See detailed analysis in PR comments.`;
-    
+
     return summary;
   }
 
   // Generate detailed output showing each finding with clear formatting
   generateDetailedOutput(analysis, postableFindings, trackingId) {
     let output = `## AI Code Review Results\n\n`;
-    
+
     const { automatedAnalysis, reviewAssessment, recommendation } = analysis;
-    
+
     // Summary section
     output += `### Summary\n`;
     output += `- **Total Issues:** ${automatedAnalysis.totalIssues}\n`;
     output += `- **Review Assessment:** ${reviewAssessment}\n`;
     output += `- **Technical Debt:** ${automatedAnalysis.technicalDebtMinutes} minutes\n\n`;
-    
+
     // Severity breakdown
     const severity = automatedAnalysis.severityBreakdown || {};
     output += `### Severity Breakdown\n`;
@@ -150,14 +150,14 @@ class CheckRunButtonService {
     if (postableFindings.length > 0) {
       output += `### Interactive Comment Options\n`;
       output += `Click the buttons above to post these findings as inline code comments:\n\n`;
-      
+
       postableFindings.forEach((finding, index) => {
         output += `**#${index + 1} - ${finding.severity} ${finding.category}**\n`;
         output += `- File: \`${finding.file}:${finding.line}\`\n`;
         output += `- Issue: ${finding.issue}\n`;
         output += `- Suggestion: ${finding.suggestion}\n\n`;
       });
-      
+
       if (postableFindings.length > 1) {
         output += `Use "Post All Comments" to post all ${postableFindings.length} findings at once.\n\n`;
       }
@@ -165,15 +165,15 @@ class CheckRunButtonService {
       output += `### No New Interactive Comments\n`;
       output += `All findings are either general issues or have already been addressed by reviewers.\n\n`;
     }
-    
+
     // Recommendation
     output += `### Recommendation\n`;
     output += `${recommendation}\n\n`;
-    
+
     output += `---\n`;
     output += `Analysis ID: ${trackingId}\n`;
     output += `Generated: ${new Date().toISOString()}`;
-    
+
     return output;
   }
 
@@ -187,7 +187,7 @@ class CheckRunButtonService {
 
     const checkRunId = check_run.id;
     const actionId = requested_action.identifier;
-    
+
     logger.info(`Button action requested: ${actionId} for check run ${checkRunId}`);
 
     // Get stored check run data
@@ -208,85 +208,106 @@ class CheckRunButtonService {
       if (actionId === 'post-all') {
         // Post all comments
         await this.postAllFindings(owner, repo, pullNumber, headSha, postableFindings, checkRunData);
-        
+
         // Update all button states
         Object.keys(buttonStates).forEach(key => {
           if (buttonStates[key] === 'in_progress' || buttonStates[key] === 'ready') {
             buttonStates[key] = 'completed';
           }
         });
-        
+
       } else if (actionId.startsWith('comment-finding-')) {
         // Post individual comment
         const findingIndex = parseInt(actionId.replace('comment-finding-', ''));
         const finding = postableFindings[findingIndex];
-        
+
         if (!finding) {
           throw new Error(`Finding ${findingIndex} not found`);
         }
 
         await this.postIndividualFinding(owner, repo, pullNumber, headSha, finding, checkRunData);
-        
+
         // Update button state
         buttonStates[actionId] = 'completed';
       }
 
       // Update check run with completion status
       await this.updateCheckRunCompleted(repository, checkRunId, checkRunData, actionId);
-      
+
       logger.info(`Button action completed: ${actionId} for PR #${pullNumber}`);
       return true;
 
     } catch (error) {
       logger.error(`Error handling button action ${actionId}:`, error);
-      
+
       // Update button state to error
       buttonStates[actionId] = 'error';
       await this.updateCheckRunError(repository, checkRunId, `Failed to ${actionId}: ${error.message}`);
-      
+
       return true;
     }
   }
 
-  // Post individual finding as inline comment
+  // Post individual finding as inline comment with proper line validation
   async postIndividualFinding(owner, repo, pullNumber, headSha, finding, checkRunData) {
     logger.info(`Posting individual finding for ${finding.file}:${finding.line}`, {
       pullNumber,
       trackingId: checkRunData.trackingId
     });
 
-    const commentableLine = await githubService.findCommentableLine(owner, repo, pullNumber, finding.file, finding.line);
-    
-    if (!commentableLine) {
-      const errorMessage = `Could not find a valid diff line for file "${finding.file}" near line "${finding.line}". This file/line may not be part of the changes in this pull request.`;
-      logger.error(errorMessage);
-      throw new Error(errorMessage);
+    try {
+      // First validate that the line exists and is commentable
+      const isValidLine = await githubService.validateCommentableLine(owner, repo, pullNumber, finding.file, finding.line);
+
+      if (!isValidLine) {
+        // Try to find a commentable line near the target
+        const commentableLine = await githubService.findCommentableLine(owner, repo, pullNumber, finding.file, finding.line);
+
+        if (!commentableLine) {
+          const errorMessage = `Cannot post comment for ${finding.file}:${finding.line}. This line is not part of the changes in this PR or cannot receive comments.`;
+          logger.error(errorMessage);
+          throw new Error(errorMessage);
+        }
+
+        // Update the finding with the corrected line number
+        const originalLine = finding.line;
+        finding.line = commentableLine;
+
+        // Add a note about line adjustment in the comment
+        finding.lineAdjusted = true;
+        finding.originalLine = originalLine;
+
+        logger.info(`Adjusted comment line from ${originalLine} to ${commentableLine} for ${finding.file}`);
+      }
+
+      const commentBody = this.formatInlineComment(finding, checkRunData.trackingId);
+
+      // Post as a review with a single comment
+      const commentsToPost = [{
+        path: finding.file,
+        line: finding.line,
+        body: commentBody,
+      }];
+
+      await githubService.postReviewComments(owner, repo, pullNumber, headSha, commentsToPost);
+
+      // Mark finding as posted
+      finding.posted = true;
+
+      logger.info(`Individual finding posted successfully`, {
+        file: finding.file,
+        line: finding.line,
+        originalLine: finding.originalLine || finding.line,
+        pullNumber
+      });
+
+    } catch (error) {
+      logger.error(`Error posting individual finding for ${finding.file}:${finding.line}:`, error);
+      throw new Error(`Failed to post comment for ${finding.file}:${finding.line} - ${error.message}`);
     }
-    
-    const commentBody = this.formatInlineComment(finding, checkRunData.trackingId);
-
-    // Post as a review with a single comment
-    const commentsToPost = [{
-      path: finding.file,
-      line: commentableLine,
-      body: commentBody,
-    }];
-
-    await githubService.postReviewComments(owner, repo, pullNumber, headSha, commentsToPost);
-
-    // Mark finding as posted
-    finding.posted = true;
-    // We don't get a comment ID back easily from the review API for a single comment, so this is left out for now.
-    // finding.commentId = comment.id;
-
-    logger.info(`Individual finding posted as part of a review`, {
-      file: finding.file,
-      line: commentableLine,
-      pullNumber
-    });
   }
 
-  // Post all findings as inline comments
+  // Post all findings as inline comments with proper line validation and error handling
   async postAllFindings(owner, repo, pullNumber, headSha, postableFindings, checkRunData) {
     logger.info(`Posting all findings for PR #${pullNumber}`, {
       count: postableFindings.length,
@@ -296,25 +317,49 @@ class CheckRunButtonService {
     const commentsToPost = [];
     let successCount = 0;
     const errors = [];
+    const adjustedLines = [];
 
-    for (const finding of postableFindings) {
+    // Process each finding and validate/adjust line numbers
+    for (let i = 0; i < postableFindings.length; i++) {
+      const finding = postableFindings[i];
+
       if (finding.posted) {
         successCount++;
         continue;
       }
 
       try {
-        const commentableLine = await githubService.findCommentableLine(owner, repo, pullNumber, finding.file, finding.line);
-        
-        if (!commentableLine) {
-          throw new Error(`Could not find a valid diff line near line ${finding.line} for file "${finding.file}". Skipping comment.`);
+        // Validate the line number
+        const isValidLine = await githubService.validateCommentableLine(owner, repo, pullNumber, finding.file, finding.line);
+
+        if (!isValidLine) {
+          // Try to find a commentable line near the target
+          const commentableLine = await githubService.findCommentableLine(owner, repo, pullNumber, finding.file, finding.line);
+
+          if (!commentableLine) {
+            throw new Error(`Line ${finding.line} in ${finding.file} is not part of the PR changes or cannot receive comments`);
+          }
+
+          // Track line adjustments for reporting
+          adjustedLines.push({
+            file: finding.file,
+            originalLine: finding.line,
+            adjustedLine: commentableLine
+          });
+
+          // Update the finding
+          finding.originalLine = finding.line;
+          finding.line = commentableLine;
+          finding.lineAdjusted = true;
+
+          logger.info(`Adjusted line number for ${finding.file} from ${finding.originalLine} to ${commentableLine}`);
         }
-        
+
         const commentBody = this.formatInlineComment(finding, checkRunData.trackingId);
 
         commentsToPost.push({
           path: finding.file,
-          line: commentableLine,
+          line: finding.line,
           body: commentBody,
         });
 
@@ -322,33 +367,140 @@ class CheckRunButtonService {
         successCount++;
 
       } catch (error) {
-        logger.error(`Error processing comment for ${finding.file}:${finding.line}:`, error);
-        errors.push(`${finding.file}:${finding.line} - ${error.message}`);
-      }
-    }
-    
-    // Post all comments in a single review
-    if (commentsToPost.length > 0) {
-      try {
-        await githubService.postReviewComments(owner, repo, pullNumber, headSha, commentsToPost);
-      } catch (bulkPostError) {
-        logger.error('Error in bulk posting to GitHub:', bulkPostError);
-        errors.push(`Bulk posting failed: ${bulkPostError.message}`);
+        const errorMsg = `${finding.file}:${finding.line} - ${error.message}`;
+        logger.error(`Error processing finding ${i + 1}:`, error);
+        errors.push(errorMsg);
       }
     }
 
-    // Post summary comment
-    const summaryMessage = this.formatBulkPostSummary(successCount, errors.length, errors, checkRunData.trackingId);
+    // Post all valid comments in a single review
+    if (commentsToPost.length > 0) {
+      try {
+        await githubService.postReviewComments(owner, repo, pullNumber, headSha, commentsToPost);
+        logger.info(`Successfully posted ${commentsToPost.length} comments in bulk review`);
+      } catch (bulkPostError) {
+        logger.error('Error in bulk posting to GitHub:', bulkPostError);
+        errors.push(`Bulk posting failed: ${bulkPostError.message}`);
+
+        // Attempt individual posting as fallback
+        logger.info('Attempting individual comment posting as fallback...');
+        await this.fallbackIndividualPosting(owner, repo, pullNumber, headSha, commentsToPost, postableFindings, errors);
+      }
+    }
+
+    // Post comprehensive summary comment
+    const summaryMessage = this.formatBulkPostSummaryWithAdjustments(
+      successCount,
+      errors.length,
+      errors,
+      adjustedLines,
+      checkRunData.trackingId
+    );
+
     await githubService.postGeneralComment(owner, repo, pullNumber, summaryMessage);
 
     logger.info(`Bulk posting completed`, {
       pullNumber,
       successCount,
       errorCount: errors.length,
+      adjustedLines: adjustedLines.length,
       trackingId: checkRunData.trackingId
     });
 
-    return { successCount, errorCount: errors.length, errors };
+    return {
+      successCount,
+      errorCount: errors.length,
+      errors,
+      adjustedLines: adjustedLines.length
+    };
+  }
+
+  // NEW: Fallback individual posting when bulk posting fails
+  async fallbackIndividualPosting(owner, repo, pullNumber, headSha, commentsToPost, postableFindings, errors) {
+    let fallbackSuccess = 0;
+
+    for (let i = 0; i < commentsToPost.length; i++) {
+      const comment = commentsToPost[i];
+      const finding = postableFindings.find(f => f.file === comment.path && f.line === comment.line);
+
+      try {
+        // Small delay between individual posts
+        if (i > 0) {
+          await new Promise(resolve => setTimeout(resolve, 500));
+        }
+
+        await githubService.postReviewComments(owner, repo, pullNumber, headSha, [comment]);
+        fallbackSuccess++;
+
+        logger.info(`Fallback: Individual comment posted for ${comment.path}:${comment.line}`);
+
+      } catch (individualError) {
+        logger.error(`Fallback failed for ${comment.path}:${comment.line}:`, individualError);
+        errors.push(`${comment.path}:${comment.line} - Fallback failed: ${individualError.message}`);
+
+        if (finding) {
+          finding.posted = false; // Mark as failed
+        }
+      }
+    }
+
+    logger.info(`Fallback individual posting completed: ${fallbackSuccess}/${commentsToPost.length} successful`);
+  }
+
+  // Enhanced inline comment formatting with line adjustment info
+  formatInlineComment(finding, trackingId) {
+    const severityEmoji = this.getSeverityEmoji(finding.severity);
+    const categoryEmoji = this.getCategoryEmoji(finding.category);
+
+    let comment = `${severityEmoji} ${categoryEmoji} **AI Code Review Finding**\n\n`;
+    comment += `**Issue:** ${finding.issue}\n\n`;
+    comment += `**Severity:** ${finding.severity}\n`;
+    comment += `**Category:** ${finding.category}\n\n`;
+
+    // Add line adjustment note if applicable
+    if (finding.lineAdjusted && finding.originalLine) {
+      comment += `**Note:** This issue was detected near line ${finding.originalLine} but commented on line ${finding.line} (closest commentable line in the PR changes).\n\n`;
+    }
+
+    comment += `**Suggestion:**\n${finding.suggestion}\n\n`;
+    comment += `---\n`;
+    comment += `*Posted via AI Code Reviewer | Analysis ID: \`${trackingId}\`*`;
+
+    return comment;
+  }
+
+  // Enhanced summary formatting with line adjustment reporting
+  formatBulkPostSummaryWithAdjustments(successCount, errorCount, errors, adjustedLines, trackingId) {
+    let summary = `**All AI Comments Posted**\n\n`;
+    summary += `Successfully posted: ${successCount} comments\n`;
+
+    if (adjustedLines.length > 0) {
+      summary += `Line adjustments made: ${adjustedLines.length} comments\n`;
+    }
+
+    if (errorCount > 0) {
+      summary += `Failed to post: ${errorCount} comments\n\n`;
+      summary += `**Errors:**\n`;
+      errors.forEach(error => {
+        summary += `• ${error}\n`;
+      });
+      summary += `\n`;
+    }
+
+    if (adjustedLines.length > 0) {
+      summary += `**Line Adjustments Made:**\n`;
+      summary += `Some comments were posted on nearby lines because the detected lines were not part of the PR changes:\n\n`;
+      adjustedLines.forEach(adj => {
+        summary += `• \`${adj.file}\`: Line ${adj.originalLine} → Line ${adj.adjustedLine}\n`;
+      });
+      summary += `\n*This is normal when issues are detected in unchanged code near PR modifications.*\n\n`;
+    }
+
+    summary += `All comments have been posted as inline review comments on the respective code lines.\n`;
+    summary += `Analysis ID: \`${trackingId}\`\n`;
+    summary += `Posted at: ${new Date().toISOString()}`;
+
+    return summary;
   }
 
   // Format inline comment for a finding
@@ -371,7 +523,7 @@ class CheckRunButtonService {
   formatBulkPostSummary(successCount, errorCount, errors, trackingId) {
     let summary = `**All AI Comments Posted**\n\n`;
     summary += `Successfully posted: ${successCount} comments\n`;
-    
+
     if (errorCount > 0) {
       summary += `Failed to post: ${errorCount} comments\n\n`;
       errors.forEach(error => {
@@ -389,7 +541,7 @@ class CheckRunButtonService {
   // Update check run to show progress WITHOUT changing status
   async updateCheckRunProgress(repository, checkRunId, checkRunData, actionId) {
     const { analysis, postableFindings, trackingId } = checkRunData;
-    
+
     let progressMessage;
     if (actionId === 'post-all') {
       progressMessage = `Posting all ${postableFindings.length} findings as inline comments...`;
@@ -411,7 +563,7 @@ class CheckRunButtonService {
   // Update check run when action completed
   async updateCheckRunCompleted(repository, checkRunId, checkRunData, actionId) {
     const { analysis, postableFindings, trackingId } = checkRunData;
-    
+
     let completionMessage;
     if (actionId === 'post-all') {
       completionMessage = `All ${postableFindings.length} findings have been posted as inline comments.`;
@@ -431,14 +583,14 @@ class CheckRunButtonService {
       // Note: `actions` and `status` properties are intentionally omitted to avoid validation errors.
     });
   }
-  
+
   // Update check run on error
   async updateCheckRunError(repository, checkRunId, errorMessage) {
     await githubService.updateCheckRun(repository.owner.login, repository.name, checkRunId, {
       conclusion: 'failure',
       output: {
-          title: 'AI Code Review - Action Failed',
-          summary: errorMessage,
+        title: 'AI Code Review - Action Failed',
+        summary: errorMessage,
       },
     });
   }
@@ -449,11 +601,11 @@ class CheckRunButtonService {
       return [];
     }
 
-    return detailedFindings.filter(finding => 
-      finding.file && 
-      finding.file !== 'unknown-file' && 
+    return detailedFindings.filter(finding =>
+      finding.file &&
+      finding.file !== 'unknown-file' &&
       finding.file !== 'AI_ANALYSIS_ERROR' &&
-      finding.line && 
+      finding.line &&
       finding.line > 0 &&
       !finding.posted
     );
@@ -462,10 +614,10 @@ class CheckRunButtonService {
   // Determine check run conclusion based on analysis
   determineConclusion(analysis) {
     const { automatedAnalysis, reviewAssessment } = analysis;
-    
+
     const hasBlockerIssues = automatedAnalysis.severityBreakdown.blocker > 0;
     const hasCriticalIssues = automatedAnalysis.severityBreakdown.critical > 0;
-    
+
     if (hasBlockerIssues) return 'failure';
     if (hasCriticalIssues) return 'neutral';
     if (reviewAssessment === 'PROPERLY REVIEWED') return 'success';

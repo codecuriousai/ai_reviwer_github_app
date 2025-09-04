@@ -13,12 +13,12 @@ class InteractiveCommentService {
   // Store AI findings for interactive commenting
   storePendingComments(owner, repo, pullNumber, detailedFindings, trackingId) {
     const prKey = `${owner}/${repo}#${pullNumber}`;
-    
+
     // Filter only issues that can be posted as inline comments (have file/line info)
-    const postableFindings = detailedFindings.filter(finding => 
-      finding.file && 
-      finding.file !== 'unknown-file' && 
-      finding.line && 
+    const postableFindings = detailedFindings.filter(finding =>
+      finding.file &&
+      finding.file !== 'unknown-file' &&
+      finding.line &&
       finding.line > 0 &&
       finding.file !== 'AI_ANALYSIS_ERROR'
     );
@@ -44,8 +44,8 @@ class InteractiveCommentService {
     };
 
     this.pendingComments.set(prKey, commentData);
-    
-    logger.info(`Stored ${postableFindings.length} pending comments for ${prKey}`, { 
+
+    logger.info(`Stored ${postableFindings.length} pending comments for ${prKey}`, {
       trackingId,
       totalFindings: detailedFindings.length,
       postableFindings: postableFindings.length
@@ -61,10 +61,10 @@ class InteractiveCommentService {
     }
 
     // Filter postable findings (ones with valid file/line info)
-    const postableFindings = detailedFindings.filter(finding => 
-      finding.file && 
-      finding.file !== 'unknown-file' && 
-      finding.line && 
+    const postableFindings = detailedFindings.filter(finding =>
+      finding.file &&
+      finding.file !== 'unknown-file' &&
+      finding.line &&
       finding.line > 0 &&
       finding.file !== 'AI_ANALYSIS_ERROR'
     );
@@ -81,7 +81,7 @@ class InteractiveCommentService {
       const findingId = `${trackingId}-finding-${index}`;
       const severityEmoji = this.getSeverityEmoji(finding.severity);
       const categoryEmoji = this.getCategoryEmoji(finding.category);
-      
+
       buttonsSection += `${index + 1}. ${severityEmoji} ${categoryEmoji} **${finding.file}:${finding.line}**\n`;
       buttonsSection += `   └─ ${finding.issue}\n`;
       buttonsSection += `   └─ [📝 Comment](https://github.com/comment-action?id=${findingId}) | `;
@@ -156,7 +156,7 @@ class InteractiveCommentService {
     }
   }
 
-  // Post individual AI finding as inline comment
+  // Post individual AI finding as inline comment with proper line validation
   async postIndividualComment(owner, repo, pullNumber, finding, triggeredBy) {
     try {
       logger.info(`Posting individual AI comment for ${finding.file}:${finding.line}`, {
@@ -165,16 +165,39 @@ class InteractiveCommentService {
         triggeredBy
       });
 
-      // Get the commit SHA for the file
+      // Get the PR data for commit SHA
       const { data: pr } = await githubService.octokit.rest.pulls.get({
         owner,
         repo,
         pull_number: pullNumber,
       });
 
-      const commentBody = this.formatInlineComment(finding);
+      // Validate and potentially adjust the line number
+      let commentLine = finding.line;
+      let lineAdjusted = false;
+      let originalLine = finding.line;
 
-      // Post as inline review comment
+      // First check if the line is valid for commenting
+      const isValidLine = await githubService.validateCommentableLine(owner, repo, pullNumber, finding.file, finding.line);
+
+      if (!isValidLine) {
+        // Try to find a nearby commentable line
+        const adjustedLine = await githubService.findCommentableLine(owner, repo, pullNumber, finding.file, finding.line);
+
+        if (!adjustedLine) {
+          throw new Error(`Cannot find a commentable line near line ${finding.line} in file ${finding.file}. This line may not be part of the PR changes.`);
+        }
+
+        commentLine = adjustedLine;
+        lineAdjusted = true;
+
+        logger.info(`Adjusted comment line from ${originalLine} to ${commentLine} for ${finding.file}`);
+      }
+
+      // Format comment with line adjustment info if needed
+      const commentBody = this.formatInlineCommentWithAdjustment(finding, lineAdjusted, originalLine, commentLine);
+
+      // Create the review comment
       const { data: comment } = await githubService.octokit.rest.pulls.createReviewComment({
         owner,
         repo,
@@ -182,45 +205,56 @@ class InteractiveCommentService {
         body: commentBody,
         commit_id: pr.head.sha,
         path: finding.file,
-        line: finding.line,
+        line: commentLine,
       });
 
-      // Mark as posted
+      // Mark as posted and update line info
       finding.posted = true;
       finding.commentId = comment.id;
+      if (lineAdjusted) {
+        finding.adjustedLine = commentLine;
+        finding.originalLine = originalLine;
+      }
 
-      // Post confirmation
-      await githubService.postGeneralComment(
-        owner, repo, pullNumber,
-        `✅ AI finding posted as inline comment by @${triggeredBy}\n\n` +
-        `**File:** ${finding.file}:${finding.line}\n` +
-        `**Issue:** ${finding.issue}\n` +
-        `**Comment ID:** ${comment.id}`
-      );
+      // Post confirmation with adjustment info
+      let confirmationMessage = `✅ AI finding posted as inline comment by @${triggeredBy}\n\n`;
+      confirmationMessage += `**File:** ${finding.file}:${commentLine}\n`;
+
+      if (lineAdjusted) {
+        confirmationMessage += `**Note:** Comment posted on line ${commentLine} (nearest commentable line to detected issue on line ${originalLine})\n`;
+      }
+
+      confirmationMessage += `**Issue:** ${finding.issue}\n`;
+      confirmationMessage += `**Comment ID:** ${comment.id}`;
+
+      await githubService.postGeneralComment(owner, repo, pullNumber, confirmationMessage);
 
       logger.info(`Individual AI comment posted successfully`, {
         pullNumber,
         commentId: comment.id,
         file: finding.file,
-        line: finding.line
+        finalLine: commentLine,
+        originalLine: originalLine,
+        adjusted: lineAdjusted
       });
 
     } catch (error) {
       logger.error('Error posting individual comment:', error);
-      
-      // Post error message
+
+      // Post detailed error message
       await githubService.postGeneralComment(
         owner, repo, pullNumber,
         `❌ Failed to post AI comment for ${finding.file}:${finding.line}\n\n` +
         `**Error:** ${error.message}\n` +
-        `**Triggered by:** @${triggeredBy}`
+        `**Triggered by:** @${triggeredBy}\n` +
+        `**Suggestion:** This line may not be part of the PR changes. Try running a new AI review after making more changes to this file.`
       );
-      
+
       throw error;
     }
   }
 
-  // Post all pending AI comments at once
+  // Post all pending AI comments with line validation and adjustment tracking
   async postAllComments(owner, repo, pullNumber, pendingComments, triggeredBy) {
     try {
       logger.info(`Posting all AI comments for PR #${pullNumber}`, {
@@ -246,8 +280,9 @@ class InteractiveCommentService {
       let successCount = 0;
       let errorCount = 0;
       const errors = [];
+      const adjustedLines = [];
 
-      // Post each finding as inline comment
+      // Process each finding with line validation
       for (const finding of pendingComments.findings) {
         if (finding.posted) {
           successCount++;
@@ -255,7 +290,34 @@ class InteractiveCommentService {
         }
 
         try {
-          const commentBody = this.formatInlineComment(finding);
+          let commentLine = finding.line;
+          let lineAdjusted = false;
+          const originalLine = finding.line;
+
+          // Validate the line number
+          const isValidLine = await githubService.validateCommentableLine(owner, repo, pullNumber, finding.file, finding.line);
+
+          if (!isValidLine) {
+            const adjustedLine = await githubService.findCommentableLine(owner, repo, pullNumber, finding.file, finding.line);
+
+            if (!adjustedLine) {
+              throw new Error(`No commentable line found near line ${finding.line} in ${finding.file}`);
+            }
+
+            commentLine = adjustedLine;
+            lineAdjusted = true;
+
+            adjustedLines.push({
+              file: finding.file,
+              originalLine: originalLine,
+              adjustedLine: commentLine
+            });
+
+            logger.info(`Line adjusted for ${finding.file}: ${originalLine} -> ${commentLine}`);
+          }
+
+          // Format and post comment
+          const commentBody = this.formatInlineCommentWithAdjustment(finding, lineAdjusted, originalLine, commentLine);
 
           const { data: comment } = await githubService.octokit.rest.pulls.createReviewComment({
             owner,
@@ -264,11 +326,17 @@ class InteractiveCommentService {
             body: commentBody,
             commit_id: pr.head.sha,
             path: finding.file,
-            line: finding.line,
+            line: commentLine,
           });
 
+          // Update finding info
           finding.posted = true;
           finding.commentId = comment.id;
+          if (lineAdjusted) {
+            finding.adjustedLine = commentLine;
+            finding.originalLine = originalLine;
+          }
+
           successCount++;
 
           // Small delay to avoid rate limiting
@@ -284,20 +352,14 @@ class InteractiveCommentService {
       // Mark all as posted
       pendingComments.allPosted = true;
 
-      // Post summary comment
-      let summaryMessage = `🤖 **All AI Comments Posted** by @${triggeredBy}\n\n`;
-      summaryMessage += `✅ **Successfully posted:** ${successCount} comments\n`;
-      
-      if (errorCount > 0) {
-        summaryMessage += `❌ **Failed to post:** ${errorCount} comments\n\n`;
-        summaryMessage += `**Errors:**\n`;
-        errors.forEach(error => {
-          summaryMessage += `• ${error}\n`;
-        });
-      }
-
-      summaryMessage += `\n📍 **Location:** All comments posted as inline review comments on respective code lines\n`;
-      summaryMessage += `🕒 **Posted at:** ${new Date().toISOString()}`;
+      // Post comprehensive summary
+      const summaryMessage = this.formatBulkSummaryWithAdjustments(
+        successCount,
+        errorCount,
+        errors,
+        adjustedLines,
+        triggeredBy
+      );
 
       await githubService.postGeneralComment(owner, repo, pullNumber, summaryMessage);
 
@@ -305,22 +367,79 @@ class InteractiveCommentService {
         pullNumber,
         successCount,
         errorCount,
+        adjustedCount: adjustedLines.length,
         triggeredBy
       });
 
     } catch (error) {
       logger.error('Error posting all comments:', error);
-      
+
       await githubService.postGeneralComment(
         owner, repo, pullNumber,
         `❌ Failed to post all AI comments\n\n` +
         `**Error:** ${error.message}\n` +
         `**Triggered by:** @${triggeredBy}\n` +
-        `**Time:** ${new Date().toISOString()}`
+        `**Time:** ${new Date().toISOString()}\n\n` +
+        `**Suggestion:** Some files may not have changes in this PR. Try making additional changes and running AI review again.`
       );
-      
+
       throw error;
     }
+  }
+
+  // NEW: Format inline comment with line adjustment information
+  formatInlineCommentWithAdjustment(finding, lineAdjusted, originalLine, commentLine) {
+    const severityEmoji = this.getSeverityEmoji(finding.severity);
+    const categoryEmoji = this.getCategoryEmoji(finding.category);
+
+    let comment = `${severityEmoji} ${categoryEmoji} **AI Code Review Finding**\n\n`;
+    comment += `**Issue:** ${finding.issue}\n\n`;
+    comment += `**Severity:** ${finding.severity}\n`;
+    comment += `**Category:** ${finding.category}\n\n`;
+
+    // Add line adjustment note if applicable
+    if (lineAdjusted) {
+      comment += `**📍 Line Note:** This issue was detected near line ${originalLine} but is commented on line ${commentLine} (the nearest line that can receive comments in this PR).\n\n`;
+    }
+
+    comment += `**Suggestion:**\n${finding.suggestion}\n\n`;
+    comment += `---\n`;
+    comment += `*🤖 Posted by AI Code Reviewer | Finding ID: \`${finding.id}\`*`;
+
+    return comment;
+  }
+
+  // NEW: Enhanced bulk summary with line adjustment reporting
+  formatBulkSummaryWithAdjustments(successCount, errorCount, errors, adjustedLines, triggeredBy) {
+    let summary = `🤖 **All AI Comments Posted** by @${triggeredBy}\n\n`;
+    summary += `✅ **Successfully posted:** ${successCount} comments\n`;
+
+    if (adjustedLines.length > 0) {
+      summary += `📍 **Line adjustments:** ${adjustedLines.length} comments moved to nearby lines\n`;
+    }
+
+    if (errorCount > 0) {
+      summary += `❌ **Failed to post:** ${errorCount} comments\n\n`;
+      summary += `**Errors:**\n`;
+      errors.forEach(error => {
+        summary += `• ${error}\n`;
+      });
+      summary += `\n`;
+    }
+
+    if (adjustedLines.length > 0) {
+      summary += `**📍 Line Adjustments Made:**\n`;
+      summary += `Some comments were moved to nearby lines because the original lines are not part of the PR changes:\n\n`;
+      adjustedLines.forEach(adj => {
+        summary += `• \`${adj.file}\`: Line ${adj.originalLine} → Line ${adj.adjustedLine}\n`;
+      });
+      summary += `\n*This ensures comments appear on code that's actually changed in this PR.*\n\n`;
+    }
+
+    summary += `📝 **Location:** All comments posted as inline review comments on respective code lines\n`;
+    summary += `🕒 **Posted at:** ${new Date().toISOString()}`;
+
+    return summary;
   }
 
   // Format inline comment for specific finding
@@ -376,11 +495,11 @@ class InteractiveCommentService {
     for (const [prKey, data] of this.pendingComments.entries()) {
       stats.totalPendingFindings += data.findings.filter(f => !f.posted).length;
       stats.totalPostedFindings += data.findings.filter(f => f.posted).length;
-      
+
       if (!stats.oldestEntry || data.createdAt < stats.oldestEntry) {
         stats.oldestEntry = data.createdAt;
       }
-      
+
       if (!stats.newestEntry || data.createdAt > stats.newestEntry) {
         stats.newestEntry = data.createdAt;
       }
@@ -420,15 +539,15 @@ class InteractiveCommentService {
 
     let instructions = '\n\n📋 **COMMENT POSTING INSTRUCTIONS:**\n';
     instructions += `To post AI findings as inline comments, use these commands:\n\n`;
-    
+
     instructions += `**Individual Comments:**\n`;
     instructions += `• \`/ai-comment ${trackingId}-finding-0\` (for finding #1)\n`;
     instructions += `• \`/ai-comment ${trackingId}-finding-1\` (for finding #2)\n`;
     instructions += `• ... and so on for each finding\n\n`;
-    
+
     instructions += `**Post All Comments:**\n`;
     instructions += `• \`/ai-comment ${trackingId}-all\` (posts all findings at once)\n\n`;
-    
+
     instructions += `*💡 Comments will be posted as line-specific review comments on the affected code.*`;
 
     return instructions;
