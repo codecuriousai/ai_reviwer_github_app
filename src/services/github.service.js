@@ -241,7 +241,7 @@ class GitHubService {
     }
   }
   
-  // NEW: Finds the closest line in the diff that can be commented on.
+  // MODIFIED: Finds the closest line in the diff that can be commented on.
   async findCommentableLine(owner, repo, pullNumber, filePath, targetLine) {
     try {
         const { data: files } = await this.octokit.rest.pulls.listFiles({

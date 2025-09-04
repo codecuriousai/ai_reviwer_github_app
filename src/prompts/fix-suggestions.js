@@ -1,10 +1,10 @@
 // src/prompts/fix-suggestions.js
 
-const getFixSuggestionPrompt = (fileContent, issueDescription, lineNumber) => {
+const getFixSuggestionPrompt = (fileSnippet, issueDescription, lineNumber) => {
   return `
 You are an expert software developer and security analyst. Your task is to provide a code fix for a specific issue.
 
-The user will provide you with the full content of a file, an issue description, and a line number where the issue is present.
+The user will provide you with a code snippet from a file, an issue description, and a line number where the issue is present.
 
 Your response MUST be ONLY a JSON object with a single key 'suggestion'. The value of 'suggestion' must be the corrected code snippet that directly addresses the issue. Do not include any explanations or extra text outside the JSON. The corrected code snippet should be a valid replacement for the problematic code.
 
@@ -14,9 +14,9 @@ Example of expected output:
 }
 
 ---
-File Content:
+Code Snippet from File (surrounding line ${lineNumber}):
 \`\`\`
-${fileContent}
+${fileSnippet}
 \`\`\`
 
 Issue Description:

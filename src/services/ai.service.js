@@ -79,7 +79,8 @@ class AIService {
         if (finding.file !== 'AI_PARSING_ERROR' && finding.file !== 'AI_SERVICE_ERROR') {
           try {
             const fileContent = prData.files.find(f => f.filename === finding.file)?.content || '';
-            const fixSuggestion = await this.generateFixSuggestion(fileContent, finding.issue, finding.line);
+            const fileSnippet = this.getLineContent(fileContent, finding.line);
+            const fixSuggestion = await this.generateFixSuggestion(fileSnippet, finding.issue, finding.line);
             finding.suggestion = fixSuggestion;
           } catch (error) {
             logger.error(`Failed to generate fix suggestion for finding in ${finding.file}:${finding.line}:`, error);
@@ -97,9 +98,18 @@ class AIService {
     }
   }
 
+  // NEW: Helper function to get a snippet of code around a specific line
+  getLineContent(fullContent, lineNumber, contextLines = 3) {
+    if (!fullContent) return '';
+    const lines = fullContent.split('\n');
+    const start = Math.max(0, lineNumber - 1 - contextLines);
+    const end = Math.min(lines.length, lineNumber + contextLines);
+    return lines.slice(start, end).join('\n');
+  }
+
   // Generate a code fix suggestion using AI
-  async generateFixSuggestion(fileContent, issueDescription, lineNumber) {
-    const prompt = getFixSuggestionPrompt(fileContent, issueDescription, lineNumber);
+  async generateFixSuggestion(fileSnippet, issueDescription, lineNumber) {
+    const prompt = getFixSuggestionPrompt(fileSnippet, issueDescription, lineNumber);
     let rawResponse;
 
     try {
