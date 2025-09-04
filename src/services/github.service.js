@@ -30,7 +30,7 @@ class GitHubService {
         logger.info('Attempting to use base64 encoded private key from environment');
         
         try {
-          const base64Key = process.env.GITHUB_PRIVATE_KEY_BASE4.trim();
+          const base64Key = process.env.GITHUB_PRIVATE_KEY_BASE64.trim();
           
           // Validate base64 format
           if (!this.isValidBase64(base64Key)) {
