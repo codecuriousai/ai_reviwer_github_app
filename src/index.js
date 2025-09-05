@@ -330,7 +330,7 @@ app.post('/api/check-runs/:checkRunId/generate-fixes', async (req, res) => {
 });
 
 // NEW: Check merge readiness endpoint
-app.post('/api/check-runs/:checkRunId/check-merge-readiness', async (req, res) => {
+app.post('/api/check-runs/:checkRunId/check-merge', async (req, res) => {
   try {
     const { checkRunId } = req.params;
     const checkRunData = checkRunButtonService.activeCheckRuns.get(parseInt(checkRunId));

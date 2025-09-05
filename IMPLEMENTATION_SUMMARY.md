@@ -123,7 +123,7 @@ GitHub API (Comments & Check Runs)
 - `POST /api/fix-suggestion` - Individual fix suggestion
 
 ### Merge Readiness:
-- `POST /api/check-runs/:checkRunId/check-merge-readiness` - Trigger assessment
+- `POST /api/check-runs/:checkRunId/check-merge` - Trigger assessment
 - `POST /api/merge-readiness` - Standalone assessment
 
 ### Enhanced Status:

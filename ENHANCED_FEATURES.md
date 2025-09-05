@@ -147,7 +147,7 @@ Triggers fix suggestion generation for all findings in a check run.
 
 ### Check Merge Readiness
 ```http
-POST /api/check-runs/:checkRunId/check-merge-readiness
+POST /api/check-runs/:checkRunId/check-merge
 ```
 Performs merge readiness assessment for a PR.
 

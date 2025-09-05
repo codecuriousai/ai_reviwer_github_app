@@ -54,7 +54,7 @@ class CheckRunButtonService {
         }, { 
           'post-all': 'ready',
           'generate-fixes': 'ready',      // NEW: Generate all fix suggestions
-          'check-merge-readiness': 'ready' // NEW: Check merge readiness
+          'check-merge': 'ready' // NEW: Check merge readiness (shortened)
         })
       });
 
@@ -97,7 +97,7 @@ class CheckRunButtonService {
     actions.push({
       label: `Check Merge Readiness`,
       description: `Assess if PR is ready to merge`,
-      identifier: 'check-merge-readiness'
+      identifier: 'check-merge'
     });
 
     return actions.slice(0, maxButtons); // Ensure we don't exceed GitHub's limit
@@ -219,10 +219,10 @@ class CheckRunButtonService {
         await this.generateAllFixSuggestions(owner, repo, pullNumber, postableFindings, checkRunData);
         buttonStates['generate-fixes'] = 'completed';
 
-      } else if (actionId === 'check-merge-readiness') {
+      } else if (actionId === 'check-merge') {
         // NEW: Check merge readiness
         await this.checkMergeReadiness(owner, repo, pullNumber, analysis, checkRunData);
-        buttonStates['check-merge-readiness'] = 'completed';
+        buttonStates['check-merge'] = 'completed';
 
       } else if (actionId.startsWith('comment-finding-')) {
         // Post individual comment
@@ -1062,7 +1062,7 @@ class CheckRunButtonService {
       progressMessage = `Posting all ${postableFindings.length} findings as inline comments...`;
     } else if (actionId === 'generate-fixes') {
       progressMessage = `Generating fix suggestions for all findings...`;
-    } else if (actionId === 'check-merge-readiness') {
+    } else if (actionId === 'check-merge') {
       progressMessage = `Checking merge readiness for PR #${checkRunData.pullNumber}...`;
     } else {
       const findingIndex = parseInt(actionId.replace('comment-finding-', ''));
@@ -1088,7 +1088,7 @@ class CheckRunButtonService {
       completionMessage = `All ${postableFindings.length} findings have been posted as inline comments.`;
     } else if (actionId === 'generate-fixes') {
       completionMessage = `All fix suggestions have been generated.`;
-    } else if (actionId === 'check-merge-readiness') {
+    } else if (actionId === 'check-merge') {
       completionMessage = `Merge readiness assessment completed.`;
     } else {
       const findingIndex = parseInt(actionId.replace('comment-finding-', ''));
