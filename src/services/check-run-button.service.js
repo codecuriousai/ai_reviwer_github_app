@@ -194,18 +194,104 @@ class CheckRunButtonService {
   }
 
   // Handle check run button actions - ENHANCED with new actions
+  // async handleButtonAction(payload) {
+  //   const { action, check_run, requested_action, repository } = payload;
+
+  //   if (action !== 'requested_action' || check_run.name !== 'AI Code Review') {
+  //     return false;
+  //   }
+
+  //   const checkRunId = check_run.id;
+  //   const actionId = requested_action.identifier;
+
+  //   logger.info(`Button action requested: ${actionId} for check run ${checkRunId}`);
+
+  //   // Get stored check run data
+  //   const checkRunData = this.activeCheckRuns.get(checkRunId);
+  //   if (!checkRunData) {
+  //     logger.error(`No data found for check run ${checkRunId}`);
+  //     await this.updateCheckRunError(repository, checkRunId, 'Check run data not found. Please re-run AI review.');
+  //     return true;
+  //   }
+
+  //   const { owner, repo, pullNumber, headSha, postableFindings, buttonStates, analysis } = checkRunData;
+
+  //   try {
+  //     // Update button state to processing
+  //     buttonStates[actionId] = 'in_progress';
+  //     await this.updateCheckRunProgress(repository, checkRunId, checkRunData, actionId);
+
+  //     // Handle different button actions
+  //     if (actionId === 'post-all') {
+  //       await this.postAllFindings(owner, repo, pullNumber, headSha, postableFindings, checkRunData);
+  //       Object.keys(buttonStates).forEach(key => {
+  //         if (key.startsWith('comment-finding-') && buttonStates[key] !== 'error') {
+  //           buttonStates[key] = 'completed';
+  //         }
+  //       });
+  //       buttonStates['post-all'] = 'completed';
+
+  //     } else if (actionId === 'commit-fixes') {
+  //       // MODIFIED: Commit all fix suggestions to branch
+  //       await this.commitAllFixSuggestions(owner, repo, pullNumber, postableFindings, checkRunData);
+  //       buttonStates['commit-fixes'] = 'completed';
+
+  //     } else if (actionId === 'check-merge') {
+  //       // NEW: Check merge readiness
+  //       await this.checkMergeReadiness(owner, repo, pullNumber, analysis, checkRunData);
+  //       buttonStates['check-merge'] = 'completed';
+
+  //     } else if (actionId.startsWith('comment-finding-')) {
+  //       // Post individual comment
+  //       const findingIndex = parseInt(actionId.replace('comment-finding-', ''));
+  //       const finding = postableFindings[findingIndex];
+
+  //       if (!finding) {
+  //         throw new Error(`Finding ${findingIndex} not found`);
+  //       }
+
+  //       await this.postIndividualFinding(owner, repo, pullNumber, headSha, finding, checkRunData);
+  //       buttonStates[actionId] = 'completed';
+
+  //     } else if (actionId.startsWith('fix-suggestion-')) {
+  //       // NEW: Generate fix suggestion for individual finding
+  //       const findingIndex = parseInt(actionId.replace('fix-suggestion-', ''));
+  //       const finding = postableFindings[findingIndex];
+
+  //       if (!finding) {
+  //         throw new Error(`Finding ${findingIndex} not found`);
+  //       }
+
+  //       await this.generateIndividualFixSuggestion(owner, repo, pullNumber, finding, checkRunData);
+  //       buttonStates[actionId] = 'completed';
+  //     }
+
+  //     // Update check run with completion status
+  //     await this.updateCheckRunCompleted(repository, checkRunId, checkRunData, actionId);
+
+  //     logger.info(`Button action completed: ${actionId} for PR #${pullNumber}`);
+  //     return true;
+
+  //   } catch (error) {
+  //     logger.error(`Error handling button action ${actionId}:`, error);
+
+  //     // Update button state to error
+  //     buttonStates[actionId] = 'error';
+  //     await this.updateCheckRunError(repository, checkRunId, `Failed to ${actionId}: ${error.message}`);
+
+  //     return true;
+  //   }
+  // }
+
   async handleButtonAction(payload) {
     const { action, check_run, requested_action, repository } = payload;
-
     if (action !== 'requested_action' || check_run.name !== 'AI Code Review') {
       return false;
     }
-
     const checkRunId = check_run.id;
     const actionId = requested_action.identifier;
-
     logger.info(`Button action requested: ${actionId} for check run ${checkRunId}`);
-
+    
     // Get stored check run data
     const checkRunData = this.activeCheckRuns.get(checkRunId);
     if (!checkRunData) {
@@ -230,55 +316,44 @@ class CheckRunButtonService {
           }
         });
         buttonStates['post-all'] = 'completed';
-
+        // After completion, update the check run
+        await this.updateCheckRunConclusion(repository, checkRunId, checkRunData);
       } else if (actionId === 'commit-fixes') {
         // MODIFIED: Commit all fix suggestions to branch
         await this.commitAllFixSuggestions(owner, repo, pullNumber, postableFindings, checkRunData);
         buttonStates['commit-fixes'] = 'completed';
-
+        await this.updateCheckRunConclusion(repository, checkRunId, checkRunData);
       } else if (actionId === 'check-merge') {
         // NEW: Check merge readiness
-        await this.checkMergeReadiness(owner, repo, pullNumber, analysis, checkRunData);
+        logger.info(`Starting merge readiness analysis for PR #${pullNumber}`);
+        // Call the AI service to get merge readiness status
+        const mergeAnalysis = await aiService.checkMergeReadiness(analysis, checkRunData);
+        
+        // This is the missing part: Update the check run with the new status
+        await githubService.updateCheckRun(owner, repo, checkRunId, {
+          status: 'completed',
+          conclusion: mergeAnalysis.isReady ? 'success' : 'failure',
+          output: {
+            title: `Merge Readiness: ${mergeAnalysis.isReady ? 'Ready to Merge' : 'Not Ready to Merge'}`,
+            summary: mergeAnalysis.summary,
+            text: mergeAnalysis.details,
+          },
+          actions: this.generateCheckRunActions(postableFindings)
+        });
+
+        // Update the internal state and log
         buttonStates['check-merge'] = 'completed';
-
-      } else if (actionId.startsWith('comment-finding-')) {
-        // Post individual comment
-        const findingIndex = parseInt(actionId.replace('comment-finding-', ''));
-        const finding = postableFindings[findingIndex];
-
-        if (!finding) {
-          throw new Error(`Finding ${findingIndex} not found`);
-        }
-
-        await this.postIndividualFinding(owner, repo, pullNumber, headSha, finding, checkRunData);
-        buttonStates[actionId] = 'completed';
-
-      } else if (actionId.startsWith('fix-suggestion-')) {
-        // NEW: Generate fix suggestion for individual finding
-        const findingIndex = parseInt(actionId.replace('fix-suggestion-', ''));
-        const finding = postableFindings[findingIndex];
-
-        if (!finding) {
-          throw new Error(`Finding ${findingIndex} not found`);
-        }
-
-        await this.generateIndividualFixSuggestion(owner, repo, pullNumber, finding, checkRunData);
-        buttonStates[actionId] = 'completed';
+        logger.info(`Merge readiness analysis completed. Status: ${mergeAnalysis.isReady ? 'Ready' : 'Not Ready'}`);
       }
 
-      // Update check run with completion status
-      await this.updateCheckRunCompleted(repository, checkRunId, checkRunData, actionId);
+      // Final update of the check run to reflect button status
+      await this.updateCheckRunConclusion(repository, checkRunId, checkRunData);
 
-      logger.info(`Button action completed: ${actionId} for PR #${pullNumber}`);
       return true;
-
     } catch (error) {
-      logger.error(`Error handling button action ${actionId}:`, error);
-
-      // Update button state to error
+      logger.error(`Error handling action '${actionId}':`, error);
       buttonStates[actionId] = 'error';
-      await this.updateCheckRunError(repository, checkRunId, `Failed to ${actionId}: ${error.message}`);
-
+      await this.updateCheckRunError(repository, checkRunId, `Failed to complete action '${actionId}': ${error.message}`);
       return true;
     }
   }
