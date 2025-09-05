@@ -317,12 +317,12 @@ class CheckRunButtonService {
         });
         buttonStates['post-all'] = 'completed';
         // After completion, update the check run
-        await this.updateCheckRunConclusion(repository, checkRunId, checkRunData);
+        await this.updateCheckRunCompleted(repository, checkRunId, checkRunData, actionId);
       } else if (actionId === 'commit-fixes') {
         // MODIFIED: Commit all fix suggestions to branch
         await this.commitAllFixSuggestions(owner, repo, pullNumber, postableFindings, checkRunData);
         buttonStates['commit-fixes'] = 'completed';
-        await this.updateCheckRunConclusion(repository, checkRunId, checkRunData);
+        await this.updateCheckRunCompleted(repository, checkRunId, checkRunData, actionId);
       } else if (actionId === 'check-merge') {
         // NEW: Check merge readiness
         logger.info(`Starting merge readiness analysis for PR #${pullNumber}`);
@@ -347,7 +347,7 @@ class CheckRunButtonService {
       }
 
       // Final update of the check run to reflect button status
-      await this.updateCheckRunConclusion(repository, checkRunId, checkRunData);
+      await this.updateCheckRunCompleted(repository, checkRunId, checkRunData, actionId);
 
       return true;
     } catch (error) {
