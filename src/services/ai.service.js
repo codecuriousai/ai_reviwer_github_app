@@ -8,6 +8,8 @@ const { getCodeReviewPrompt } = require('../prompts/prompts');
 const { buildFixSuggestionPrompt, buildMergeReadinessPrompt } = require('../prompts/enhanced-prompts');
 const { retryWithBackoff, sanitizeForAI, isValidJSON } = require('../utils/helpers');
 
+const aiService = new AIService();
+const { delay, generateTrackingId, isValidJSON } = require('../utils/helpers');
 class AIService {
   constructor() {
     this.provider = config.ai.provider;
@@ -783,6 +785,83 @@ class AIService {
       logger.error('AI health check failed:', error);
       return false;
     }
+  }
+
+  // NEW: Add the checkMergeReadiness method
+  async checkMergeReadiness(analysis, checkRunData) {
+    logger.info(`Starting AI merge readiness analysis.`);
+    const prompt = buildMergeReadinessPrompt(analysis, checkRunData);
+    let attempts = 0;
+    const maxAttempts = 3;
+
+    while (attempts < maxAttempts) {
+      try {
+        const responseText = await this.callAI(prompt, 'json_object');
+        const parsedResponse = this.parseAIResponse(responseText);
+
+        if (!parsedResponse || typeof parsedResponse.isReady === 'undefined' || !parsedResponse.summary) {
+          throw new Error('AI response is not in the expected format for merge readiness.');
+        }
+
+        logger.info('Merge readiness analysis completed successfully.', {
+          isReady: parsedResponse.isReady,
+          summary: parsedResponse.summary
+        });
+        return parsedResponse;
+      } catch (error) {
+        logger.error(`Attempt ${attempts + 1} for merge readiness analysis failed: ${error.message}`);
+        if (attempts < maxAttempts - 1) {
+          await delay(2000 * (attempts + 1)); // Exponential backoff
+        }
+        attempts++;
+      }
+    }
+    logger.error('Merge readiness analysis failed after multiple attempts.');
+    throw new Error('Failed to get a valid AI merge readiness response after multiple retries.');
+  }
+
+  async callAI(prompt, responseFormat) {
+    if (this.provider === 'openai' && this.openai) {
+      const response = await this.openai.chat.completions.create({
+        model: config.ai.openai.model,
+        messages: [{ role: 'user', content: prompt }],
+        max_tokens: 4096,
+        response_format: { type: responseFormat },
+      });
+      return response.choices[0].message.content;
+    } else if (this.provider === 'gemini' && this.geminiModel) {
+      const result = await this.geminiModel.generateContent(prompt);
+      const response = await result.response;
+      return response.text();
+    }
+    throw new Error('No AI provider configured or initialized.');
+  }
+
+  parseAIResponse(responseText) {
+    const cleanedText = responseText.replace(/```json/g, '').replace(/```/g, '');
+    if (!isValidJSON(cleanedText)) {
+      throw new Error('AI returned invalid JSON.');
+    }
+    return JSON.parse(cleanedText);
+  }
+
+  processAIAnalysis(parsedResponse, prData) {
+    const analysis = {
+      trackingId: generateTrackingId(),
+      timestamp: new Date().toISOString(),
+      prInfo: {
+        pullNumber: prData.pullNumber,
+        repository: prData.pr.repository,
+        author: prData.pr.author,
+        url: prData.pr.url,
+        reviewers: prData.reviewers || [],
+      },
+      ...parsedResponse,
+    };
+    if (analysis.humanReviewAnalysis) {
+      analysis.humanReviewAnalysis.reviewComments = prData.existingComments.length;
+    }
+    return analysis;
   }
 }
 
