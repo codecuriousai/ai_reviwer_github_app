@@ -929,7 +929,8 @@ class CheckRunButtonService {
 
     // Update check run with commit results
     await this.updateCheckRunWithCommitResults(
-      checkRunData.repository,
+      owner,
+      repo,
       checkRunData.checkRunId,
       checkRunData,
       committedFixes,
@@ -1025,8 +1026,8 @@ class CheckRunButtonService {
     }
   }
 
-  // NEW: Update check run with commit results
-  async updateCheckRunWithCommitResults(repository, checkRunId, checkRunData, committedFixes, errors, successCount) {
+  // MODIFIED: Update check run with commit results
+  async updateCheckRunWithCommitResults(owner, repo, checkRunId, checkRunData, committedFixes, errors, successCount) {
     try {
       const { analysis, postableFindings, trackingId } = checkRunData;
       
@@ -1055,7 +1056,7 @@ class CheckRunButtonService {
       
       detailText += `\n---\n*🤖 Fixes committed by AI Code Reviewer*`;
 
-      await githubService.updateCheckRun(repository.owner.login, repository.name, checkRunId, {
+      await githubService.updateCheckRun(owner, repo, checkRunId, {
         conclusion: successCount > 0 ? 'success' : 'neutral',
         output: {
           title: 'AI Code Review - Fixes Committed',
@@ -1070,7 +1071,7 @@ class CheckRunButtonService {
   }
 
   // NEW: Update check run with merge readiness results
-  async updateCheckRunWithMergeReadiness(repository, checkRunId, checkRunData, mergeAssessment) {
+  async updateCheckRunWithMergeReadiness(owner, repo, checkRunId, checkRunData, mergeAssessment) {
     try {
       const { analysis, postableFindings, trackingId } = checkRunData;
       
@@ -1118,7 +1119,7 @@ class CheckRunButtonService {
       
       detailText += `---\n*🤖 Assessment by AI Code Reviewer*`;
 
-      await githubService.updateCheckRun(repository.owner.login, repository.name, checkRunId, {
+      await githubService.updateCheckRun(owner, repo, checkRunId, {
         conclusion: conclusion,
         output: {
           title: `AI Code Review - Merge Readiness: ${mergeAssessment.status.replace('_', ' ')}`,
@@ -1200,7 +1201,8 @@ class CheckRunButtonService {
 
       // MODIFIED: Update check run with merge readiness instead of posting comment
       await this.updateCheckRunWithMergeReadiness(
-        checkRunData.repository,
+        owner,
+        repo,
         checkRunData.checkRunId,
         checkRunData,
         mergeAssessment
