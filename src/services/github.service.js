@@ -835,6 +835,9 @@ class GitHubService {
     try {
       logger.info(`Creating check run: ${checkRunData.name} for ${owner}/${repo}`);
 
+      // Validate GitHub API limits before sending
+      this.validateCheckRunData(checkRunData);
+
       const { data: checkRun } = await this.octokit.rest.checks.create({
         owner,
         repo,
@@ -845,8 +848,66 @@ class GitHubService {
       return checkRun;
     } catch (error) {
       logger.error('Error creating check run:', error);
+      logger.error('Check run data that failed:', {
+        name: checkRunData.name,
+        status: checkRunData.status,
+        conclusion: checkRunData.conclusion,
+        summaryLength: checkRunData.output?.summary?.length,
+        textLength: checkRunData.output?.text?.length,
+        actionsCount: checkRunData.actions?.length,
+        actions: checkRunData.actions?.map(a => ({ label: a.label, identifier: a.identifier }))
+      });
       throw new Error(`Failed to create check run: ${error.message}`);
     }
+  }
+
+  // Validate check run data against GitHub limits
+  validateCheckRunData(checkRunData) {
+    const { name, output, actions } = checkRunData;
+
+    // Check name length (20 characters max)
+    if (name && name.length > 20) {
+      throw new Error(`Check run name too long: ${name.length} chars (max 20)`);
+    }
+
+    // Check output limits
+    if (output) {
+      if (output.title && output.title.length > 255) {
+        throw new Error(`Output title too long: ${output.title.length} chars (max 255)`);
+      }
+      if (output.summary && output.summary.length > 65535) {
+        throw new Error(`Output summary too long: ${output.summary.length} chars (max 65535)`);
+      }
+      if (output.text && output.text.length > 65535) {
+        throw new Error(`Output text too long: ${output.text.length} chars (max 65535)`);
+      }
+    }
+
+    // Check actions limits
+    if (actions) {
+      if (actions.length > 3) {
+        throw new Error(`Too many actions: ${actions.length} (max 3)`);
+      }
+      actions.forEach((action, index) => {
+        if (action.label && action.label.length > 20) {
+          throw new Error(`Action ${index} label too long: ${action.label.length} chars (max 20)`);
+        }
+        if (action.description && action.description.length > 40) {
+          throw new Error(`Action ${index} description too long: ${action.description.length} chars (max 40)`);
+        }
+        if (action.identifier && action.identifier.length > 20) {
+          throw new Error(`Action ${index} identifier too long: ${action.identifier.length} chars (max 20)`);
+        }
+      });
+    }
+
+    logger.info('Check run data validation passed', {
+      nameLength: name?.length,
+      titleLength: output?.title?.length,
+      summaryLength: output?.summary?.length,
+      textLength: output?.text?.length,
+      actionsCount: actions?.length
+    });
   }
 
   // Update existing check run

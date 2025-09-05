@@ -87,7 +87,7 @@ class CheckRunButtonService {
 
       // NEW: Add fix suggestions button
       actions.push({
-        label: `Generate Code Fixes`,
+        label: `Generate Fixes`,
         description: `Get AI fix suggestions`,
         identifier: 'generate-fixes'
       });
@@ -95,7 +95,7 @@ class CheckRunButtonService {
 
     // NEW: Always add merge readiness check button
     actions.push({
-      label: `Check Merge Readiness`,
+      label: `Check Merge Ready`,
       description: `Assess if PR is ready to merge`,
       identifier: 'check-merge'
     });
@@ -145,17 +145,26 @@ class CheckRunButtonService {
     output += `- Minor: ${severity.minor || 0}\n`;
     output += `- Info: ${severity.info || 0}\n\n`;
 
-    // Interactive findings section
+    // Interactive findings section - SHORTENED to avoid GitHub limits
     if (postableFindings.length > 0) {
       output += `### Interactive Comment Options\n`;
       output += `Click the buttons above to post these findings as inline code comments:\n\n`;
 
-      postableFindings.forEach((finding, index) => {
+      // Limit to first 3 findings to avoid exceeding GitHub's text limit
+      const limitedFindings = postableFindings.slice(0, 3);
+      limitedFindings.forEach((finding, index) => {
         output += `**#${index + 1} - ${finding.severity} ${finding.category}**\n`;
         output += `- File: \`${finding.file}:${finding.line}\`\n`;
-        output += `- Issue: ${finding.issue}\n`;
-        output += `- Suggestion: ${finding.suggestion}\n\n`;
+        // Truncate long descriptions to prevent API errors
+        const issue = finding.issue.length > 80 ? finding.issue.substring(0, 80) + '...' : finding.issue;
+        const suggestion = finding.suggestion.length > 80 ? finding.suggestion.substring(0, 80) + '...' : finding.suggestion;
+        output += `- Issue: ${issue}\n`;
+        output += `- Suggestion: ${suggestion}\n\n`;
       });
+
+      if (postableFindings.length > 3) {
+        output += `... and ${postableFindings.length - 3} more findings.\n\n`;
+      }
 
       if (postableFindings.length > 1) {
         output += `Use "Post All Comments" to post all ${postableFindings.length} findings at once.\n\n`;
@@ -165,13 +174,20 @@ class CheckRunButtonService {
       output += `All findings are either general issues or have already been addressed by reviewers.\n\n`;
     }
 
-    // Recommendation
+    // Recommendation - truncated if too long
     output += `### Recommendation\n`;
-    output += `${recommendation}\n\n`;
+    const shortRecommendation = recommendation && recommendation.length > 200 ? 
+      recommendation.substring(0, 200) + '...' : recommendation;
+    output += `${shortRecommendation || 'See detailed analysis in PR comments.'}\n\n`;
 
     output += `---\n`;
     output += `Analysis ID: ${trackingId}\n`;
     output += `Generated: ${new Date().toISOString()}`;
+
+    // Final safety check - GitHub limit is 65535 characters
+    if (output.length > 60000) {
+      output = output.substring(0, 60000) + '\n\n[Content truncated to fit GitHub limits]';
+    }
 
     return output;
   }
