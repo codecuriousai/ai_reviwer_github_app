@@ -1,514 +1,278 @@
-// src/services/interactive-comment.service.js - Handle Interactive AI Comment Posting
+// src/services/interactive-comment.service.js - Enhanced Interactive Comment Service
 
 const githubService = require('./github.service');
+const aiService = require('./ai.service');
 const logger = require('../utils/logger');
-const { generateTrackingId } = require('../utils/helpers');
 
 class InteractiveCommentService {
   constructor() {
-    this.pendingComments = new Map(); // Store comments for each PR
-    this.commentActions = new Map(); // Track comment action states
+    this.activeComments = new Map(); // Track active interactive comments
   }
 
-  // Store AI findings for interactive commenting
-  storePendingComments(owner, repo, pullNumber, detailedFindings, trackingId) {
-    const prKey = `${owner}/${repo}#${pullNumber}`;
-
-    // Filter only issues that can be posted as inline comments (have file/line info)
-    const postableFindings = detailedFindings.filter(finding =>
-      finding.file &&
-      finding.file !== 'unknown-file' &&
-      finding.line &&
-      finding.line > 0 &&
-      finding.file !== 'AI_ANALYSIS_ERROR'
-    );
-
-    const commentData = {
-      owner,
-      repo,
-      pullNumber,
-      trackingId,
-      findings: postableFindings.map((finding, index) => ({
-        id: `${trackingId}-finding-${index}`,
-        file: finding.file,
-        line: finding.line,
-        issue: finding.issue,
-        severity: finding.severity,
-        category: finding.category,
-        suggestion: finding.suggestion,
-        posted: false,
-        commentId: null
-      })),
-      allPosted: false,
-      createdAt: Date.now()
-    };
-
-    this.pendingComments.set(prKey, commentData);
-
-    logger.info(`Stored ${postableFindings.length} pending comments for ${prKey}`, {
-      trackingId,
-      totalFindings: detailedFindings.length,
-      postableFindings: postableFindings.length
-    });
-
-    return commentData;
-  }
-
-  // Create interactive buttons for AI findings
-  createInteractiveButtons(detailedFindings, trackingId) {
-    if (!detailedFindings || detailedFindings.length === 0) {
-      return '';
-    }
-
-    // Filter postable findings (ones with valid file/line info)
-    const postableFindings = detailedFindings.filter(finding =>
-      finding.file &&
-      finding.file !== 'unknown-file' &&
-      finding.line &&
-      finding.line > 0 &&
-      finding.file !== 'AI_ANALYSIS_ERROR'
-    );
-
-    if (postableFindings.length === 0) {
-      return '\n\n*No issues found that can be posted as inline comments.*';
-    }
-
-    let buttonsSection = '\n\n📝 **INTERACTIVE COMMENTING:**\n';
-    buttonsSection += '*(Click buttons below to post AI findings as inline comments)*\n\n';
-
-    // Individual comment buttons for each finding
-    postableFindings.forEach((finding, index) => {
-      const findingId = `${trackingId}-finding-${index}`;
-      const severityEmoji = this.getSeverityEmoji(finding.severity);
-      const categoryEmoji = this.getCategoryEmoji(finding.category);
-
-      buttonsSection += `${index + 1}. ${severityEmoji} ${categoryEmoji} **${finding.file}:${finding.line}**\n`;
-      buttonsSection += `   └─ ${finding.issue}\n`;
-      buttonsSection += `   └─ [📝 Comment](https://github.com/comment-action?id=${findingId}) | `;
-      buttonsSection += `*${finding.severity} ${finding.category}*\n\n`;
-    });
-
-    // Post all comments button
-    buttonsSection += `🔄 **[📝 Post All Comments](https://github.com/comment-action?id=${trackingId}-all)** `;
-    buttonsSection += `*(Post all ${postableFindings.length} findings as inline comments)*\n\n`;
-
-    buttonsSection += `---\n`;
-    buttonsSection += `*💡 Tip: Individual comments will be posted as line-specific review comments*`;
-
-    return buttonsSection;
-  }
-
-  // Handle comment action from button clicks via issue comments
-  async handleCommentAction(repository, pullNumber, commentBody, author) {
+  // NEW: Post enhanced comment with fix suggestion
+  async postCommentWithFixSuggestion(owner, repo, pullNumber, finding, fixSuggestion, trackingId) {
     try {
-      const owner = repository.owner.login;
-      const repo = repository.name;
-      const prKey = `${owner}/${repo}#${pullNumber}`;
+      logger.info(`Posting enhanced comment with fix suggestion for ${finding.file}:${finding.line}`, {
+        trackingId,
+        severity: finding.severity
+      });
 
-      // Check for comment action triggers
-      const commentActionMatch = commentBody.match(/\/ai-comment\s+(.+)/);
-      if (!commentActionMatch) {
-        return false; // Not a comment action
-      }
+      // Format the enhanced comment with both issue and fix
+      const commentBody = this.formatEnhancedComment(finding, fixSuggestion, trackingId);
 
-      const actionId = commentActionMatch[1].trim();
-      logger.info(`Comment action triggered: ${actionId}`, { pullNumber, author });
+      // Post as review comment on the specific line
+      const commentsToPost = [{
+        path: finding.file,
+        line: finding.line,
+        body: commentBody,
+      }];
 
-      const pendingComments = this.pendingComments.get(prKey);
-      if (!pendingComments) {
-        await githubService.postGeneralComment(
-          owner, repo, pullNumber,
-          `❌ No pending AI comments found for this PR. Please run AI review first.`
-        );
-        return true;
-      }
+      await githubService.postReviewComments(owner, repo, pullNumber, finding.headSha || 'HEAD', commentsToPost);
 
-      // Handle "post all" action
-      if (actionId.endsWith('-all')) {
-        await this.postAllComments(owner, repo, pullNumber, pendingComments, author);
-        return true;
-      }
+      // Store comment data for potential follow-up interactions
+      const commentKey = `${owner}/${repo}#${pullNumber}:${finding.file}:${finding.line}`;
+      this.activeComments.set(commentKey, {
+        finding,
+        fixSuggestion,
+        trackingId,
+        postedAt: Date.now()
+      });
 
-      // Handle individual comment posting
-      const finding = pendingComments.findings.find(f => f.id === actionId);
-      if (!finding) {
-        await githubService.postGeneralComment(
-          owner, repo, pullNumber,
-          `❌ AI finding with ID "${actionId}" not found.`
-        );
-        return true;
-      }
-
-      if (finding.posted) {
-        await githubService.postGeneralComment(
-          owner, repo, pullNumber,
-          `ℹ️ This AI finding has already been posted as a comment.`
-        );
-        return true;
-      }
-
-      await this.postIndividualComment(owner, repo, pullNumber, finding, author);
+      logger.info(`Enhanced comment with fix suggestion posted successfully`);
       return true;
 
     } catch (error) {
-      logger.error('Error handling comment action:', error);
-      return false;
-    }
-  }
-
-  // Post individual AI finding as inline comment with proper line validation
-  async postIndividualComment(owner, repo, pullNumber, finding, triggeredBy) {
-    try {
-      logger.info(`Posting individual AI comment for ${finding.file}:${finding.line}`, {
-        pullNumber,
-        findingId: finding.id,
-        triggeredBy
-      });
-
-      // Get the PR data for commit SHA
-      const { data: pr } = await githubService.octokit.rest.pulls.get({
-        owner,
-        repo,
-        pull_number: pullNumber,
-      });
-
-      // Validate and potentially adjust the line number
-      let commentLine = finding.line;
-      let lineAdjusted = false;
-      let originalLine = finding.line;
-
-      // First check if the line is valid for commenting
-      const isValidLine = await githubService.validateCommentableLine(owner, repo, pullNumber, finding.file, finding.line);
-
-      if (!isValidLine) {
-        // Try to find a nearby commentable line
-        const adjustedLine = await githubService.findCommentableLine(owner, repo, pullNumber, finding.file, finding.line);
-
-        if (!adjustedLine) {
-          throw new Error(`Cannot find a commentable line near line ${finding.line} in file ${finding.file}. This line may not be part of the PR changes.`);
-        }
-
-        commentLine = adjustedLine;
-        lineAdjusted = true;
-
-        logger.info(`Adjusted comment line from ${originalLine} to ${commentLine} for ${finding.file}`);
-      }
-
-      // Format comment with line adjustment info if needed
-      const commentBody = this.formatInlineCommentWithAdjustment(finding, lineAdjusted, originalLine, commentLine);
-
-      // Create the review comment
-      const { data: comment } = await githubService.octokit.rest.pulls.createReviewComment({
-        owner,
-        repo,
-        pull_number: pullNumber,
-        body: commentBody,
-        commit_id: pr.head.sha,
-        path: finding.file,
-        line: commentLine,
-      });
-
-      // Mark as posted and update line info
-      finding.posted = true;
-      finding.commentId = comment.id;
-      if (lineAdjusted) {
-        finding.adjustedLine = commentLine;
-        finding.originalLine = originalLine;
-      }
-
-      // Post confirmation with adjustment info
-      let confirmationMessage = `✅ AI finding posted as inline comment by @${triggeredBy}\n\n`;
-      confirmationMessage += `**File:** ${finding.file}:${commentLine}\n`;
-
-      if (lineAdjusted) {
-        confirmationMessage += `**Note:** Comment posted on line ${commentLine} (nearest commentable line to detected issue on line ${originalLine})\n`;
-      }
-
-      confirmationMessage += `**Issue:** ${finding.issue}\n`;
-      confirmationMessage += `**Comment ID:** ${comment.id}`;
-
-      await githubService.postGeneralComment(owner, repo, pullNumber, confirmationMessage);
-
-      logger.info(`Individual AI comment posted successfully`, {
-        pullNumber,
-        commentId: comment.id,
-        file: finding.file,
-        finalLine: commentLine,
-        originalLine: originalLine,
-        adjusted: lineAdjusted
-      });
-
-    } catch (error) {
-      logger.error('Error posting individual comment:', error);
-
-      // Post detailed error message
-      await githubService.postGeneralComment(
-        owner, repo, pullNumber,
-        `❌ Failed to post AI comment for ${finding.file}:${finding.line}\n\n` +
-        `**Error:** ${error.message}\n` +
-        `**Triggered by:** @${triggeredBy}\n` +
-        `**Suggestion:** This line may not be part of the PR changes. Try running a new AI review after making more changes to this file.`
-      );
-
+      logger.error('Error posting enhanced comment with fix suggestion:', error);
       throw error;
     }
   }
 
-  // Post all pending AI comments with line validation and adjustment tracking
-  async postAllComments(owner, repo, pullNumber, pendingComments, triggeredBy) {
-    try {
-      logger.info(`Posting all AI comments for PR #${pullNumber}`, {
-        totalFindings: pendingComments.findings.length,
-        triggeredBy
-      });
-
-      if (pendingComments.allPosted) {
-        await githubService.postGeneralComment(
-          owner, repo, pullNumber,
-          `ℹ️ All AI comments have already been posted for this PR.`
-        );
-        return;
-      }
-
-      // Get PR data for commit SHA
-      const { data: pr } = await githubService.octokit.rest.pulls.get({
-        owner,
-        repo,
-        pull_number: pullNumber,
-      });
-
-      let successCount = 0;
-      let errorCount = 0;
-      const errors = [];
-      const adjustedLines = [];
-
-      // Process each finding with line validation
-      for (const finding of pendingComments.findings) {
-        if (finding.posted) {
-          successCount++;
-          continue;
-        }
-
-        try {
-          let commentLine = finding.line;
-          let lineAdjusted = false;
-          const originalLine = finding.line;
-
-          // Validate the line number
-          const isValidLine = await githubService.validateCommentableLine(owner, repo, pullNumber, finding.file, finding.line);
-
-          if (!isValidLine) {
-            const adjustedLine = await githubService.findCommentableLine(owner, repo, pullNumber, finding.file, finding.line);
-
-            if (!adjustedLine) {
-              throw new Error(`No commentable line found near line ${finding.line} in ${finding.file}`);
-            }
-
-            commentLine = adjustedLine;
-            lineAdjusted = true;
-
-            adjustedLines.push({
-              file: finding.file,
-              originalLine: originalLine,
-              adjustedLine: commentLine
-            });
-
-            logger.info(`Line adjusted for ${finding.file}: ${originalLine} -> ${commentLine}`);
-          }
-
-          // Format and post comment
-          const commentBody = this.formatInlineCommentWithAdjustment(finding, lineAdjusted, originalLine, commentLine);
-
-          const { data: comment } = await githubService.octokit.rest.pulls.createReviewComment({
-            owner,
-            repo,
-            pull_number: pullNumber,
-            body: commentBody,
-            commit_id: pr.head.sha,
-            path: finding.file,
-            line: commentLine,
-          });
-
-          // Update finding info
-          finding.posted = true;
-          finding.commentId = comment.id;
-          if (lineAdjusted) {
-            finding.adjustedLine = commentLine;
-            finding.originalLine = originalLine;
-          }
-
-          successCount++;
-
-          // Small delay to avoid rate limiting
-          await new Promise(resolve => setTimeout(resolve, 200));
-
-        } catch (error) {
-          logger.error(`Error posting comment for ${finding.file}:${finding.line}:`, error);
-          errorCount++;
-          errors.push(`${finding.file}:${finding.line} - ${error.message}`);
-        }
-      }
-
-      // Mark all as posted
-      pendingComments.allPosted = true;
-
-      // Post comprehensive summary
-      const summaryMessage = this.formatBulkSummaryWithAdjustments(
-        successCount,
-        errorCount,
-        errors,
-        adjustedLines,
-        triggeredBy
-      );
-
-      await githubService.postGeneralComment(owner, repo, pullNumber, summaryMessage);
-
-      logger.info(`Bulk comment posting completed`, {
-        pullNumber,
-        successCount,
-        errorCount,
-        adjustedCount: adjustedLines.length,
-        triggeredBy
-      });
-
-    } catch (error) {
-      logger.error('Error posting all comments:', error);
-
-      await githubService.postGeneralComment(
-        owner, repo, pullNumber,
-        `❌ Failed to post all AI comments\n\n` +
-        `**Error:** ${error.message}\n` +
-        `**Triggered by:** @${triggeredBy}\n` +
-        `**Time:** ${new Date().toISOString()}\n\n` +
-        `**Suggestion:** Some files may not have changes in this PR. Try making additional changes and running AI review again.`
-      );
-
-      throw error;
-    }
-  }
-
-  // NEW: Format inline comment with line adjustment information
-  formatInlineCommentWithAdjustment(finding, lineAdjusted, originalLine, commentLine) {
+  // NEW: Format enhanced comment with both issue and fix suggestion
+  formatEnhancedComment(finding, fixSuggestion, trackingId) {
     const severityEmoji = this.getSeverityEmoji(finding.severity);
     const categoryEmoji = this.getCategoryEmoji(finding.category);
 
-    let comment = `${severityEmoji} ${categoryEmoji} **AI Code Review Finding**\n\n`;
-    comment += `**Issue:** ${finding.issue}\n\n`;
-    comment += `**Severity:** ${finding.severity}\n`;
-    comment += `**Category:** ${finding.category}\n\n`;
-
-    // Add line adjustment note if applicable
-    if (lineAdjusted) {
-      comment += `**📍 Line Note:** This issue was detected near line ${originalLine} but is commented on line ${commentLine} (the nearest line that can receive comments in this PR).\n\n`;
+    let comment = `${severityEmoji} ${categoryEmoji} **AI Code Review Finding with Fix Suggestion**\n\n`;
+    
+    // Original issue information
+    comment += `## 🔍 Issue Identified\n`;
+    comment += `**Issue:** ${finding.issue}\n`;
+    comment += `**Severity:** ${finding.severity} | **Category:** ${finding.category}\n\n`;
+    
+    // Fix suggestion section
+    if (fixSuggestion && !fixSuggestion.error) {
+      comment += `## 💡 AI-Generated Fix Suggestion\n\n`;
+      
+      if (fixSuggestion.current_code) {
+        comment += `### ❌ Current Code\n`;
+        comment += `\`\`\`javascript\n${fixSuggestion.current_code}\n\`\`\`\n\n`;
+      }
+      
+      comment += `### ✅ Suggested Fix\n`;
+      comment += `\`\`\`javascript\n${fixSuggestion.suggested_fix}\n\`\`\`\n\n`;
+      
+      comment += `### 📝 Explanation\n`;
+      comment += `${fixSuggestion.explanation}\n\n`;
+      
+      if (fixSuggestion.additional_considerations) {
+        comment += `### ⚠️ Additional Considerations\n`;
+        comment += `${fixSuggestion.additional_considerations}\n\n`;
+      }
+      
+      comment += `### 📊 Fix Details\n`;
+      comment += `- **Estimated Effort:** ${fixSuggestion.estimated_effort}\n`;
+      comment += `- **Confidence Level:** ${fixSuggestion.confidence}\n\n`;
+    } else {
+      // Fallback if fix suggestion failed
+      comment += `## 💡 Fix Suggestion\n`;
+      comment += `**Original Suggestion:** ${finding.suggestion}\n\n`;
+      
+      if (fixSuggestion?.error) {
+        comment += `*Note: AI-generated fix suggestion failed: ${fixSuggestion.error_message}*\n\n`;
+      }
     }
 
-    comment += `**Suggestion:**\n${finding.suggestion}\n\n`;
     comment += `---\n`;
-    comment += `*🤖 Posted by AI Code Reviewer | Finding ID: \`${finding.id}\`*`;
+    comment += `*Posted via AI Code Reviewer | Analysis ID: \`${trackingId}\`*`;
 
     return comment;
   }
 
-  // NEW: Enhanced bulk summary with line adjustment reporting
-  formatBulkSummaryWithAdjustments(successCount, errorCount, errors, adjustedLines, triggeredBy) {
-    let summary = `🤖 **All AI Comments Posted** by @${triggeredBy}\n\n`;
-    summary += `✅ **Successfully posted:** ${successCount} comments\n`;
+  // NEW: Post merge readiness status as check run update
+  async updateCheckRunWithMergeStatus(owner, repo, checkRunId, mergeAssessment, trackingId) {
+    try {
+      logger.info(`Updating check run ${checkRunId} with merge readiness status: ${mergeAssessment.status}`);
 
-    if (adjustedLines.length > 0) {
-      summary += `📍 **Line adjustments:** ${adjustedLines.length} comments moved to nearby lines\n`;
-    }
+      const statusEmoji = this.getMergeStatusEmoji(mergeAssessment.status);
+      const conclusion = this.getCheckRunConclusion(mergeAssessment.status);
 
-    if (errorCount > 0) {
-      summary += `❌ **Failed to post:** ${errorCount} comments\n\n`;
-      summary += `**Errors:**\n`;
-      errors.forEach(error => {
-        summary += `• ${error}\n`;
+      await githubService.updateCheckRun(owner, repo, checkRunId, {
+        conclusion: conclusion,
+        output: {
+          title: `${statusEmoji} Merge Readiness: ${mergeAssessment.status}`,
+          summary: this.formatMergeReadinessSummary(mergeAssessment),
+          text: this.formatMergeReadinessDetails(mergeAssessment, trackingId)
+        }
       });
-      summary += `\n`;
-    }
 
-    if (adjustedLines.length > 0) {
-      summary += `**📍 Line Adjustments Made:**\n`;
-      summary += `Some comments were moved to nearby lines because the original lines are not part of the PR changes:\n\n`;
-      adjustedLines.forEach(adj => {
-        summary += `• \`${adj.file}\`: Line ${adj.originalLine} → Line ${adj.adjustedLine}\n`;
-      });
-      summary += `\n*This ensures comments appear on code that's actually changed in this PR.*\n\n`;
-    }
+      logger.info(`Check run updated with merge readiness status successfully`);
+      return true;
 
-    summary += `📝 **Location:** All comments posted as inline review comments on respective code lines\n`;
-    summary += `🕒 **Posted at:** ${new Date().toISOString()}`;
+    } catch (error) {
+      logger.error('Error updating check run with merge status:', error);
+      throw error;
+    }
+  }
+
+  // NEW: Format merge readiness summary for check run
+  formatMergeReadinessSummary(mergeAssessment) {
+    let summary = `**Readiness Score:** ${mergeAssessment.merge_readiness_score}/100\n\n`;
+    summary += `**Status:** ${mergeAssessment.status}\n\n`;
+    summary += `${mergeAssessment.reason}`;
 
     return summary;
   }
 
-  // Format inline comment for specific finding
-  formatInlineComment(finding) {
-    const severityEmoji = this.getSeverityEmoji(finding.severity);
-    const categoryEmoji = this.getCategoryEmoji(finding.category);
+  // NEW: Format detailed merge readiness information
+  formatMergeReadinessDetails(mergeAssessment, trackingId) {
+    let details = `## Merge Readiness Assessment\n\n`;
+    
+    details += `**Overall Score:** ${mergeAssessment.merge_readiness_score}/100\n`;
+    details += `**Decision:** ${mergeAssessment.status}\n`;
+    details += `**Confidence:** ${mergeAssessment.confidence}\n\n`;
+    
+    details += `### Assessment Reasoning\n`;
+    details += `${mergeAssessment.reason}\n\n`;
+    
+    details += `### Recommendation\n`;
+    details += `${mergeAssessment.recommendation}\n\n`;
 
-    let comment = `${severityEmoji} ${categoryEmoji} **AI Code Review Finding**\n\n`;
-    comment += `**Issue:** ${finding.issue}\n\n`;
-    comment += `**Severity:** ${finding.severity}\n`;
-    comment += `**Category:** ${finding.category}\n\n`;
-    comment += `**Suggestion:**\n${finding.suggestion}\n\n`;
+    // Outstanding issues
+    if (mergeAssessment.outstanding_issues && mergeAssessment.outstanding_issues.length > 0) {
+      details += `### Outstanding Issues (${mergeAssessment.outstanding_issues.length})\n`;
+      mergeAssessment.outstanding_issues.forEach((issue, index) => {
+        const issueEmoji = this.getSeverityEmoji(issue.severity);
+        details += `${index + 1}. ${issueEmoji} **${issue.type}** - ${issue.severity}\n`;
+        details += `   ${issue.description}\n`;
+        if (issue.file && issue.file !== 'system') {
+          details += `   📍 \`${issue.file}:${issue.line}\`\n`;
+        }
+        details += `   Status: ${issue.addressed ? '✅ Addressed' : '❌ Not Addressed'}\n\n`;
+      });
+    }
+
+    // Review quality assessment
+    if (mergeAssessment.review_quality_assessment) {
+      const qa = mergeAssessment.review_quality_assessment;
+      details += `### Review Quality Assessment\n`;
+      details += `- **Human Review Coverage:** ${qa.human_review_coverage}\n`;
+      details += `- **AI Analysis Coverage:** ${qa.ai_analysis_coverage}\n`;
+      details += `- **Critical Issues Addressed:** ${qa.critical_issues_addressed ? '✅' : '❌'}\n`;
+      details += `- **Security Issues Addressed:** ${qa.security_issues_addressed ? '✅' : '❌'}\n`;
+      details += `- **Unresolved Issues:** ${qa.total_unresolved_issues}\n\n`;
+    }
+
+    details += `---\n`;
+    details += `*Assessment completed at ${new Date().toISOString()}*\n`;
+    details += `*Analysis ID: \`${trackingId}\`*`;
+
+    return details;
+  }
+
+  // NEW: Get check run conclusion based on merge status
+  getCheckRunConclusion(status) {
+    switch (status) {
+      case 'READY_FOR_MERGE':
+        return 'success';
+      case 'NOT_READY_FOR_MERGE':
+        return 'failure';
+      case 'REVIEW_REQUIRED':
+      default:
+        return 'neutral';
+    }
+  }
+
+  // NEW: Create comprehensive PR status comment
+  async postPRStatusComment(owner, repo, pullNumber, analysis, mergeAssessment, trackingId) {
+    try {
+      logger.info(`Posting comprehensive PR status comment for PR #${pullNumber}`, { trackingId });
+
+      const statusComment = this.formatPRStatusComment(analysis, mergeAssessment, trackingId);
+      
+      await githubService.postGeneralComment(owner, repo, pullNumber, statusComment);
+
+      logger.info(`PR status comment posted successfully`);
+      return true;
+
+    } catch (error) {
+      logger.error('Error posting PR status comment:', error);
+      throw error;
+    }
+  }
+
+  // NEW: Format comprehensive PR status comment
+  formatPRStatusComment(analysis, mergeAssessment, trackingId) {
+    const statusEmoji = this.getMergeStatusEmoji(mergeAssessment.status);
+    
+    let comment = `${statusEmoji} **Pull Request Review Summary**\n\n`;
+    
+    // High-level status
+    comment += `## 📊 Overall Assessment\n`;
+    comment += `- **Merge Status:** ${mergeAssessment.status}\n`;
+    comment += `- **Readiness Score:** ${mergeAssessment.merge_readiness_score}/100\n`;
+    comment += `- **Issues Found:** ${analysis.automatedAnalysis.totalIssues}\n`;
+    comment += `- **Review Assessment:** ${analysis.reviewAssessment}\n\n`;
+
+    // Issue breakdown
+    if (analysis.automatedAnalysis.totalIssues > 0) {
+      comment += `## 🔍 Issue Breakdown\n`;
+      const severity = analysis.automatedAnalysis.severityBreakdown;
+      comment += `- 🚫 Blocker: ${severity.blocker}\n`;
+      comment += `- 🔴 Critical: ${severity.critical}\n`;
+      comment += `- 🟡 Major: ${severity.major}\n`;
+      comment += `- 🔵 Minor: ${severity.minor}\n`;
+      comment += `- ℹ️ Info: ${severity.info}\n\n`;
+
+      const categories = analysis.automatedAnalysis.categories;
+      comment += `**By Category:**\n`;
+      comment += `- 🐛 Bugs: ${categories.bugs}\n`;
+      comment += `- 🔒 Vulnerabilities: ${categories.vulnerabilities}\n`;
+      comment += `- ⚠️ Security Hotspots: ${categories.securityHotspots}\n`;
+      comment += `- 💨 Code Smells: ${categories.codeSmells}\n\n`;
+    }
+
+    // Merge readiness details
+    comment += `## 🚀 Merge Readiness\n`;
+    comment += `${mergeAssessment.reason}\n\n`;
+    comment += `**Recommendation:** ${mergeAssessment.recommendation}\n\n`;
+
+    // Next steps
+    if (mergeAssessment.status === 'READY_FOR_MERGE') {
+      comment += `## ✅ Next Steps\n`;
+      comment += `This PR has passed all checks and is ready for merge! 🎉\n\n`;
+    } else if (mergeAssessment.status === 'NOT_READY_FOR_MERGE') {
+      comment += `## ❌ Required Actions\n`;
+      if (mergeAssessment.outstanding_issues && mergeAssessment.outstanding_issues.length > 0) {
+        comment += `Please address the following issues before merging:\n\n`;
+        mergeAssessment.outstanding_issues.forEach((issue, index) => {
+          const issueEmoji = this.getSeverityEmoji(issue.severity);
+          comment += `${index + 1}. ${issueEmoji} **${issue.type}**: ${issue.description}\n`;
+        });
+        comment += `\n`;
+      }
+    } else {
+      comment += `## ⏳ Pending Review\n`;
+      comment += `This PR requires additional human review before merge determination.\n\n`;
+    }
+
     comment += `---\n`;
-    comment += `*🤖 Posted by AI Code Reviewer | Finding ID: \`${finding.id}\`*`;
+    comment += `*Generated by AI Code Reviewer | Analysis ID: \`${trackingId}\`*\n`;
+    comment += `*Last updated: ${new Date().toISOString()}*`;
 
     return comment;
   }
 
-  // Get pending comments for a PR
-  getPendingComments(owner, repo, pullNumber) {
-    const prKey = `${owner}/${repo}#${pullNumber}`;
-    return this.pendingComments.get(prKey);
-  }
-
-  // Clean old pending comments (cleanup job)
-  cleanOldPendingComments() {
-    const maxAge = 24 * 60 * 60 * 1000; // 24 hours
-    const now = Date.now();
-    let cleaned = 0;
-
-    for (const [prKey, data] of this.pendingComments.entries()) {
-      if (now - data.createdAt > maxAge) {
-        this.pendingComments.delete(prKey);
-        cleaned++;
-      }
-    }
-
-    if (cleaned > 0) {
-      logger.info(`Cleaned ${cleaned} old pending comment entries`);
-    }
-  }
-
-  // Get stats about pending comments
-  getStats() {
-    const stats = {
-      totalPRs: this.pendingComments.size,
-      totalPendingFindings: 0,
-      totalPostedFindings: 0,
-      oldestEntry: null,
-      newestEntry: null
-    };
-
-    for (const [prKey, data] of this.pendingComments.entries()) {
-      stats.totalPendingFindings += data.findings.filter(f => !f.posted).length;
-      stats.totalPostedFindings += data.findings.filter(f => f.posted).length;
-
-      if (!stats.oldestEntry || data.createdAt < stats.oldestEntry) {
-        stats.oldestEntry = data.createdAt;
-      }
-
-      if (!stats.newestEntry || data.createdAt > stats.newestEntry) {
-        stats.newestEntry = data.createdAt;
-      }
-    }
-
-    return stats;
-  }
-
-  // Helper: Get severity emoji
+  // Helper methods for emojis
   getSeverityEmoji(severity) {
     const emojiMap = {
       'BLOCKER': '🚫',
@@ -517,10 +281,9 @@ class InteractiveCommentService {
       'MINOR': '🔵',
       'INFO': 'ℹ️'
     };
-    return emojiMap[severity] || 'ℹ️';
+    return emojiMap[severity?.toUpperCase()] || 'ℹ️';
   }
 
-  // Helper: Get category emoji
   getCategoryEmoji(category) {
     const emojiMap = {
       'BUG': '🐛',
@@ -528,29 +291,41 @@ class InteractiveCommentService {
       'SECURITY_HOTSPOT': '⚠️',
       'CODE_SMELL': '💨'
     };
-    return emojiMap[category] || '💨';
+    return emojiMap[category?.toUpperCase()] || '💨';
   }
 
-  // Generate comment action instructions
-  generateCommentInstructions(trackingId, findingsCount) {
-    if (findingsCount === 0) {
-      return '';
+  getMergeStatusEmoji(status) {
+    const emojiMap = {
+      'READY_FOR_MERGE': '✅',
+      'NOT_READY_FOR_MERGE': '❌',
+      'REVIEW_REQUIRED': '⏳'
+    };
+    return emojiMap[status] || '❓';
+  }
+
+  // Cleanup old comment data
+  cleanupOldComments() {
+    const maxAge = 24 * 60 * 60 * 1000; // 24 hours
+    const now = Date.now();
+    let cleaned = 0;
+
+    for (const [key, data] of this.activeComments.entries()) {
+      if (now - data.postedAt > maxAge) {
+        this.activeComments.delete(key);
+        cleaned++;
+      }
     }
 
-    let instructions = '\n\n📋 **COMMENT POSTING INSTRUCTIONS:**\n';
-    instructions += `To post AI findings as inline comments, use these commands:\n\n`;
+    if (cleaned > 0) {
+      logger.info(`Cleaned ${cleaned} old comment entries`);
+    }
+  }
 
-    instructions += `**Individual Comments:**\n`;
-    instructions += `• \`/ai-comment ${trackingId}-finding-0\` (for finding #1)\n`;
-    instructions += `• \`/ai-comment ${trackingId}-finding-1\` (for finding #2)\n`;
-    instructions += `• ... and so on for each finding\n\n`;
-
-    instructions += `**Post All Comments:**\n`;
-    instructions += `• \`/ai-comment ${trackingId}-all\` (posts all findings at once)\n\n`;
-
-    instructions += `*💡 Comments will be posted as line-specific review comments on the affected code.*`;
-
-    return instructions;
+  // Get statistics
+  getStats() {
+    return {
+      activeComments: this.activeComments.size
+    };
   }
 }
 

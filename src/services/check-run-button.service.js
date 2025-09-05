@@ -1,6 +1,7 @@
 // src/services/check-run-button.service.js - Interactive Button Management for Check Runs
 
 const githubService = require('./github.service');
+const aiService = require('./ai.service');
 const logger = require('../utils/logger');
 const { generateTrackingId, truncateText } = require('../utils/helpers');
 
@@ -48,8 +49,13 @@ class CheckRunButtonService {
         createdAt: Date.now(),
         buttonStates: postableFindings.reduce((acc, finding, index) => {
           acc[`comment-finding-${index}`] = 'ready';
+          acc[`fix-suggestion-${index}`] = 'ready'; // NEW: Fix suggestion button
           return acc;
-        }, { 'post-all': 'ready' })
+        }, { 
+          'post-all': 'ready',
+          'generate-fixes': 'ready',      // NEW: Generate all fix suggestions
+          'check-merge-readiness': 'ready' // NEW: Check merge readiness
+        })
       });
 
       logger.info(`Interactive check run created: ${checkRun.id}`, {
@@ -65,43 +71,36 @@ class CheckRunButtonService {
     }
   }
 
-  // Generate actions (buttons) for the check run
+  // Generate actions (buttons) for the check run - ENHANCED with new buttons
   generateCheckRunActions(postableFindings) {
     const actions = [];
     // GitHub API only allows a max of 3 buttons in a check run
-    const maxButtons = 2;
-    const maxDescLength = 40;
+    const maxButtons = 3;
 
-    // If there are more than two findings, only show the "Post All" button
-    if (postableFindings.length > 2) {
-      actions.push({
-        label: `Post All Comments`,
-        description: `Post all ${postableFindings.length} findings`,
-        identifier: 'post-all'
-      });
-      return actions;
-    }
-
-    // Otherwise, show individual buttons and "Post All"
-    postableFindings.forEach((finding, index) => {
-      const truncatedFile = truncateText(finding.file, maxDescLength - 10);
-      actions.push({
-        label: `Comment #${index + 1}`,
-        description: `${finding.severity}: ${truncatedFile}`,
-        identifier: `comment-finding-${index}`
-      });
-    });
-
-    // Always include the Post all comments button if there are any findings
+    // Always include these core buttons if there are findings
     if (postableFindings.length > 0) {
       actions.push({
         label: `Post All Comments`,
         description: `Post all ${postableFindings.length} findings`,
         identifier: 'post-all'
       });
+
+      // NEW: Add fix suggestions button
+      actions.push({
+        label: `Generate Code Fixes`,
+        description: `Get AI fix suggestions`,
+        identifier: 'generate-fixes'
+      });
     }
 
-    return actions;
+    // NEW: Always add merge readiness check button
+    actions.push({
+      label: `Check Merge Readiness`,
+      description: `Assess if PR is ready to merge`,
+      identifier: 'check-merge-readiness'
+    });
+
+    return actions.slice(0, maxButtons); // Ensure we don't exceed GitHub's limit
   }
 
   // Generate interactive summary for check run
@@ -177,7 +176,7 @@ class CheckRunButtonService {
     return output;
   }
 
-  // Handle check run button actions
+  // Handle check run button actions - ENHANCED with new actions
   async handleButtonAction(payload) {
     const { action, check_run, requested_action, repository } = payload;
 
@@ -198,23 +197,32 @@ class CheckRunButtonService {
       return true;
     }
 
-    const { owner, repo, pullNumber, headSha, postableFindings, buttonStates } = checkRunData;
+    const { owner, repo, pullNumber, headSha, postableFindings, buttonStates, analysis } = checkRunData;
 
     try {
       // Update button state to processing
       buttonStates[actionId] = 'in_progress';
       await this.updateCheckRunProgress(repository, checkRunId, checkRunData, actionId);
 
+      // Handle different button actions
       if (actionId === 'post-all') {
-        // Post all comments
         await this.postAllFindings(owner, repo, pullNumber, headSha, postableFindings, checkRunData);
-
-        // Update all button states
         Object.keys(buttonStates).forEach(key => {
-          if (buttonStates[key] === 'in_progress' || buttonStates[key] === 'ready') {
+          if (key.startsWith('comment-finding-') && buttonStates[key] !== 'error') {
             buttonStates[key] = 'completed';
           }
         });
+        buttonStates['post-all'] = 'completed';
+
+      } else if (actionId === 'generate-fixes') {
+        // NEW: Generate fix suggestions for all findings
+        await this.generateAllFixSuggestions(owner, repo, pullNumber, postableFindings, checkRunData);
+        buttonStates['generate-fixes'] = 'completed';
+
+      } else if (actionId === 'check-merge-readiness') {
+        // NEW: Check merge readiness
+        await this.checkMergeReadiness(owner, repo, pullNumber, analysis, checkRunData);
+        buttonStates['check-merge-readiness'] = 'completed';
 
       } else if (actionId.startsWith('comment-finding-')) {
         // Post individual comment
@@ -226,8 +234,18 @@ class CheckRunButtonService {
         }
 
         await this.postIndividualFinding(owner, repo, pullNumber, headSha, finding, checkRunData);
+        buttonStates[actionId] = 'completed';
 
-        // Update button state
+      } else if (actionId.startsWith('fix-suggestion-')) {
+        // NEW: Generate fix suggestion for individual finding
+        const findingIndex = parseInt(actionId.replace('fix-suggestion-', ''));
+        const finding = postableFindings[findingIndex];
+
+        if (!finding) {
+          throw new Error(`Finding ${findingIndex} not found`);
+        }
+
+        await this.generateIndividualFixSuggestion(owner, repo, pullNumber, finding, checkRunData);
         buttonStates[actionId] = 'completed';
       }
 
@@ -626,6 +644,324 @@ class CheckRunButtonService {
     logger.info(`Fallback individual posting completed: ${fallbackSuccess}/${commentsToPost.length} successful`);
   }
 
+  // NEW: Generate fix suggestions for all findings
+  async generateAllFixSuggestions(owner, repo, pullNumber, postableFindings, checkRunData) {
+    logger.info(`Generating fix suggestions for all findings in PR #${pullNumber}`, {
+      findingsCount: postableFindings.length,
+      trackingId: checkRunData.trackingId
+    });
+
+    const fixSuggestions = [];
+    const errors = [];
+    let successCount = 0;
+
+    // Get PR data to access file contents
+    const prData = await githubService.getPullRequestData(owner, repo, pullNumber);
+
+    for (let i = 0; i < postableFindings.length; i++) {
+      const finding = postableFindings[i];
+      
+      try {
+        // Get file content for context
+        const fileContent = await this.getFileContent(owner, repo, finding.file, prData);
+        
+        // Generate fix suggestion using AI
+        const fixSuggestion = await aiService.generateCodeFixSuggestion(finding, fileContent, prData);
+        
+        if (!fixSuggestion.error) {
+          fixSuggestions.push(fixSuggestion);
+          successCount++;
+          logger.info(`Fix suggestion generated for ${finding.file}:${finding.line}`);
+        } else {
+          errors.push(`${finding.file}:${finding.line} - ${fixSuggestion.error_message}`);
+        }
+
+      } catch (error) {
+        const errorMsg = `${finding.file}:${finding.line} - ${error.message}`;
+        logger.error(`Error generating fix suggestion for finding ${i + 1}:`, error);
+        errors.push(errorMsg);
+      }
+    }
+
+    // Post comprehensive fix suggestions comment
+    const fixSuggestionsComment = this.formatFixSuggestionsComment(
+      fixSuggestions,
+      errors,
+      successCount,
+      checkRunData.trackingId
+    );
+
+    await githubService.postGeneralComment(owner, repo, pullNumber, fixSuggestionsComment);
+
+    logger.info(`Fix suggestions generation completed`, {
+      pullNumber,
+      successCount,
+      errorCount: errors.length,
+      trackingId: checkRunData.trackingId
+    });
+
+    return {
+      successCount,
+      errorCount: errors.length,
+      errors,
+      fixSuggestions
+    };
+  }
+
+  // NEW: Generate fix suggestion for individual finding
+  async generateIndividualFixSuggestion(owner, repo, pullNumber, finding, checkRunData) {
+    logger.info(`Generating fix suggestion for ${finding.file}:${finding.line}`, {
+      pullNumber,
+      trackingId: checkRunData.trackingId
+    });
+
+    try {
+      // Get PR data to access file contents
+      const prData = await githubService.getPullRequestData(owner, repo, pullNumber);
+      
+      // Get file content for context
+      const fileContent = await this.getFileContent(owner, repo, finding.file, prData);
+      
+      // Generate fix suggestion using AI
+      const fixSuggestion = await aiService.generateCodeFixSuggestion(finding, fileContent, prData);
+      
+      if (fixSuggestion.error) {
+        throw new Error(fixSuggestion.error_message);
+      }
+
+      // Post individual fix suggestion comment
+      const commentBody = this.formatIndividualFixSuggestionComment(fixSuggestion, checkRunData.trackingId);
+      
+      await githubService.postGeneralComment(owner, repo, pullNumber, commentBody);
+
+      logger.info(`Individual fix suggestion posted successfully for ${finding.file}:${finding.line}`);
+
+    } catch (error) {
+      logger.error(`Error generating individual fix suggestion for ${finding.file}:${finding.line}:`, error);
+      throw error;
+    }
+  }
+
+  // NEW: Check merge readiness
+  async checkMergeReadiness(owner, repo, pullNumber, analysis, checkRunData) {
+    logger.info(`Checking merge readiness for PR #${pullNumber}`, {
+      trackingId: checkRunData.trackingId
+    });
+
+    try {
+      // Get current PR status and review comments
+      const prData = await githubService.getPullRequestData(owner, repo, pullNumber);
+      const reviewComments = prData.comments || [];
+      
+      // Get current PR status from GitHub
+      const currentStatus = {
+        mergeable: prData.pr.mergeable,
+        merge_state: prData.pr.mergeable_state,
+        review_decision: prData.pr.review_decision
+      };
+
+      // Use AI to assess merge readiness
+      const mergeAssessment = await aiService.assessMergeReadiness(
+        prData, 
+        analysis.detailedFindings || [], 
+        reviewComments, 
+        currentStatus
+      );
+
+      if (mergeAssessment.error) {
+        throw new Error(mergeAssessment.error_message);
+      }
+
+      // Post merge readiness assessment comment
+      const mergeReadinessComment = this.formatMergeReadinessComment(mergeAssessment, checkRunData.trackingId);
+      
+      await githubService.postGeneralComment(owner, repo, pullNumber, mergeReadinessComment);
+
+      // Update check run data with merge assessment
+      checkRunData.mergeAssessment = mergeAssessment;
+
+      logger.info(`Merge readiness assessment completed: ${mergeAssessment.status}`, {
+        pullNumber,
+        score: mergeAssessment.merge_readiness_score,
+        trackingId: checkRunData.trackingId
+      });
+
+    } catch (error) {
+      logger.error(`Error checking merge readiness for PR #${pullNumber}:`, error);
+      throw error;
+    }
+  }
+
+  // NEW: Get file content for fix suggestion context
+  async getFileContent(owner, repo, filename, prData) {
+    try {
+      // First try to get from PR files data if available
+      const prFile = prData.files?.find(f => f.filename === filename);
+      if (prFile && prFile.patch) {
+        // Reconstruct file content from patch (simplified approach)
+        // In a production system, you'd want to fetch the actual file content
+        return this.reconstructFileFromPatch(prFile.patch);
+      }
+
+      // Fallback: get file content from GitHub API
+      const { data: fileData } = await githubService.octokit.rest.repos.getContent({
+        owner,
+        repo,
+        path: filename,
+        ref: prData.pr.head.sha
+      });
+
+      if (fileData.type === 'file' && fileData.content) {
+        return Buffer.from(fileData.content, 'base64').toString('utf8');
+      }
+
+      return '';
+    } catch (error) {
+      logger.warn(`Could not get file content for ${filename}:`, error.message);
+      return '';
+    }
+  }
+
+  // NEW: Reconstruct file content from patch (simplified)
+  reconstructFileFromPatch(patch) {
+    const lines = patch.split('\n');
+    const fileLines = [];
+    
+    for (const line of lines) {
+      if (line.startsWith('@@')) continue;
+      if (line.startsWith('-')) continue; // Skip deleted lines
+      
+      if (line.startsWith('+')) {
+        fileLines.push(line.substring(1)); // Add new lines
+      } else if (line.startsWith(' ')) {
+        fileLines.push(line.substring(1)); // Add context lines
+      }
+    }
+    
+    return fileLines.join('\n');
+  }
+
+  // NEW: Format fix suggestions comment
+  formatFixSuggestionsComment(fixSuggestions, errors, successCount, trackingId) {
+    let comment = `🔧 **AI Code Fix Suggestions Generated**\n\n`;
+    comment += `**Summary:**\n`;
+    comment += `- Successfully generated: ${successCount} fix suggestions\n`;
+    
+    if (errors.length > 0) {
+      comment += `- Failed to generate: ${errors.length} fix suggestions\n`;
+    }
+    
+    comment += `\n---\n\n`;
+
+    if (fixSuggestions.length > 0) {
+      comment += `## 💡 Fix Suggestions\n\n`;
+      
+      fixSuggestions.forEach((fix, index) => {
+        comment += `### ${index + 1}. ${fix.severity} Issue in \`${fix.file}:${fix.line}\`\n\n`;
+        comment += `**Issue:** ${fix.issue}\n\n`;
+        
+        if (fix.current_code) {
+          comment += `**Current Code:**\n\`\`\`javascript\n${fix.current_code}\n\`\`\`\n\n`;
+        }
+        
+        comment += `**Suggested Fix:**\n\`\`\`javascript\n${fix.suggested_fix}\n\`\`\`\n\n`;
+        comment += `**Explanation:** ${fix.explanation}\n\n`;
+        
+        if (fix.additional_considerations) {
+          comment += `**Additional Considerations:** ${fix.additional_considerations}\n\n`;
+        }
+        
+        comment += `**Estimated Effort:** ${fix.estimated_effort} | **Confidence:** ${fix.confidence}\n\n`;
+        comment += `---\n\n`;
+      });
+    }
+
+    if (errors.length > 0) {
+      comment += `## ❌ Fix Generation Errors\n\n`;
+      errors.forEach(error => {
+        comment += `• ${error}\n`;
+      });
+      comment += `\n`;
+    }
+
+    comment += `*Generated by AI Code Reviewer | Analysis ID: \`${trackingId}\`*`;
+    return comment;
+  }
+
+  // NEW: Format individual fix suggestion comment
+  formatIndividualFixSuggestionComment(fixSuggestion, trackingId) {
+    const severityEmoji = this.getSeverityEmoji(fixSuggestion.severity);
+    
+    let comment = `${severityEmoji} **AI Fix Suggestion for \`${fixSuggestion.file}:${fixSuggestion.line}\`**\n\n`;
+    comment += `**Issue:** ${fixSuggestion.issue}\n\n`;
+    
+    if (fixSuggestion.current_code) {
+      comment += `**Current Code:**\n\`\`\`javascript\n${fixSuggestion.current_code}\n\`\`\`\n\n`;
+    }
+    
+    comment += `**Suggested Fix:**\n\`\`\`javascript\n${fixSuggestion.suggested_fix}\n\`\`\`\n\n`;
+    comment += `**Explanation:** ${fixSuggestion.explanation}\n\n`;
+    
+    if (fixSuggestion.additional_considerations) {
+      comment += `**Additional Considerations:** ${fixSuggestion.additional_considerations}\n\n`;
+    }
+    
+    comment += `**Estimated Effort:** ${fixSuggestion.estimated_effort} | **Confidence:** ${fixSuggestion.confidence}\n\n`;
+    comment += `---\n`;
+    comment += `*Generated by AI Code Reviewer | Analysis ID: \`${trackingId}\`*`;
+    
+    return comment;
+  }
+
+  // NEW: Format merge readiness comment
+  formatMergeReadinessComment(mergeAssessment, trackingId) {
+    const statusEmoji = this.getMergeStatusEmoji(mergeAssessment.status);
+    
+    let comment = `${statusEmoji} **PR Merge Readiness Assessment**\n\n`;
+    comment += `**Status:** ${mergeAssessment.status}\n`;
+    comment += `**Readiness Score:** ${mergeAssessment.merge_readiness_score}/100\n\n`;
+    comment += `**Reason:** ${mergeAssessment.reason}\n\n`;
+    comment += `**Recommendation:** ${mergeAssessment.recommendation}\n\n`;
+
+    if (mergeAssessment.outstanding_issues && mergeAssessment.outstanding_issues.length > 0) {
+      comment += `## 🚨 Outstanding Issues\n\n`;
+      mergeAssessment.outstanding_issues.forEach((issue, index) => {
+        const issueEmoji = this.getSeverityEmoji(issue.severity);
+        comment += `${index + 1}. ${issueEmoji} **${issue.type}** (${issue.severity})\n`;
+        comment += `   - ${issue.description}\n`;
+        if (issue.file && issue.file !== 'system') {
+          comment += `   - Location: \`${issue.file}:${issue.line}\`\n`;
+        }
+        comment += `   - Addressed: ${issue.addressed ? '✅ Yes' : '❌ No'}\n\n`;
+      });
+    }
+
+    if (mergeAssessment.review_quality_assessment) {
+      const qa = mergeAssessment.review_quality_assessment;
+      comment += `## 📊 Review Quality Assessment\n\n`;
+      comment += `- **Human Review Coverage:** ${qa.human_review_coverage}\n`;
+      comment += `- **AI Analysis Coverage:** ${qa.ai_analysis_coverage}\n`;
+      comment += `- **Critical Issues Addressed:** ${qa.critical_issues_addressed ? '✅ Yes' : '❌ No'}\n`;
+      comment += `- **Security Issues Addressed:** ${qa.security_issues_addressed ? '✅ Yes' : '❌ No'}\n`;
+      comment += `- **Total Unresolved Issues:** ${qa.total_unresolved_issues}\n\n`;
+    }
+
+    comment += `---\n`;
+    comment += `*Assessment by AI Code Reviewer | Analysis ID: \`${trackingId}\` | Confidence: ${mergeAssessment.confidence}*`;
+    
+    return comment;
+  }
+
+  // NEW: Get merge status emoji
+  getMergeStatusEmoji(status) {
+    const emojiMap = {
+      'READY_FOR_MERGE': '✅',
+      'NOT_READY_FOR_MERGE': '❌',
+      'REVIEW_REQUIRED': '⏳'
+    };
+    return emojiMap[status] || '❓';
+  }
+
   // Enhanced inline comment formatting with line adjustment info
   formatInlineComment(finding, trackingId) {
     const severityEmoji = this.getSeverityEmoji(finding.severity);
@@ -724,6 +1060,10 @@ class CheckRunButtonService {
     let progressMessage;
     if (actionId === 'post-all') {
       progressMessage = `Posting all ${postableFindings.length} findings as inline comments...`;
+    } else if (actionId === 'generate-fixes') {
+      progressMessage = `Generating fix suggestions for all findings...`;
+    } else if (actionId === 'check-merge-readiness') {
+      progressMessage = `Checking merge readiness for PR #${checkRunData.pullNumber}...`;
     } else {
       const findingIndex = parseInt(actionId.replace('comment-finding-', ''));
       const finding = postableFindings[findingIndex];
@@ -746,6 +1086,10 @@ class CheckRunButtonService {
     let completionMessage;
     if (actionId === 'post-all') {
       completionMessage = `All ${postableFindings.length} findings have been posted as inline comments.`;
+    } else if (actionId === 'generate-fixes') {
+      completionMessage = `All fix suggestions have been generated.`;
+    } else if (actionId === 'check-merge-readiness') {
+      completionMessage = `Merge readiness assessment completed.`;
     } else {
       const findingIndex = parseInt(actionId.replace('comment-finding-', ''));
       const finding = postableFindings[findingIndex];

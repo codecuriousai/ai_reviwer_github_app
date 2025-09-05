@@ -149,6 +149,12 @@ app.get('/status', (req, res) => {
     },
     webhooks: webhookStatus,
     checkRunButtons: webhookStatus.checkRunButtons,
+    features: {
+      codeFixSuggestions: true,
+      mergeReadinessCheck: true,
+      enhancedComments: true,
+      aiAnalysis: true
+    },
     system: {
       activeReviews: webhookStatus.activeReviews,
       queueSize: webhookStatus.queueSize,
@@ -246,6 +252,175 @@ app.post('/api/check-runs/cleanup', (req, res) => {
     logger.error('Error cleaning check runs:', error);
     res.status(500).json({
       error: 'Failed to clean check runs',
+      message: error.message
+    });
+  }
+});
+
+// NEW: Generate fix suggestions endpoint
+app.post('/api/check-runs/:checkRunId/generate-fixes', async (req, res) => {
+  try {
+    const { checkRunId } = req.params;
+    const checkRunData = checkRunButtonService.activeCheckRuns.get(parseInt(checkRunId));
+    
+    if (!checkRunData) {
+      return res.status(404).json({
+        error: 'Check run not found',
+        checkRunId: parseInt(checkRunId)
+      });
+    }
+
+    const { owner, repo, pullNumber, postableFindings } = checkRunData;
+    
+    // Trigger fix suggestions generation
+    const result = await checkRunButtonService.generateAllFixSuggestions(
+      owner, repo, pullNumber, postableFindings, checkRunData
+    );
+
+    res.json({
+      success: true,
+      message: 'Fix suggestions generated successfully',
+      checkRunId: parseInt(checkRunId),
+      results: {
+        successCount: result.successCount,
+        errorCount: result.errorCount,
+        errors: result.errors
+      },
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    logger.error('Error generating fix suggestions:', error);
+    res.status(500).json({
+      error: 'Failed to generate fix suggestions',
+      message: error.message
+    });
+  }
+});
+
+// NEW: Check merge readiness endpoint
+app.post('/api/check-runs/:checkRunId/check-merge-readiness', async (req, res) => {
+  try {
+    const { checkRunId } = req.params;
+    const checkRunData = checkRunButtonService.activeCheckRuns.get(parseInt(checkRunId));
+    
+    if (!checkRunData) {
+      return res.status(404).json({
+        error: 'Check run not found',
+        checkRunId: parseInt(checkRunId)
+      });
+    }
+
+    const { owner, repo, pullNumber, analysis } = checkRunData;
+    
+    // Trigger merge readiness check
+    await checkRunButtonService.checkMergeReadiness(owner, repo, pullNumber, analysis, checkRunData);
+
+    res.json({
+      success: true,
+      message: 'Merge readiness assessment completed',
+      checkRunId: parseInt(checkRunId),
+      mergeAssessment: checkRunData.mergeAssessment,
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    logger.error('Error checking merge readiness:', error);
+    res.status(500).json({
+      error: 'Failed to check merge readiness',
+      message: error.message
+    });
+  }
+});
+
+// NEW: Get fix suggestions for a specific finding
+app.post('/api/fix-suggestion', async (req, res) => {
+  try {
+    const { owner, repo, pullNumber, finding } = req.body;
+    
+    if (!owner || !repo || !pullNumber || !finding) {
+      return res.status(400).json({
+        error: 'Missing required fields: owner, repo, pullNumber, finding'
+      });
+    }
+
+    // Get PR data for context
+    const githubService = require('./services/github.service');
+    const aiService = require('./services/ai.service');
+    
+    const prData = await githubService.getPullRequestData(owner, repo, pullNumber);
+    
+    // Get file content
+    const fileContent = await checkRunButtonService.getFileContent(owner, repo, finding.file, prData);
+    
+    // Generate fix suggestion
+    const fixSuggestion = await aiService.generateCodeFixSuggestion(finding, fileContent, prData);
+
+    res.json({
+      success: true,
+      fixSuggestion,
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    logger.error('Error generating fix suggestion:', error);
+    res.status(500).json({
+      error: 'Failed to generate fix suggestion',
+      message: error.message
+    });
+  }
+});
+
+// NEW: Assess merge readiness for a PR
+app.post('/api/merge-readiness', async (req, res) => {
+  try {
+    const { owner, repo, pullNumber } = req.body;
+    
+    if (!owner || !repo || !pullNumber) {
+      return res.status(400).json({
+        error: 'Missing required fields: owner, repo, pullNumber'
+      });
+    }
+
+    const githubService = require('./services/github.service');
+    const aiService = require('./services/ai.service');
+    
+    // Get PR data and current status
+    const prData = await githubService.getPullRequestData(owner, repo, pullNumber);
+    const reviewComments = prData.comments || [];
+    
+    const currentStatus = {
+      mergeable: prData.pr.mergeable,
+      merge_state: prData.pr.mergeable_state,
+      review_decision: prData.pr.review_decision
+    };
+
+    // For this endpoint, we'll need to get existing AI findings
+    // This is a simplified version - in practice you'd want to store/retrieve the analysis
+    const aiFindings = []; // You could store these in a database or retrieve from previous analysis
+    
+    // Assess merge readiness
+    const mergeAssessment = await aiService.assessMergeReadiness(
+      prData, aiFindings, reviewComments, currentStatus
+    );
+
+    res.json({
+      success: true,
+      mergeAssessment,
+      prData: {
+        number: prData.pr.number,
+        title: prData.pr.title,
+        author: prData.pr.user?.login,
+        mergeable: prData.pr.mergeable,
+        merge_state: prData.pr.mergeable_state
+      },
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    logger.error('Error assessing merge readiness:', error);
+    res.status(500).json({
+      error: 'Failed to assess merge readiness',
       message: error.message
     });
   }
