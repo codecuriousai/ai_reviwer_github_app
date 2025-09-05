@@ -9,7 +9,6 @@ const { buildFixSuggestionPrompt, buildMergeReadinessPrompt } = require('../prom
 const { retryWithBackoff, sanitizeForAI, isValidJSON } = require('../utils/helpers');
 
 const aiService = new AIService();
-const { delay, generateTrackingId, isValidJSON } = require('../utils/helpers');
 class AIService {
   constructor() {
     this.provider = config.ai.provider;
