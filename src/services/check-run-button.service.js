@@ -952,14 +952,15 @@ class CheckRunButtonService {
     };
   }
 
-  // NEW: Commit a single fix to the branch
+  // MODIFIED: Commit a single fix to the branch with better error handling
   async commitSingleFix(owner, repo, branch, finding, fixSuggestion, trackingId) {
     try {
       // Get current file content
       const fileData = await githubService.getFileContent(owner, repo, finding.file, branch);
       
       if (!fileData) {
-        return { success: false, error: 'File not found' };
+        logger.warn(`File ${finding.file} not found in repository. This might be a new file or incorrect path.`);
+        return { success: false, error: `File not found: ${finding.file}. Check if the file exists in the repository.` };
       }
 
       // Apply the fix to the file content
@@ -1449,8 +1450,9 @@ class CheckRunButtonService {
   // MODIFIED: Clean inline comment format with suggested code fix
   async formatInlineCommentWithFix(finding, trackingId, owner, repo, checkRunData) {
     const severityEmoji = this.getSeverityEmoji(finding.severity);
+    const severityBadge = this.getSeverityBadgeHTML(finding.severity);
 
-    let comment = `${severityEmoji} **AI Finding** <sub><small>${finding.severity}</small></sub>\n\n`;
+    let comment = `${severityEmoji} **AI Finding** ${severityBadge}\n\n`;
     comment += `**Issue:** ${finding.issue}\n\n`;
     comment += `**Suggestion:**\n${finding.suggestion}\n\n`;
     
@@ -1481,8 +1483,9 @@ class CheckRunButtonService {
   // LEGACY: Keep original method for compatibility
   formatInlineComment(finding, trackingId) {
     const severityEmoji = this.getSeverityEmoji(finding.severity);
+    const severityBadge = this.getSeverityBadgeHTML(finding.severity);
 
-    let comment = `${severityEmoji} **AI Finding** <sub><small>${finding.severity}</small></sub>\n\n`;
+    let comment = `${severityEmoji} **AI Finding** ${severityBadge}\n\n`;
     comment += `**Issue:** ${finding.issue}\n\n`;
     comment += `**Suggestion:**\n${finding.suggestion}\n`;
 
@@ -1511,6 +1514,41 @@ class CheckRunButtonService {
       'MAINTAINABILITY': '![MAINTAINABILITY](https://img.shields.io/badge/MAINTAINABILITY-green?style=flat-square)'
     };
     return badges[category] || badges['CODE_SMELL'];
+  }
+
+  // NEW: Generate HTML-styled severity badge with background colors
+  getSeverityBadgeHTML(severity) {
+    const badgeStyles = {
+      'BLOCKER': {
+        bg: '#d73027',
+        color: 'white',
+        text: 'BLOCKER'
+      },
+      'CRITICAL': {
+        bg: '#f46d43', 
+        color: 'white',
+        text: 'CRITICAL'
+      },
+      'MAJOR': {
+        bg: '#fdae61',
+        color: 'black', 
+        text: 'MAJOR'
+      },
+      'MINOR': {
+        bg: '#fee08b',
+        color: 'black',
+        text: 'MINOR'
+      },
+      'INFO': {
+        bg: '#e0f3ff',
+        color: 'black',
+        text: 'INFO'
+      }
+    };
+
+    const style = badgeStyles[severity] || badgeStyles['INFO'];
+    
+    return `<span style="background-color: ${style.bg}; color: ${style.color}; padding: 2px 6px; border-radius: 3px; font-size: 11px; font-weight: bold;">${style.text}</span>`;
   }
 
   // Format bulk posting summary

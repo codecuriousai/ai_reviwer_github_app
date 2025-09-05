@@ -644,8 +644,8 @@ class GitHubService {
     comment += `⚖️ **REVIEW ASSESSMENT:**\n`;
     comment += `${reviewAssessment || 'REVIEW REQUIRED'}\n\n`;
 
-    // ENHANCED: Detailed Findings with Interactive Comment Buttons
-    comment += `🔍 **DETAILED FINDINGS:**\n`;
+    // COMMENTED OUT: Detailed Findings heading for cleaner UI
+    // comment += `🔍 **DETAILED FINDINGS:**\n`;
 
     if (detailedFindings && Array.isArray(detailedFindings) && detailedFindings.length > 0) {
       // Filter postable findings (ones with valid file/line info)
@@ -806,29 +806,48 @@ class GitHubService {
     }
   }
 
-  // NEW: Get file content from repository
+  // MODIFIED: Get file content from repository with fallback branches
   async getFileContent(owner, repo, path, ref = 'main') {
-    try {
-      const { data } = await this.octokit.rest.repos.getContent({
-        owner,
-        repo,
-        path,
-        ref
-      });
-
-      if (data.type === 'file') {
-        return {
-          content: Buffer.from(data.content, 'base64').toString('utf8'),
-          sha: data.sha,
-          size: data.size
-        };
-      }
-      
-      return null;
-    } catch (error) {
-      logger.error(`Error getting file content for ${path}:`, error);
-      return null;
+    const branchesToTry = [ref];
+    
+    // If not main branch, also try main as fallback
+    if (ref !== 'main') {
+      branchesToTry.push('main');
     }
+    
+    // Also try common default branches
+    if (!branchesToTry.includes('master')) {
+      branchesToTry.push('master');
+    }
+
+    for (const branch of branchesToTry) {
+      try {
+        logger.info(`Attempting to get file content for ${path} from branch: ${branch}`);
+        
+        const { data } = await this.octokit.rest.repos.getContent({
+          owner,
+          repo,
+          path,
+          ref: branch
+        });
+
+        if (data.type === 'file') {
+          logger.info(`Successfully found file ${path} on branch: ${branch}`);
+          return {
+            content: Buffer.from(data.content, 'base64').toString('utf8'),
+            sha: data.sha,
+            size: data.size,
+            branch: branch // Include which branch was used
+          };
+        }
+      } catch (error) {
+        logger.warn(`File ${path} not found on branch ${branch}: ${error.message}`);
+        // Continue to next branch
+      }
+    }
+    
+    logger.error(`File ${path} not found on any branch: ${branchesToTry.join(', ')}`);
+    return null;
   }
 
   // NEW: Update file content in repository
