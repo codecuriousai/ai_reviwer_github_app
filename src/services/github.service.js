@@ -665,6 +665,8 @@ class GitHubService {
         finding.file === 'AI_ANALYSIS_ERROR'
       );
 
+      // COMMENTED OUT: Interactive comment instructions - no longer needed with button interface
+      /*
       // Show postable findings with interactive buttons
       if (postableFindings.length > 0) {
         comment += `\n**📝 Issues that can be posted as inline comments:**\n\n`;
@@ -683,6 +685,7 @@ class GitHubService {
         comment += `🔄 **BULK ACTION:**\n`;
         comment += `Comment with \`/ai-comment ${trackingId}-all\` to post all ${postableFindings.length} findings as inline comments at once.\n\n`;
       }
+      */
 
       // Show non-postable findings (general issues)
       if (nonPostableFindings.length > 0) {
@@ -706,6 +709,8 @@ class GitHubService {
       comment += `No additional issues found that were missed by reviewers.\n\n`;
     }
 
+    // COMMENTED OUT: Interactive Instructions Section - no longer needed with button interface
+    /*
     // Interactive Instructions Section
     const postableCount = detailedFindings ? detailedFindings.filter(finding =>
       finding.file &&
@@ -723,16 +728,17 @@ class GitHubService {
       comment += `💡 **Example:** To post the first finding as an inline comment, reply with:\n`;
       comment += `\`/ai-comment ${trackingId}-finding-0\`\n\n`;
     }
+    */
 
     // Recommendation
     comment += `🎯 **RECOMMENDATION:**\n`;
     comment += `${recommendation || 'No specific recommendation available'}\n\n`;
 
-    // Footer
-    comment += `---\n`;
-    comment += `*🔧 Analysis completed by AI Code Reviewer using SonarQube Standards*\n`;
-    comment += `*⏱️ Generated at: ${new Date().toISOString()}*\n`;
-    comment += `*🆔 Analysis ID: \`${trackingId}\`*`;
+    // REMOVED: Footer clutter for cleaner UI
+    // comment += `---\n`;
+    // comment += `*🔧 Analysis completed by AI Code Reviewer using SonarQube Standards*\n`;
+    // comment += `*⏱️ Generated at: ${new Date().toISOString()}*\n`;
+    // comment += `*🆔 Analysis ID: \`${trackingId}\`*`;
 
     return comment;
   }

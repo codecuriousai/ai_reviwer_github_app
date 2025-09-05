@@ -434,7 +434,8 @@ class WebhookService {
         totalIssues: analysis.automatedAnalysis.totalIssues
       });
 
-      // Post the traditional structured comment first
+      // Post the main analysis comment only once (mark as posted to prevent duplicates)
+      analysis.mainAnalysisPosted = true;
       await githubService.postStructuredReviewComment(owner, repo, pullNumber, analysis);
 
       // Create the new interactive check run with buttons

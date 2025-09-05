@@ -312,7 +312,7 @@ class CheckRunButtonService {
         finding.wasAdjusted = true;
       }
 
-      const commentBody = this.formatInlineComment(finding, checkRunData.trackingId);
+      const commentBody = await this.formatInlineCommentWithFix(finding, checkRunData.trackingId, owner, repo, checkRunData);
 
       // Post as a review with a single comment
       const commentsToPost = [{
@@ -568,7 +568,7 @@ class CheckRunButtonService {
           logger.info(`Adjusted line number for ${finding.file} from ${finding.originalLine} to ${commentableLine}`);
         }
 
-        const commentBody = this.formatInlineComment(finding, checkRunData.trackingId);
+        const commentBody = await this.formatInlineCommentWithFix(finding, checkRunData.trackingId, owner, repo, checkRunData);
 
         commentsToPost.push({
           path: finding.file,
@@ -601,19 +601,10 @@ class CheckRunButtonService {
       }
     }
 
-    // MODIFICATION: Only post main analysis comment on first run, not on subsequent post comment clicks
-    let mainAnalysisComment;
-    if (!checkRunData.mainAnalysisPosted) {
-      mainAnalysisComment = await this.postMainAnalysisComment(owner, repo, pullNumber, checkRunData);
-      checkRunData.mainAnalysisPosted = true; // Mark as posted to prevent duplicates
-      
-      // MODIFICATION: Post fix suggestions as threaded replies under main comment
-      if (mainAnalysisComment && mainAnalysisComment.id) {
-        await this.postFixSuggestionsAsThread(owner, repo, pullNumber, mainAnalysisComment.id, postableFindings, checkRunData);
-      }
-    } else {
-      logger.info('Main analysis comment already posted, skipping to avoid duplicates');
-    }
+    // MODIFICATION: Skip posting main analysis comment and separate fix suggestions
+    // The main analysis comment is now posted only during AI Review, not during post comments
+    // Fix suggestions are included directly in inline comments
+    logger.info('Posting inline comments with integrated fix suggestions');
     
     // Also post the traditional summary for backwards compatibility (if needed)
     const summaryMessage = this.formatBulkPostSummaryWithAdjustments(
@@ -747,10 +738,10 @@ class CheckRunButtonService {
     comment += `🎯 **RECOMMENDATION:**\n`;
     comment += `${recommendation || 'No specific recommendation available'}\n\n`;
 
-    // Footer (WITHOUT Analysis ID)
-    comment += `---\n`;
-    comment += `*🔧 Analysis completed by AI Code Reviewer using SonarQube Standards*\n`;
-    comment += `*⏱️ Generated at: ${new Date().toISOString()}*`;
+    // REMOVED: Footer clutter for cleaner UI
+    // comment += `---\n`;
+    // comment += `*🔧 Analysis completed by AI Code Reviewer using SonarQube Standards*\n`;
+    // comment += `*⏱️ Generated at: ${new Date().toISOString()}*`;
 
     return comment;
   }
@@ -1455,19 +1446,45 @@ class CheckRunButtonService {
     return summary;
   }
 
-  // MODIFIED: Clean inline comment format with badges
+  // MODIFIED: Clean inline comment format with suggested code fix
+  async formatInlineCommentWithFix(finding, trackingId, owner, repo, checkRunData) {
+    const severityEmoji = this.getSeverityEmoji(finding.severity);
+
+    let comment = `${severityEmoji} **AI Finding** <sub><small>${finding.severity}</small></sub>\n\n`;
+    comment += `**Issue:** ${finding.issue}\n\n`;
+    comment += `**Suggestion:**\n${finding.suggestion}\n\n`;
+    
+    // MODIFICATION: Add suggested code fix inline
+    try {
+      // Get file content for context
+      const fileContent = await this.getFileContent(owner, repo, finding.file, checkRunData.prData);
+      
+      // Generate AI fix suggestion
+      const fixSuggestion = await aiService.generateCodeFixSuggestion(finding, fileContent, checkRunData.prData);
+      
+      if (fixSuggestion && !fixSuggestion.error && fixSuggestion.suggested_fix) {
+        comment += `**💡 Suggested Fix:**\n`;
+        comment += `\`\`\`javascript\n${fixSuggestion.suggested_fix}\`\`\`\n\n`;
+        
+        if (fixSuggestion.explanation) {
+          comment += `**Explanation:** ${fixSuggestion.explanation}\n`;
+        }
+      }
+    } catch (error) {
+      logger.error(`Error generating fix for inline comment: ${error.message}`);
+      // Continue without the fix suggestion
+    }
+
+    return comment;
+  }
+
+  // LEGACY: Keep original method for compatibility
   formatInlineComment(finding, trackingId) {
     const severityEmoji = this.getSeverityEmoji(finding.severity);
-    const categoryEmoji = this.getCategoryEmoji(finding.category);
 
-    let comment = `${severityEmoji} ${categoryEmoji} **AI Finding**\n\n`;
+    let comment = `${severityEmoji} **AI Finding** <sub><small>${finding.severity}</small></sub>\n\n`;
     comment += `**Issue:** ${finding.issue}\n\n`;
-    
-    // MODIFICATION: Add severity and category as badges instead of plain text
-    comment += `${this.getSeverityBadge(finding.severity)} ${this.getCategoryBadge(finding.category)}\n\n`;
-    
     comment += `**Suggestion:**\n${finding.suggestion}\n`;
-    // REMOVED: Analysis ID and timestamp for cleaner UI
 
     return comment;
   }
