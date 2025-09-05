@@ -30,7 +30,8 @@ class CheckRunButtonService {
         output: {
           title: 'AI Code Review Completed',
           summary: this.generateInteractiveSummary(analysis, postableFindings),
-          text: this.generateDetailedOutput(analysis, postableFindings, trackingId)
+          text: ''
+          // text: this.generateDetailedOutput(analysis, postableFindings, trackingId)
         },
         actions: this.generateCheckRunActions(postableFindings)
       };
