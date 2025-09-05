@@ -39,6 +39,7 @@ class CheckRunButtonService {
 
       // Store check run data for action handling
       this.activeCheckRuns.set(checkRun.id, {
+        checkRunId: checkRun.id, // ADDED: Store checkRunId within the data object
         owner,
         repo,
         pullNumber,
@@ -913,6 +914,9 @@ class CheckRunButtonService {
             });
             successCount++;
             logger.info(`Fix committed for ${finding.file}:${finding.line} - ${commitResult.commitSha}`);
+          } else if (commitResult.skipped) {
+            // Don't count skipped files as errors, just log them
+            logger.info(`Skipped fix for non-existent file: ${finding.file}`);
           } else {
             errors.push(`${finding.file}:${finding.line} - Commit failed: ${commitResult.error}`);
           }
@@ -960,8 +964,12 @@ class CheckRunButtonService {
       const fileData = await githubService.getFileContent(owner, repo, finding.file, branch);
       
       if (!fileData) {
-        logger.warn(`File ${finding.file} not found in repository. This might be a new file or incorrect path.`);
-        return { success: false, error: `File not found: ${finding.file}. Check if the file exists in the repository.` };
+        logger.warn(`File ${finding.file} not found in repository. Skipping fix commit for non-existent file.`);
+        return { 
+          success: false, 
+          error: `File not found: ${finding.file}. This file may not exist in the repository or the AI analysis may have referenced an incorrect path.`,
+          skipped: true // Mark as skipped rather than failed
+        };
       }
 
       // Apply the fix to the file content
@@ -1073,6 +1081,12 @@ class CheckRunButtonService {
   // NEW: Update check run with merge readiness results
   async updateCheckRunWithMergeReadiness(owner, repo, checkRunId, checkRunData, mergeAssessment) {
     try {
+      // Validate checkRunId
+      if (!checkRunId) {
+        logger.error('checkRunId is undefined in updateCheckRunWithMergeReadiness');
+        return;
+      }
+
       const { analysis, postableFindings, trackingId } = checkRunData;
       
       // Determine check run conclusion based on merge readiness
@@ -1107,14 +1121,21 @@ class CheckRunButtonService {
       if (mergeAssessment.outstanding_issues && mergeAssessment.outstanding_issues.length > 0) {
         detailText += `### ⚠️ Outstanding Issues (${mergeAssessment.outstanding_issues.length})\n`;
         mergeAssessment.outstanding_issues.forEach((issue, index) => {
-          detailText += `${index + 1}. ${issue}\n`;
+          // Handle both string and object issues
+          const issueText = typeof issue === 'string' ? issue : 
+            (issue.description || issue.message || JSON.stringify(issue));
+          detailText += `${index + 1}. ${issueText}\n`;
         });
         detailText += '\n';
       }
       
       if (mergeAssessment.review_quality_assessment) {
         detailText += `### 🔍 Review Quality\n`;
-        detailText += `${mergeAssessment.review_quality_assessment}\n\n`;
+        // Handle both string and object review quality assessment
+        const reviewQualityText = typeof mergeAssessment.review_quality_assessment === 'string' 
+          ? mergeAssessment.review_quality_assessment 
+          : JSON.stringify(mergeAssessment.review_quality_assessment, null, 2);
+        detailText += `${reviewQualityText}\n\n`;
       }
       
       detailText += `---\n*🤖 Assessment by AI Code Reviewer*`;
