@@ -457,6 +457,187 @@ app.post('/api/merge-readiness', async (req, res) => {
   }
 });
 
+// NEW: Commit fix endpoint - Apply AI-suggested fixes directly
+app.get('/api/commit-fix', async (req, res) => {
+  try {
+    const { data } = req.query;
+    
+    if (!data) {
+      return res.status(400).json({ 
+        error: 'Missing commit data parameter' 
+      });
+    }
+
+    const commitData = JSON.parse(decodeURIComponent(data));
+    const { file, line, currentCode, suggestedFix, explanation, trackingId, findingIndex } = commitData;
+
+    logger.info(`Commit fix requested for ${file}:${line}`, { trackingId, findingIndex });
+
+    // Create a user-friendly response page with copy-to-clipboard functionality
+    const responseHtml = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <title>🔧 AI Code Fix - Commit Suggestion</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <style>
+          body { 
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; 
+            max-width: 900px; margin: 20px auto; padding: 20px; 
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+          }
+          .container { 
+            background: white; border-radius: 15px; padding: 30px; 
+            box-shadow: 0 20px 60px rgba(0,0,0,0.1);
+            border-left: 5px solid #28a745; 
+          }
+          .header { text-align: center; margin-bottom: 30px; }
+          .code { 
+            background: #f8f9fa; padding: 20px; border-radius: 8px; 
+            font-family: 'Monaco', 'Menlo', monospace; margin: 15px 0;
+            border: 1px solid #dee2e6; font-size: 14px; line-height: 1.5;
+            position: relative; overflow-x: auto;
+          }
+          .btn { 
+            background: #28a745; color: white; padding: 12px 24px; 
+            text-decoration: none; border-radius: 8px; display: inline-block; 
+            margin: 10px 10px 0 0; font-weight: 600; border: none; cursor: pointer;
+            transition: all 0.3s ease;
+          }
+          .btn:hover { background: #218838; transform: translateY(-2px); }
+          .btn-secondary { background: #6c757d; }
+          .btn-secondary:hover { background: #545b62; }
+          .btn-info { background: #17a2b8; }
+          .btn-info:hover { background: #138496; }
+          .success-msg { 
+            background: #d4edda; color: #155724; padding: 10px; 
+            border-radius: 5px; margin: 10px 0; display: none;
+          }
+          .section { margin: 25px 0; }
+          .diff-removed { background: #ffeaea; color: #d73a49; padding: 2px 4px; }
+          .diff-added { background: #e6ffed; color: #28a745; padding: 2px 4px; }
+          .copy-btn { 
+            position: absolute; top: 10px; right: 10px; 
+            background: #007bff; color: white; border: none; 
+            padding: 5px 10px; border-radius: 4px; font-size: 12px; cursor: pointer;
+          }
+          .copy-btn:hover { background: #0056b3; }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <div class="header">
+            <h1>🔧 AI Code Fix Suggestion</h1>
+            <p><strong>File:</strong> <code>${file}:${line}</code></p>
+            <p><strong>Tracking ID:</strong> <code>${trackingId}</code></p>
+          </div>
+          
+          <div class="section">
+            <h3>📋 Issue Description</h3>
+            <p>${explanation}</p>
+          </div>
+          
+          <div class="section">
+            <h3>❌ Current Code</h3>
+            <div class="code">
+              <button class="copy-btn" onclick="copyToClipboard(currentCode, this)">📋 Copy</button>
+              <pre>${currentCode}</pre>
+            </div>
+          </div>
+          
+          <div class="section">
+            <h3>✅ Suggested Fix</h3>
+            <div class="code">
+              <button class="copy-btn" onclick="copyToClipboard(suggestedFix, this)">📋 Copy</button>
+              <pre>${suggestedFix}</pre>
+            </div>
+          </div>
+          
+          <div class="section">
+            <h3>🚀 Next Steps</h3>
+            <ol>
+              <li>Review the suggested changes above</li>
+              <li>Copy the fixed code using the button</li>
+              <li>Apply the fix in your IDE</li>
+              <li>Test the changes thoroughly</li>
+              <li>Commit with the suggested message below</li>
+            </ol>
+          </div>
+          
+          <div class="section">
+            <h3>💬 Suggested Commit Message</h3>
+            <div class="code">
+              <button class="copy-btn" onclick="copyToClipboard(commitMsg, this)">📋 Copy</button>
+              <pre>Fix: ${explanation}
+
+AI-suggested fix for ${file}:${line}
+Tracking ID: ${trackingId}</pre>
+            </div>
+          </div>
+          
+          <div class="success-msg" id="successMsg">
+            ✅ Copied to clipboard!
+          </div>
+          
+          <div style="text-align: center; margin-top: 30px;">
+            <button onclick="copyToClipboard(suggestedFix)" class="btn">📋 Copy Fixed Code</button>
+            <button onclick="copyToClipboard(commitMsg)" class="btn btn-info">📝 Copy Commit Message</button>
+            <button onclick="window.close()" class="btn btn-secondary">✅ Done</button>
+          </div>
+          
+          <div style="text-align: center; margin-top: 20px; font-size: 12px; color: #666;">
+            <p>🤖 Generated by AI Code Reviewer | ${new Date().toLocaleString()}</p>
+          </div>
+        </div>
+        
+        <script>
+          const currentCode = ${JSON.stringify(currentCode)};
+          const suggestedFix = ${JSON.stringify(suggestedFix)};
+          const commitMsg = \`Fix: ${explanation}
+
+AI-suggested fix for ${file}:${line}
+Tracking ID: ${trackingId}\`;
+
+          function copyToClipboard(text, button) {
+            navigator.clipboard.writeText(text).then(() => {
+              const successMsg = document.getElementById('successMsg');
+              successMsg.style.display = 'block';
+              
+              if (button) {
+                const originalText = button.textContent;
+                button.textContent = '✅ Copied!';
+                button.style.background = '#28a745';
+                setTimeout(() => {
+                  button.textContent = originalText;
+                  button.style.background = '#007bff';
+                }, 2000);
+              }
+              
+              setTimeout(() => {
+                successMsg.style.display = 'none';
+              }, 3000);
+            }).catch(err => {
+              console.error('Failed to copy: ', err);
+              alert('Failed to copy to clipboard. Please select and copy manually.');
+            });
+          }
+        </script>
+      </body>
+      </html>
+    `;
+
+    res.send(responseHtml);
+
+  } catch (error) {
+    logger.error('Error in commit fix:', error);
+    res.status(500).json({ 
+      error: 'Commit fix failed',
+      details: error.message 
+    });
+  }
+});
+
 // NEW: Test check run button creation (for development/debugging)
 app.post('/debug/test-check-run-buttons', async (req, res) => {
   try {

@@ -778,6 +778,28 @@ class GitHubService {
     }
   }
 
+  // NEW: Post reply to an existing comment (threaded comment)
+  async postCommentReply(owner, repo, pullNumber, parentCommentId, body) {
+    try {
+      // GitHub doesn't support true threaded replies, so we'll post a new comment
+      // that references the parent comment
+      const replyBody = `> Reply to [comment #${parentCommentId}]\n\n${body}`;
+      
+      const { data: comment } = await this.octokit.rest.issues.createComment({
+        owner,
+        repo,
+        issue_number: pullNumber,
+        body: replyBody,
+      });
+
+      logger.info(`Reply comment posted: ${comment.id} (parent: ${parentCommentId})`);
+      return comment;
+    } catch (error) {
+      logger.error('Error posting reply comment:', error);
+      throw new Error(`Failed to post reply comment: ${error.message}`);
+    }
+  }
+
   // Post review comment (for compatibility)
   async postReviewComment(owner, repo, pullNumber, comments) {
     try {

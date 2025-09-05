@@ -601,7 +601,15 @@ class CheckRunButtonService {
       }
     }
 
-    // Post comprehensive summary comment
+    // MODIFICATION: Post MERGE REQUEST REVIEW ANALYSIS as main comment
+    const mainAnalysisComment = await this.postMainAnalysisComment(owner, repo, pullNumber, checkRunData);
+    
+    // MODIFICATION: Post fix suggestions as threaded replies under main comment
+    if (mainAnalysisComment && mainAnalysisComment.id) {
+      await this.postFixSuggestionsAsThread(owner, repo, pullNumber, mainAnalysisComment.id, postableFindings, checkRunData);
+    }
+    
+    // Also post the traditional summary for backwards compatibility (if needed)
     const summaryMessage = this.formatBulkPostSummaryWithAdjustments(
       successCount,
       errors.length,
@@ -610,7 +618,8 @@ class CheckRunButtonService {
       checkRunData.trackingId
     );
 
-    await githubService.postGeneralComment(owner, repo, pullNumber, summaryMessage);
+    // Post summary as a separate comment (optional - can be removed if not needed)
+    // await githubService.postGeneralComment(owner, repo, pullNumber, summaryMessage);
 
     logger.info(`Bulk posting completed`, {
       pullNumber,
@@ -626,6 +635,215 @@ class CheckRunButtonService {
       errors,
       adjustedLines: adjustedLines.length
     };
+  }
+
+  // NEW: Post main MERGE REQUEST REVIEW ANALYSIS comment (without Analysis ID)
+  async postMainAnalysisComment(owner, repo, pullNumber, checkRunData) {
+    logger.info(`Posting main analysis comment for PR #${pullNumber}`, {
+      trackingId: checkRunData.trackingId
+    });
+
+    try {
+      // Get the full analysis data
+      const analysis = checkRunData.analysis;
+      
+      // Format the main analysis comment (similar to github service but without Analysis ID)
+      const mainComment = this.formatMainAnalysisComment(analysis, checkRunData.trackingId);
+      
+      // Post as main comment
+      const comment = await githubService.postGeneralComment(owner, repo, pullNumber, mainComment);
+      
+      logger.info(`Main analysis comment posted: ${comment.id}`);
+      return comment;
+    } catch (error) {
+      logger.error('Failed to post main analysis comment:', error);
+      throw error;
+    }
+  }
+
+  // NEW: Post fix suggestions as threaded replies under main comment
+  async postFixSuggestionsAsThread(owner, repo, pullNumber, mainCommentId, postableFindings, checkRunData) {
+    logger.info(`Posting fix suggestions as thread for PR #${pullNumber}`, {
+      mainCommentId,
+      findingsCount: postableFindings.length,
+      trackingId: checkRunData.trackingId
+    });
+
+    try {
+      // Generate fix suggestions for all findings
+      const fixSuggestionsComment = await this.formatFixSuggestionsThreadComment(
+        owner, repo, pullNumber, postableFindings, checkRunData
+      );
+
+      // Post as reply to main comment
+      await githubService.postCommentReply(owner, repo, pullNumber, mainCommentId, fixSuggestionsComment);
+      
+      logger.info('Fix suggestions thread comment posted successfully');
+    } catch (error) {
+      logger.error('Failed to post fix suggestions thread:', error);
+      // Don't throw - this is supplementary functionality
+    }
+  }
+
+  // NEW: Format main analysis comment (without Analysis ID)
+  formatMainAnalysisComment(analysis, trackingId) {
+    const {
+      prInfo,
+      automatedAnalysis,
+      humanReviewAnalysis,
+      reviewAssessment,
+      detailedFindings,
+      recommendation
+    } = analysis;
+
+    let comment = `🔍 **MERGE REQUEST REVIEW ANALYSIS**\n`;
+    comment += `==================================================\n\n`;
+
+    // PR Information Section
+    comment += `📋 **Pull Request Information:**\n`;
+    comment += `• PR ID: ${prInfo.prId || 'unknown'}\n`;
+    comment += `• Title: ${prInfo.title || 'No title'}\n`;
+    comment += `• Repository: ${prInfo.repository || 'unknown/unknown'}\n`;
+    comment += `• Author: ${prInfo.author || 'unknown'}\n`;
+    comment += `• Reviewer(s): ${(prInfo.reviewers && prInfo.reviewers.length > 0) ? prInfo.reviewers.join(', ') : 'None yet'}\n`;
+    comment += `• URL: ${prInfo.url || '#'}\n\n`;
+
+    // Automated Analysis Results
+    comment += `🤖 **AUTOMATED ANALYSIS RESULTS:**\n`;
+    comment += `• Issues Found: ${automatedAnalysis.totalIssues || 0}\n`;
+
+    const severity = automatedAnalysis.severityBreakdown || {};
+    comment += `• Severity Breakdown: 🚫 ${severity.blocker || 0} | `;
+    comment += `🔴 ${severity.critical || 0} | `;
+    comment += `🟡 ${severity.major || 0} | `;
+    comment += `🔵 ${severity.minor || 0} | `;
+    comment += `ℹ️ ${severity.info || 0}\n`;
+
+    const categories = automatedAnalysis.categories || {};
+    comment += `• Categories: 🐛 ${categories.bugs || 0} | `;
+    comment += `🔒 ${categories.vulnerabilities || 0} | `;
+    comment += `⚠️ ${categories.securityHotspots || 0} | `;
+    comment += `💨 ${categories.codeSmell || 0}\n`;
+    comment += `• Technical Debt: ${automatedAnalysis.technicalDebtMinutes || 0} minutes\n\n`;
+
+    // Human Review Analysis
+    comment += `👥 **HUMAN REVIEW ANALYSIS:**\n`;
+    comment += `• Review Comments: ${humanReviewAnalysis.reviewComments || 0}\n`;
+    comment += `• Issues Addressed by Reviewers: ${humanReviewAnalysis.issuesAddressedByReviewers || 0}\n`;
+    comment += `• Security Issues Caught: ${humanReviewAnalysis.securityIssuesCaught || 0}\n`;
+    comment += `• Code Quality Issues Caught: ${humanReviewAnalysis.codeQualityIssuesCaught || 0}\n\n`;
+
+    // Review Assessment
+    comment += `⚖️ **REVIEW ASSESSMENT:**\n`;
+    comment += `${reviewAssessment || 'REVIEW REQUIRED'}\n\n`;
+
+    // Recommendation
+    comment += `🎯 **RECOMMENDATION:**\n`;
+    comment += `${recommendation || 'No specific recommendation available'}\n\n`;
+
+    // Footer (WITHOUT Analysis ID)
+    comment += `---\n`;
+    comment += `*🔧 Analysis completed by AI Code Reviewer using SonarQube Standards*\n`;
+    comment += `*⏱️ Generated at: ${new Date().toISOString()}*`;
+
+    return comment;
+  }
+
+  // NEW: Format fix suggestions as thread comment with commit buttons
+  async formatFixSuggestionsThreadComment(owner, repo, pullNumber, postableFindings, checkRunData) {
+    let comment = `🔧 **AI Code Fix Suggestions Generated**\n`;
+    comment += `==================================================\n\n`;
+    
+    if (postableFindings.length === 0) {
+      comment += `No specific fix suggestions available for the current findings.\n\n`;
+      return comment;
+    }
+
+    comment += `💡 **Generated ${postableFindings.length} fix suggestion(s) for the issues found:**\n\n`;
+
+    // Generate fix suggestions for each finding
+    for (let i = 0; i < postableFindings.length; i++) {
+      const finding = postableFindings[i];
+      
+      try {
+        // Get file content for context
+        const fileContent = await this.getFileContent(owner, repo, finding.file, checkRunData.prData);
+        
+        // Generate AI fix suggestion
+        const fixSuggestion = await aiService.generateCodeFixSuggestion(finding, fileContent, checkRunData.prData);
+        
+        // Format with commit button
+        comment += this.formatIndividualFixWithCommitButton(finding, fixSuggestion, i + 1, checkRunData.trackingId);
+        
+      } catch (error) {
+        logger.error(`Failed to generate fix for finding ${i + 1}:`, error);
+        comment += `**${i + 1}. ${finding.file}:${finding.line}**\n`;
+        comment += `❌ **Error generating fix:** ${error.message}\n\n`;
+      }
+    }
+
+    comment += `---\n`;
+    comment += `*🤖 Fix suggestions generated by AI Code Reviewer*\n`;
+    comment += `*⏱️ Generated at: ${new Date().toISOString()}*\n`;
+    comment += `*💡 Click "Commit Fix" buttons above to apply suggestions directly to your branch*`;
+
+    return comment;
+  }
+
+  // NEW: Format individual fix with commit button
+  formatIndividualFixWithCommitButton(finding, fixSuggestion, index, trackingId) {
+    const severityEmoji = this.getSeverityEmoji(finding.severity);
+    const categoryEmoji = this.getCategoryEmoji(finding.category);
+
+    let comment = `**${index}. ${severityEmoji} ${categoryEmoji} ${finding.file}:${finding.line}**\n`;
+    comment += `**Issue:** ${finding.issue}\n\n`;
+    
+    if (fixSuggestion && fixSuggestion.current_code && fixSuggestion.suggested_fix) {
+      comment += `**Current Code:**\n`;
+      comment += `\`\`\`javascript\n${fixSuggestion.current_code}\n\`\`\`\n\n`;
+      
+      comment += `**Suggested Fix:**\n`;
+      comment += `\`\`\`javascript\n${fixSuggestion.suggested_fix}\n\`\`\`\n\n`;
+      
+      comment += `**Explanation:** ${fixSuggestion.explanation}\n\n`;
+      
+      if (fixSuggestion.additional_considerations) {
+        comment += `**Additional Considerations:** ${fixSuggestion.additional_considerations}\n\n`;
+      }
+      
+      comment += `**Estimated Effort:** ${fixSuggestion.estimated_effort || 'Low'} | `;
+      comment += `**Confidence:** ${fixSuggestion.confidence || 'Medium'}\n\n`;
+      
+      // MODIFICATION: Add commit button for this fix
+      comment += `🔧 **Actions:**\n`;
+      comment += `• [**Commit Fix**](${this.generateCommitUrl(finding, fixSuggestion, trackingId, index)}) - Apply this fix directly\n`;
+      comment += `• **Manual Review** - Review and apply manually\n\n`;
+      
+    } else {
+      comment += `❌ **Unable to generate specific fix suggestion for this issue.**\n`;
+      comment += `**Manual Review Required:** Please review and fix manually.\n\n`;
+    }
+
+    return comment;
+  }
+
+  // NEW: Generate commit URL for fix suggestion
+  generateCommitUrl(finding, fixSuggestion, trackingId, index) {
+    // This would generate a URL to trigger the commit action
+    // For now, return a placeholder that could be implemented as a GitHub App action
+    const commitData = {
+      file: finding.file,
+      line: finding.line,
+      currentCode: fixSuggestion.current_code,
+      suggestedFix: fixSuggestion.suggested_fix,
+      explanation: fixSuggestion.explanation,
+      trackingId: trackingId,
+      findingIndex: index
+    };
+    
+    // In a real implementation, this would be a GitHub App callback URL
+    const baseUrl = process.env.APP_BASE_URL || 'https://your-app.render.com';
+    return `${baseUrl}/api/commit-fix?data=${encodeURIComponent(JSON.stringify(commitData))}`;
   }
 
   // NEW: Fallback individual posting when bulk posting fails
@@ -1095,7 +1313,7 @@ class CheckRunButtonService {
     });
   }
 
-  // Update check run when action completed
+  // Update check run when action completed - KEEP BUTTONS PERSISTENT
   async updateCheckRunCompleted(repository, checkRunId, checkRunData, actionId) {
     const { analysis, postableFindings, trackingId } = checkRunData;
 
@@ -1112,14 +1330,17 @@ class CheckRunButtonService {
       completionMessage = `Comment posted for ${finding.file}:${finding.line}.`;
     }
 
+    // MODIFICATION: Keep interactive buttons persistent - always show all 3 buttons
+    const persistentActions = this.generateCheckRunActions(postableFindings);
+
     await githubService.updateCheckRun(repository.owner.login, repository.name, checkRunId, {
       conclusion: 'success', // Conclusion can be updated on a completed run
       output: {
-        title: 'AI Code Review - Comments Posted',
-        summary: completionMessage,
+        title: 'AI Code Review - Action Completed',
+        summary: `${completionMessage}\n\n✅ **Action Status:** All interactive features remain available for additional operations.`,
         text: this.generateDetailedOutput(analysis, postableFindings, trackingId)
       },
-      // Note: `actions` and `status` properties are intentionally omitted to avoid validation errors.
+      actions: persistentActions // KEEP BUTTONS VISIBLE - this ensures buttons don't disappear
     });
   }
 
