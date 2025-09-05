@@ -283,6 +283,210 @@ class CheckRunButtonService {
   //   }
   // }
 
+  // async handleButtonAction(payload) {
+  //   const { action, check_run, requested_action, repository } = payload;
+  //   if (action !== 'requested_action' || check_run.name !== 'AI Code Review') {
+  //     return false;
+  //   }
+  //   const checkRunId = check_run.id;
+  //   const actionId = requested_action.identifier;
+  //   logger.info(`Button action requested: ${actionId} for check run ${checkRunId}`);
+
+  //   // Get stored check run data
+  //   const checkRunData = this.activeCheckRuns.get(checkRunId);
+  //   if (!checkRunData) {
+  //     logger.error(`No data found for check run ${checkRunId}`);
+  //     await this.updateCheckRunError(repository, checkRunId, 'Check run data not found. Please re-run AI review.');
+  //     return true;
+  //   }
+
+  //   const { owner, repo, pullNumber, headSha, postableFindings, buttonStates, analysis } = checkRunData;
+
+  //   try {
+  //     // Update button state to processing
+  //     buttonStates[actionId] = 'in_progress';
+  //     await this.updateCheckRunProgress(repository, checkRunId, checkRunData, actionId);
+
+  //     // Handle different button actions
+  //     if (actionId === 'post-all') {
+  //       await this.postAllFindings(owner, repo, pullNumber, headSha, postableFindings, checkRunData);
+  //       Object.keys(buttonStates).forEach(key => {
+  //         if (key.startsWith('comment-finding-') && buttonStates[key] !== 'error') {
+  //           buttonStates[key] = 'completed';
+  //         }
+  //       });
+  //       buttonStates['post-all'] = 'completed';
+  //       // After completion, update the check run
+  //       await this.updateCheckRunCompleted(repository, checkRunId, checkRunData, actionId);
+  //     } else if (actionId === 'commit-fixes') {
+  //       // MODIFIED: Commit all fix suggestions to branch
+  //       await this.commitAllFixSuggestions(owner, repo, pullNumber, postableFindings, checkRunData);
+  //       buttonStates['commit-fixes'] = 'completed';
+  //       await this.updateCheckRunCompleted(repository, checkRunId, checkRunData, actionId);
+  //     } else if (actionId === 'check-merge') {
+  //       // NEW: Check merge readiness
+  //       logger.info(`Starting merge readiness analysis for PR #${pullNumber}`);
+  //       // Call the AI service to get merge readiness status
+  //       const mergeAnalysis = await aiService.checkMergeReadiness(analysis, checkRunData);
+
+  //       // This is the missing part: Update the check run with the new status
+  //       await githubService.updateCheckRun(owner, repo, checkRunId, {
+  //         status: 'completed',
+  //         conclusion: mergeAnalysis.isReady ? 'success' : 'failure',
+  //         output: {
+  //           title: `Merge Readiness: ${mergeAnalysis.isReady ? 'Ready to Merge' : 'Not Ready to Merge'}`,
+  //           summary: mergeAnalysis.summary,
+  //           text: mergeAnalysis.details,
+  //         },
+  //         actions: this.generateCheckRunActions(postableFindings)
+  //       });
+
+  //       // Update the internal state and log
+  //       buttonStates['check-merge'] = 'completed';
+  //       logger.info(`Merge readiness analysis completed. Status: ${mergeAnalysis.isReady ? 'Ready' : 'Not Ready'}`);
+  //     }
+
+  //     // Final update of the check run to reflect button status
+  //     await this.updateCheckRunCompleted(repository, checkRunId, checkRunData, actionId);
+
+  //     return true;
+  //   } catch (error) {
+  //     logger.error(`Error handling action '${actionId}':`, error);
+  //     buttonStates[actionId] = 'error';
+  //     await this.updateCheckRunError(repository, checkRunId, `Failed to complete action '${actionId}': ${error.message}`);
+  //     return true;
+  //   }
+  // }
+
+  // async handleButtonAction(payload) {
+  //   const { action, check_run, requested_action, repository } = payload;
+  //   if (action !== 'requested_action' || check_run.name !== 'AI Code Review') {
+  //     return false;
+  //   }
+  //   const checkRunId = check_run.id;
+  //   const actionId = requested_action.identifier;
+  //   logger.info(`Button action requested: ${actionId} for check run ${checkRunId}`);
+
+  //   // Get stored check run data
+  //   const checkRunData = this.activeCheckRuns.get(checkRunId);
+  //   if (!checkRunData) {
+  //     logger.error(`No data found for check run ${checkRunId}`);
+  //     await this.updateCheckRunError(repository, checkRunId, 'Check run data not found. Please re-run AI review.');
+  //     return true;
+  //   }
+
+  //   // IMPORTANT: Make sure all variables are properly destructured
+  //   const {
+  //     owner,
+  //     repo,
+  //     pullNumber,  // Make sure this is present in your stored data
+  //     headSha,
+  //     postableFindings,
+  //     buttonStates,
+  //     analysis
+  //   } = checkRunData;
+
+  //   // DEBUG: Log the extracted values to verify they exist
+  //   logger.info(`Extracted variables:`, {
+  //     owner,
+  //     repo,
+  //     pullNumber,
+  //     checkRunId,
+  //     actionId
+  //   });
+
+  //   // Validate required variables
+  //   if (!owner || !repo || !pullNumber) {
+  //     const errorMsg = `Missing required data: owner=${owner}, repo=${repo}, pullNumber=${pullNumber}`;
+  //     logger.error(errorMsg);
+  //     await this.updateCheckRunError(repository, checkRunId, errorMsg);
+  //     return true;
+  //   }
+
+  //   try {
+  //     // Update button state to processing
+  //     buttonStates[actionId] = 'in_progress';
+  //     await this.updateCheckRunProgress(repository, checkRunId, checkRunData, actionId);
+
+  //     // Handle different button actions
+  //     if (actionId === 'post-all') {
+  //       await this.postAllFindings(owner, repo, pullNumber, headSha, postableFindings, checkRunData);
+  //       Object.keys(buttonStates).forEach(key => {
+  //         if (key.startsWith('comment-finding-') && buttonStates[key] !== 'error') {
+  //           buttonStates[key] = 'completed';
+  //         }
+  //       });
+  //       buttonStates['post-all'] = 'completed';
+  //       await this.updateCheckRunCompleted(repository, checkRunId, checkRunData, actionId);
+
+  //     } else if (actionId === 'commit-fixes') {
+  //       await this.commitAllFixSuggestions(owner, repo, pullNumber, postableFindings, checkRunData);
+  //       buttonStates['commit-fixes'] = 'completed';
+  //       await this.updateCheckRunCompleted(repository, checkRunId, checkRunData, actionId);
+
+  //     } else if (actionId === 'check-merge') {
+  //       logger.info(`Starting merge readiness analysis for PR #${pullNumber}`, {
+  //         owner,
+  //         repo,
+  //         pullNumber
+  //       });
+
+  //       // Call the AI service to get merge readiness status
+  //       const mergeAnalysis = await aiService.checkMergeReadiness(analysis, checkRunData);
+
+  //       // Enhanced UI for merge readiness display
+  //       const isReady = mergeAnalysis.isReady;
+  //       const statusIcon = isReady ? '✅' : '❌';
+  //       const statusText = isReady ? 'Ready to Merge' : 'Not Ready to Merge';
+  //       const conclusion = isReady ? 'success' : 'failure';
+
+  //       // Create enhanced summary with clear visual indicators
+  //       const enhancedSummary = `${statusIcon} **${statusText}**\n\n` +
+  //         `**Assessment Result:** ${mergeAnalysis.status || 'Analyzed'}\n` +
+  //         `**Recommendation:** ${mergeAnalysis.recommendation || 'See details below'}\n` +
+  //         `**Confidence:** ${mergeAnalysis.confidence || 'High'}`;
+
+  //       // Create clean, actionable details text
+  //       let detailsText = `## ${statusIcon} Merge Readiness Assessment\n\n`;
+
+  //       if (isReady) {
+  //         detailsText += `### ✅ **READY TO MERGE**\n\n`;
+  //         detailsText += `This Pull Request has passed all automated checks and is ready for merge.\n\n`;
+  //       } else {
+  //         detailsText += `### ❌ **NOT READY TO MERGE**\n\n`;
+  //         detailsText += `This Pull Request has outstanding issues that should be addressed before merging.\n\n`;
+  //       }
+
+  //       detailsText += `---\n*🤖 Assessment by AI Code Reviewer*`;
+
+  //       // Update the check run with enhanced UI
+  //       await githubService.updateCheckRun(owner, repo, checkRunId, {
+  //         status: 'completed',
+  //         conclusion: conclusion,
+  //         output: {
+  //           title: `${statusIcon} Merge Readiness: ${statusText}`,
+  //           summary: enhancedSummary,
+  //           text: detailsText,
+  //         },
+  //         actions: this.generateCheckRunActions(postableFindings)
+  //       });
+
+  //       buttonStates['check-merge'] = 'completed';
+  //       logger.info(`Merge readiness analysis completed. Status: ${statusText}`, {
+  //         isReady,
+  //         pullNumber
+  //       });
+  //     }
+
+  //     return true;
+  //   } catch (error) {
+  //     logger.error(`Error handling action '${actionId}':`, error);
+  //     buttonStates[actionId] = 'error';
+  //     await this.updateCheckRunError(repository, checkRunId, `Failed to complete action '${actionId}': ${error.message}`);
+  //     return true;
+  //   }
+  // }
+
   async handleButtonAction(payload) {
     const { action, check_run, requested_action, repository } = payload;
     if (action !== 'requested_action' || check_run.name !== 'AI Code Review') {
@@ -300,7 +504,23 @@ class CheckRunButtonService {
       return true;
     }
 
-    const { owner, repo, pullNumber, headSha, postableFindings, buttonStates, analysis } = checkRunData;
+    const {
+      owner,
+      repo,
+      pullNumber,
+      headSha,
+      postableFindings,
+      buttonStates,
+      analysis
+    } = checkRunData;
+
+    // Validate required variables
+    if (!owner || !repo || !pullNumber) {
+      const errorMsg = `Missing required data: owner=${owner}, repo=${repo}, pullNumber=${pullNumber}`;
+      logger.error(errorMsg);
+      await this.updateCheckRunError(repository, checkRunId, errorMsg);
+      return true;
+    }
 
     try {
       // Update button state to processing
@@ -316,38 +536,78 @@ class CheckRunButtonService {
           }
         });
         buttonStates['post-all'] = 'completed';
-        // After completion, update the check run
         await this.updateCheckRunCompleted(repository, checkRunId, checkRunData, actionId);
+
       } else if (actionId === 'commit-fixes') {
-        // MODIFIED: Commit all fix suggestions to branch
         await this.commitAllFixSuggestions(owner, repo, pullNumber, postableFindings, checkRunData);
         buttonStates['commit-fixes'] = 'completed';
         await this.updateCheckRunCompleted(repository, checkRunId, checkRunData, actionId);
+
       } else if (actionId === 'check-merge') {
-        // NEW: Check merge readiness
         logger.info(`Starting merge readiness analysis for PR #${pullNumber}`);
+
         // Call the AI service to get merge readiness status
         const mergeAnalysis = await aiService.checkMergeReadiness(analysis, checkRunData);
 
-        // This is the missing part: Update the check run with the new status
+        // Enhanced UI for merge readiness display
+        const isReady = mergeAnalysis.isReady;
+        const statusIcon = isReady ? '✅' : '❌';
+        const statusText = isReady ? 'Ready to Merge' : 'Not Ready to Merge';
+        const conclusion = isReady ? 'success' : 'failure';
+
+        // Create enhanced summary with clear visual indicators
+        const enhancedSummary = `${statusIcon} **${statusText}**\n\n` +
+          `**Assessment:** ${mergeAnalysis.status || 'Analyzed'}\n` +
+          `**Recommendation:** ${mergeAnalysis.recommendation || 'See details below'}`;
+
+        // Create clean, actionable details text (collapsed by default)
+        let detailsText = `## ${statusIcon} Merge Readiness Assessment\n\n`;
+
+        if (isReady) {
+          detailsText += `### ✅ **READY TO MERGE**\n\n`;
+          detailsText += `This Pull Request has passed all automated checks and is ready for merge.\n\n`;
+          detailsText += `**Status:** All critical issues resolved\n`;
+          detailsText += `**Quality:** Code quality standards met\n`;
+          detailsText += `**Security:** No blocking security concerns\n\n`;
+        } else {
+          detailsText += `### ❌ **NOT READY TO MERGE**\n\n`;
+          detailsText += `This Pull Request has outstanding issues that should be addressed.\n\n`;
+
+          if (mergeAnalysis.outstanding_issues && mergeAnalysis.outstanding_issues.length > 0) {
+            detailsText += `**Issues to Address:**\n`;
+            mergeAnalysis.outstanding_issues.forEach((issue, index) => {
+              const issueText = typeof issue === 'string' ? issue :
+                (issue.description || issue.message || 'Unknown issue');
+              detailsText += `${index + 1}. ${issueText}\n`;
+            });
+            detailsText += `\n`;
+          }
+        }
+
+        // Hide technical details in collapsible section
+        detailsText += `<details>\n<summary>📊 Technical Details</summary>\n\n`;
+        detailsText += `**Score:** ${mergeAnalysis.score || 'N/A'}/10\n`;
+        detailsText += `**Confidence:** ${mergeAnalysis.confidence || 'High'}\n`;
+        detailsText += `**Analysis Time:** ${new Date().toLocaleString()}\n`;
+        detailsText += `\n</details>\n\n`;
+
+        detailsText += `---\n*🤖 AI Code Reviewer Assessment*`;
+
+        // Update the check run with enhanced UI
         await githubService.updateCheckRun(owner, repo, checkRunId, {
           status: 'completed',
-          conclusion: mergeAnalysis.isReady ? 'success' : 'failure',
+          conclusion: conclusion,
           output: {
-            title: `Merge Readiness: ${mergeAnalysis.isReady ? 'Ready to Merge' : 'Not Ready to Merge'}`,
-            summary: mergeAnalysis.summary,
-            text: mergeAnalysis.details,
+            title: `${statusIcon} Merge Readiness: ${statusText}`,
+            summary: enhancedSummary,
+            text: detailsText,
           },
           actions: this.generateCheckRunActions(postableFindings)
         });
 
-        // Update the internal state and log
         buttonStates['check-merge'] = 'completed';
-        logger.info(`Merge readiness analysis completed. Status: ${mergeAnalysis.isReady ? 'Ready' : 'Not Ready'}`);
+        logger.info(`Merge readiness analysis completed. Status: ${statusText}`);
       }
-
-      // Final update of the check run to reflect button status
-      await this.updateCheckRunCompleted(repository, checkRunId, checkRunData, actionId);
 
       return true;
     } catch (error) {
@@ -1669,6 +1929,129 @@ class CheckRunButtonService {
   }
 
   // Update check run to show progress WITHOUT changing status
+  // async updateCheckRunProgress(repository, checkRunId, checkRunData, actionId) {
+  //   const { analysis, postableFindings, trackingId } = checkRunData;
+
+  //   let progressMessage;
+  //   if (actionId === 'post-all') {
+  //     progressMessage = `Posting all ${postableFindings.length} findings as inline comments...`;
+  //   } else if (actionId === 'commit-fixes') {
+  //     progressMessage = `Committing fix suggestions to branch...`;
+  //   } else if (actionId === 'check-merge') {
+  //     logger.info(`Starting merge readiness analysis for PR #${pullNumber}`);
+
+  //     // Call the AI service to get merge readiness status
+  //     const mergeAnalysis = await aiService.checkMergeReadiness(analysis, checkRunData);
+
+  //     // Enhanced UI for merge readiness display
+  //     const isReady = mergeAnalysis.isReady;
+  //     const statusIcon = isReady ? '✅' : '❌';
+  //     const statusText = isReady ? 'Ready to Merge' : 'Not Ready to Merge';
+  //     const conclusion = isReady ? 'success' : 'failure';
+
+  //     // Create enhanced summary with clear visual indicators
+  //     const enhancedSummary = `${statusIcon} **${statusText}**\n\n` +
+  //       `**Assessment Result:** ${mergeAnalysis.status}\n` +
+  //       `**Recommendation:** ${mergeAnalysis.recommendation || 'See details below'}\n` +
+  //       `**Confidence:** ${mergeAnalysis.confidence || 'High'}`;
+
+  //     // Create clean, actionable details text (hidden in collapsed section)
+  //     let detailsText = `## ${statusIcon} Merge Readiness Assessment\n\n`;
+
+  //     if (isReady) {
+  //       detailsText += `### ✅ **READY TO MERGE**\n\n`;
+  //       detailsText += `This Pull Request has passed all automated checks and is ready for merge.\n\n`;
+  //       detailsText += `**Next Steps:**\n`;
+  //       detailsText += `• ✅ All critical issues resolved\n`;
+  //       detailsText += `• ✅ Code quality standards met\n`;
+  //       detailsText += `• ✅ No blocking security concerns\n\n`;
+  //       detailsText += `**Recommendation:** This PR can be safely merged.\n\n`;
+  //     } else {
+  //       detailsText += `### ❌ **NOT READY TO MERGE**\n\n`;
+  //       detailsText += `This Pull Request has outstanding issues that should be addressed before merging.\n\n`;
+
+  //       // Show outstanding issues if available
+  //       if (mergeAnalysis.outstanding_issues && mergeAnalysis.outstanding_issues.length > 0) {
+  //         detailsText += `**Outstanding Issues (${mergeAnalysis.outstanding_issues.length}):**\n`;
+  //         mergeAnalysis.outstanding_issues.forEach((issue, index) => {
+  //           const issueText = typeof issue === 'string' ? issue :
+  //             (issue.description || issue.message || 'Unknown issue');
+  //           const severity = issue.severity || 'MEDIUM';
+  //           const severityIcon = severity === 'CRITICAL' ? '🔴' : severity === 'MAJOR' ? '🟡' : '🔵';
+  //           detailsText += `${index + 1}. ${severityIcon} ${issueText}\n`;
+  //         });
+  //         detailsText += `\n`;
+  //       }
+
+  //       detailsText += `**Next Steps:**\n`;
+  //       detailsText += `• 🔍 Review and address outstanding issues\n`;
+  //       detailsText += `• 🛠️ Apply suggested fixes from AI comments\n`;
+  //       detailsText += `• ✅ Re-run checks after fixes\n\n`;
+  //       detailsText += `**Recommendation:** ${mergeAnalysis.recommendation || 'Address issues before merging'}\n\n`;
+  //     }
+
+  //     // Add score and confidence (collapsed section)
+  //     detailsText += `<details>\n<summary>📊 Assessment Details</summary>\n\n`;
+  //     detailsText += `**Score:** ${mergeAnalysis.score || 'N/A'}/10\n`;
+  //     detailsText += `**Status:** ${mergeAnalysis.status}\n`;
+  //     detailsText += `**Confidence Level:** ${mergeAnalysis.confidence || 'High'}\n`;
+  //     detailsText += `**Analysis Time:** ${new Date().toISOString()}\n`;
+  //     detailsText += `\n</details>\n\n`;
+
+  //     detailsText += `---\n*🤖 Assessment by AI Code Reviewer*`;
+
+  //     // Update the check run with enhanced UI
+  //     await githubService.updateCheckRun(owner, repo, checkRunId, {
+  //       status: 'completed',
+  //       conclusion: conclusion,
+  //       output: {
+  //         title: `${statusIcon} Merge Readiness: ${statusText}`,
+  //         summary: enhancedSummary,
+  //         text: detailsText,
+  //       },
+  //       actions: this.generateCheckRunActions(postableFindings) // Keep other buttons visible
+  //     });
+
+  //     // Update the internal state
+  //     buttonStates['check-merge'] = 'completed';
+  //     logger.info(`Merge readiness analysis completed. Status: ${statusText}`, {
+  //       isReady,
+  //       score: mergeAnalysis.score,
+  //       confidence: mergeAnalysis.confidence
+  //     });
+
+  //     // Optional: Post a summary comment to the PR for better visibility
+  //     if (isReady) {
+  //       const summaryComment = `## ✅ **READY TO MERGE**\n\n` +
+  //         `This Pull Request has been analyzed and is ready for merge!\n\n` +
+  //         `**Assessment Summary:**\n` +
+  //         `• All automated checks passed\n` +
+  //         `• No blocking issues found\n` +
+  //         `• Code quality standards met\n\n` +
+  //         `*🤖 Assessed by AI Code Reviewer*`;
+
+  //       try {
+  //         await githubService.postGeneralComment(owner, repo, pullNumber, summaryComment);
+  //       } catch (commentError) {
+  //         logger.warn('Failed to post merge readiness comment:', commentError.message);
+  //       }
+  //     }
+  //   } else {
+  //     const findingIndex = parseInt(actionId.replace('comment-finding-', ''));
+  //     const finding = postableFindings[findingIndex];
+  //     progressMessage = `Posting comment for ${finding.file}:${finding.line}...`;
+  //   }
+
+  //   await githubService.updateCheckRun(repository.owner.login, repository.name, checkRunId, {
+  //     output: {
+  //       title: 'AI Code Review - Posting Comments',
+  //       summary: progressMessage,
+  //       text: this.generateDetailedOutput(analysis, postableFindings, trackingId)
+  //     }
+  //   });
+  // }
+
+  // Update check run to show progress WITHOUT changing status
   async updateCheckRunProgress(repository, checkRunId, checkRunData, actionId) {
     const { analysis, postableFindings, trackingId } = checkRunData;
 
@@ -1678,104 +2061,7 @@ class CheckRunButtonService {
     } else if (actionId === 'commit-fixes') {
       progressMessage = `Committing fix suggestions to branch...`;
     } else if (actionId === 'check-merge') {
-      logger.info(`Starting merge readiness analysis for PR #${pullNumber}`);
-
-      // Call the AI service to get merge readiness status
-      const mergeAnalysis = await aiService.checkMergeReadiness(analysis, checkRunData);
-
-      // Enhanced UI for merge readiness display
-      const isReady = mergeAnalysis.isReady;
-      const statusIcon = isReady ? '✅' : '❌';
-      const statusText = isReady ? 'Ready to Merge' : 'Not Ready to Merge';
-      const conclusion = isReady ? 'success' : 'failure';
-
-      // Create enhanced summary with clear visual indicators
-      const enhancedSummary = `${statusIcon} **${statusText}**\n\n` +
-        `**Assessment Result:** ${mergeAnalysis.status}\n` +
-        `**Recommendation:** ${mergeAnalysis.recommendation || 'See details below'}\n` +
-        `**Confidence:** ${mergeAnalysis.confidence || 'High'}`;
-
-      // Create clean, actionable details text (hidden in collapsed section)
-      let detailsText = `## ${statusIcon} Merge Readiness Assessment\n\n`;
-
-      if (isReady) {
-        detailsText += `### ✅ **READY TO MERGE**\n\n`;
-        detailsText += `This Pull Request has passed all automated checks and is ready for merge.\n\n`;
-        detailsText += `**Next Steps:**\n`;
-        detailsText += `• ✅ All critical issues resolved\n`;
-        detailsText += `• ✅ Code quality standards met\n`;
-        detailsText += `• ✅ No blocking security concerns\n\n`;
-        detailsText += `**Recommendation:** This PR can be safely merged.\n\n`;
-      } else {
-        detailsText += `### ❌ **NOT READY TO MERGE**\n\n`;
-        detailsText += `This Pull Request has outstanding issues that should be addressed before merging.\n\n`;
-
-        // Show outstanding issues if available
-        if (mergeAnalysis.outstanding_issues && mergeAnalysis.outstanding_issues.length > 0) {
-          detailsText += `**Outstanding Issues (${mergeAnalysis.outstanding_issues.length}):**\n`;
-          mergeAnalysis.outstanding_issues.forEach((issue, index) => {
-            const issueText = typeof issue === 'string' ? issue :
-              (issue.description || issue.message || 'Unknown issue');
-            const severity = issue.severity || 'MEDIUM';
-            const severityIcon = severity === 'CRITICAL' ? '🔴' : severity === 'MAJOR' ? '🟡' : '🔵';
-            detailsText += `${index + 1}. ${severityIcon} ${issueText}\n`;
-          });
-          detailsText += `\n`;
-        }
-
-        detailsText += `**Next Steps:**\n`;
-        detailsText += `• 🔍 Review and address outstanding issues\n`;
-        detailsText += `• 🛠️ Apply suggested fixes from AI comments\n`;
-        detailsText += `• ✅ Re-run checks after fixes\n\n`;
-        detailsText += `**Recommendation:** ${mergeAnalysis.recommendation || 'Address issues before merging'}\n\n`;
-      }
-
-      // Add score and confidence (collapsed section)
-      detailsText += `<details>\n<summary>📊 Assessment Details</summary>\n\n`;
-      detailsText += `**Score:** ${mergeAnalysis.score || 'N/A'}/10\n`;
-      detailsText += `**Status:** ${mergeAnalysis.status}\n`;
-      detailsText += `**Confidence Level:** ${mergeAnalysis.confidence || 'High'}\n`;
-      detailsText += `**Analysis Time:** ${new Date().toISOString()}\n`;
-      detailsText += `\n</details>\n\n`;
-
-      detailsText += `---\n*🤖 Assessment by AI Code Reviewer*`;
-
-      // Update the check run with enhanced UI
-      await githubService.updateCheckRun(owner, repo, checkRunId, {
-        status: 'completed',
-        conclusion: conclusion,
-        output: {
-          title: `${statusIcon} Merge Readiness: ${statusText}`,
-          summary: enhancedSummary,
-          text: detailsText,
-        },
-        actions: this.generateCheckRunActions(postableFindings) // Keep other buttons visible
-      });
-
-      // Update the internal state
-      buttonStates['check-merge'] = 'completed';
-      logger.info(`Merge readiness analysis completed. Status: ${statusText}`, {
-        isReady,
-        score: mergeAnalysis.score,
-        confidence: mergeAnalysis.confidence
-      });
-
-      // Optional: Post a summary comment to the PR for better visibility
-      if (isReady) {
-        const summaryComment = `## ✅ **READY TO MERGE**\n\n` +
-          `This Pull Request has been analyzed and is ready for merge!\n\n` +
-          `**Assessment Summary:**\n` +
-          `• All automated checks passed\n` +
-          `• No blocking issues found\n` +
-          `• Code quality standards met\n\n` +
-          `*🤖 Assessed by AI Code Reviewer*`;
-
-        try {
-          await githubService.postGeneralComment(owner, repo, pullNumber, summaryComment);
-        } catch (commentError) {
-          logger.warn('Failed to post merge readiness comment:', commentError.message);
-        }
-      }
+      progressMessage = `Checking merge readiness for PR #${checkRunData.pullNumber}...`;
     } else {
       const findingIndex = parseInt(actionId.replace('comment-finding-', ''));
       const finding = postableFindings[findingIndex];
@@ -1784,7 +2070,7 @@ class CheckRunButtonService {
 
     await githubService.updateCheckRun(repository.owner.login, repository.name, checkRunId, {
       output: {
-        title: 'AI Code Review - Posting Comments',
+        title: 'AI Code Review - Processing',
         summary: progressMessage,
         text: this.generateDetailedOutput(analysis, postableFindings, trackingId)
       }
