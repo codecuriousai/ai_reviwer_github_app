@@ -560,38 +560,49 @@ class CheckRunButtonService {
           `**Assessment:** ${mergeAnalysis.status || 'Analyzed'}\n` +
           `**Recommendation:** ${mergeAnalysis.recommendation || 'See details below'}`;
 
-        // Create clean, actionable details text (collapsed by default)
-        let detailsText = `## ${statusIcon} Merge Readiness Assessment\n\n`;
+        // Create clean, simple status text without details
+        let detailsText = `## ${statusIcon} ${statusText}\n\n`;
 
         if (isReady) {
-          detailsText += `### ✅ **READY TO MERGE**\n\n`;
-          detailsText += `This Pull Request has passed all automated checks and is ready for merge.\n\n`;
-          detailsText += `**Status:** All critical issues resolved\n`;
-          detailsText += `**Quality:** Code quality standards met\n`;
-          detailsText += `**Security:** No blocking security concerns\n\n`;
+          detailsText += `This Pull Request is ready for merge.\n\n`;
         } else {
-          detailsText += `### ❌ **NOT READY TO MERGE**\n\n`;
           detailsText += `This Pull Request has outstanding issues that should be addressed.\n\n`;
-
-          if (mergeAnalysis.outstanding_issues && mergeAnalysis.outstanding_issues.length > 0) {
-            detailsText += `**Issues to Address:**\n`;
-            mergeAnalysis.outstanding_issues.forEach((issue, index) => {
-              const issueText = typeof issue === 'string' ? issue :
-                (issue.description || issue.message || 'Unknown issue');
-              detailsText += `${index + 1}. ${issueText}\n`;
-            });
-            detailsText += `\n`;
-          }
         }
 
-        // Hide technical details in collapsible section
-        detailsText += `<details>\n<summary>📊 Technical Details</summary>\n\n`;
-        detailsText += `**Score:** ${mergeAnalysis.score || 'N/A'}/10\n`;
-        detailsText += `**Confidence:** ${mergeAnalysis.confidence || 'High'}\n`;
-        detailsText += `**Analysis Time:** ${new Date().toLocaleString()}\n`;
-        detailsText += `\n</details>\n\n`;
-
         detailsText += `---\n*🤖 AI Code Reviewer Assessment*`;
+       
+        // Create clean, actionable details text (collapsed by default)
+        // let detailsText = `## ${statusIcon} Merge Readiness Assessment\n\n`;
+
+        // if (isReady) {
+        //   detailsText += `### ✅ **READY TO MERGE**\n\n`;
+        //   detailsText += `This Pull Request has passed all automated checks and is ready for merge.\n\n`;
+        //   detailsText += `**Status:** All critical issues resolved\n`;
+        //   detailsText += `**Quality:** Code quality standards met\n`;
+        //   detailsText += `**Security:** No blocking security concerns\n\n`;
+        // } else {
+        //   detailsText += `### ❌ **NOT READY TO MERGE**\n\n`;
+        //   detailsText += `This Pull Request has outstanding issues that should be addressed.\n\n`;
+
+        //   if (mergeAnalysis.outstanding_issues && mergeAnalysis.outstanding_issues.length > 0) {
+        //     detailsText += `**Issues to Address:**\n`;
+        //     mergeAnalysis.outstanding_issues.forEach((issue, index) => {
+        //       const issueText = typeof issue === 'string' ? issue :
+        //         (issue.description || issue.message || 'Unknown issue');
+        //       detailsText += `${index + 1}. ${issueText}\n`;
+        //     });
+        //     detailsText += `\n`;
+        //   }
+        // }
+
+        // // Hide technical details in collapsible section
+        // detailsText += `<details>\n<summary>📊 Technical Details</summary>\n\n`;
+        // detailsText += `**Score:** ${mergeAnalysis.score || 'N/A'}/10\n`;
+        // detailsText += `**Confidence:** ${mergeAnalysis.confidence || 'High'}\n`;
+        // detailsText += `**Analysis Time:** ${new Date().toLocaleString()}\n`;
+        // detailsText += `\n</details>\n\n`;
+
+        // detailsText += `---\n*🤖 AI Code Reviewer Assessment*`;
 
         // Update the check run with enhanced UI
         await githubService.updateCheckRun(owner, repo, checkRunId, {
