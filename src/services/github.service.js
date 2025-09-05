@@ -7,6 +7,14 @@ const path = require('path');
 const config = require('../config/config');
 const logger = require('../utils/logger');
 
+// Import interactive comment service to avoid loading issues
+let interactiveCommentService;
+try {
+  interactiveCommentService = require('./interactive-comment.service');
+} catch (error) {
+  logger.warn('Interactive comment service not available:', error.message);
+}
+
 class GitHubService {
   constructor() {
     this.privateKey = this.getPrivateKey();
@@ -549,19 +557,21 @@ class GitHubService {
     try {
       logger.info(`Posting enhanced structured review comment for ${owner}/${repo}#${pullNumber}`);
 
-      // Import interactive comment service
-      const interactiveCommentService = require('./interactive-comment.service');
-
       // Store pending comments for interactive posting
       const trackingId = analysis.trackingId || `analysis-${Date.now()}`;
       analysis.trackingId = trackingId; // Ensure trackingId is set
 
-      if (analysis.detailedFindings && analysis.detailedFindings.length > 0) {
-        interactiveCommentService.storePendingComments(
-          owner, repo, pullNumber,
-          analysis.detailedFindings,
-          trackingId
-        );
+      if (analysis.detailedFindings && analysis.detailedFindings.length > 0 && interactiveCommentService) {
+        try {
+          interactiveCommentService.storePendingComments(
+            owner, repo, pullNumber,
+            analysis.detailedFindings,
+            trackingId
+          );
+        } catch (error) {
+          logger.warn('Failed to store pending comments:', error.message);
+          // Continue with normal flow even if this fails
+        }
       }
 
       // Generate enhanced comment with interactive elements

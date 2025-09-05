@@ -321,6 +321,44 @@ class InteractiveCommentService {
     }
   }
 
+  // NEW: Store pending comments for interactive posting (for backward compatibility)
+  storePendingComments(owner, repo, pullNumber, findings, trackingId) {
+    try {
+      // Validate inputs
+      if (!findings || !Array.isArray(findings)) {
+        logger.warn('No findings provided to store as pending comments');
+        return;
+      }
+
+      logger.info(`Storing pending comments for PR #${pullNumber}`, {
+        findingsCount: findings.length,
+        trackingId
+      });
+
+      // Store findings for potential interactive use
+      findings.forEach((finding, index) => {
+        if (finding && finding.file && finding.line) {
+          const commentKey = `${owner}/${repo}#${pullNumber}:${finding.file}:${finding.line}`;
+          this.activeComments.set(commentKey, {
+            finding,
+            trackingId,
+            owner,
+            repo,
+            pullNumber,
+            index,
+            postedAt: Date.now(),
+            status: 'pending'
+          });
+        }
+      });
+
+      logger.info(`Stored ${findings.length} pending comments for interactive posting`);
+    } catch (error) {
+      logger.error('Error storing pending comments:', error);
+      // Don't throw - this is not critical to the main workflow
+    }
+  }
+
   // Get statistics
   getStats() {
     return {
