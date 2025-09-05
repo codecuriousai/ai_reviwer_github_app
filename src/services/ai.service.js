@@ -6,7 +6,7 @@ const config = require('../config/config');
 const logger = require('../utils/logger');
 const { getCodeReviewPrompt } = require('../prompts/prompts');
 const { buildFixSuggestionPrompt, buildMergeReadinessPrompt } = require('../prompts/enhanced-prompts');
-const { retryWithBackoff, sanitizeForAI, isValidJSON } = require('../utils/helpers');
+const { retryWithBackoff, sanitizeForAI, isValidJSON, delay, generateTrackingId   } = require('../utils/helpers');
 
 class AIService {
   constructor() {
@@ -783,6 +783,138 @@ class AIService {
       logger.error('AI health check failed:', error);
       return false;
     }
+  }
+
+  // NEW: Add the checkMergeReadiness method
+  async checkMergeReadiness(analysis, checkRunData) {
+  try {
+    logger.info(`Checking merge readiness for analysis`, {
+      trackingId: analysis.trackingId
+    });
+
+    // Get PR data from checkRunData if available
+    const prData = checkRunData.prData || {
+      pr: {
+        number: checkRunData.pullNumber,
+        repository: `${checkRunData.owner}/${checkRunData.repo}`,
+        mergeable: true,
+        mergeable_state: 'clean'
+      },
+      files: [],
+      comments: []
+    };
+
+    const aiFindings = analysis.detailedFindings || [];
+    const reviewComments = [];
+    const currentStatus = {
+      mergeable: true,
+      merge_state: 'clean',
+      review_decision: null
+    };
+
+    // Use the existing assessMergeReadiness method instead of duplicating logic
+    const mergeAssessment = await this.assessMergeReadiness(
+      prData, 
+      aiFindings, 
+      reviewComments, 
+      currentStatus
+    );
+
+    logger.info(`Merge readiness assessment completed: ${mergeAssessment.status}`, {
+      score: mergeAssessment.merge_readiness_score,
+      trackingId: analysis.trackingId
+    });
+
+    // Format the response for the check run
+    return {
+      isReady: mergeAssessment.status === 'READY_FOR_MERGE',
+      summary: `${mergeAssessment.status}: ${mergeAssessment.reason}`,
+      details: this.formatMergeReadinessDetails(mergeAssessment),
+      status: mergeAssessment.status,
+      score: mergeAssessment.merge_readiness_score,
+      recommendation: mergeAssessment.recommendation
+    };
+
+  } catch (error) {
+    logger.error('Error in checkMergeReadiness:', error);
+    throw new Error(`Failed to check merge readiness: ${error.message}`);
+  }
+}
+
+// Add this helper method to format the details
+formatMergeReadinessDetails(mergeAssessment) {
+  let details = `## Merge Readiness Assessment\n\n`;
+  details += `**Status:** ${mergeAssessment.status}\n`;
+  details += `**Score:** ${mergeAssessment.merge_readiness_score}/10\n`;
+  details += `**Confidence:** ${mergeAssessment.confidence}\n\n`;
+  details += `**Reason:** ${mergeAssessment.reason}\n\n`;
+  details += `**Recommendation:** ${mergeAssessment.recommendation}\n\n`;
+
+  if (mergeAssessment.outstanding_issues && mergeAssessment.outstanding_issues.length > 0) {
+    details += `### Outstanding Issues (${mergeAssessment.outstanding_issues.length})\n`;
+    mergeAssessment.outstanding_issues.forEach((issue, index) => {
+      const issueText = typeof issue === 'string' ? issue : 
+        (issue.description || issue.message || JSON.stringify(issue));
+      details += `${index + 1}. ${issueText}\n`;
+    });
+    details += '\n';
+  }
+
+  if (mergeAssessment.review_quality_assessment) {
+    details += `### Review Quality Assessment\n`;
+    const qa = mergeAssessment.review_quality_assessment;
+    details += `- Human Review Coverage: ${qa.human_review_coverage || 'Unknown'}\n`;
+    details += `- AI Analysis Coverage: ${qa.ai_analysis_coverage || 'Complete'}\n`;
+    details += `- Critical Issues Addressed: ${qa.critical_issues_addressed ? 'Yes' : 'No'}\n`;
+    details += `- Security Issues Addressed: ${qa.security_issues_addressed ? 'Yes' : 'No'}\n`;
+    details += `- Total Unresolved Issues: ${qa.total_unresolved_issues || 0}\n\n`;
+  }
+
+  return details;
+}
+
+  async callAI(prompt, responseFormat) {
+    if (this.provider === 'openai' && this.openai) {
+      const response = await this.openai.chat.completions.create({
+        model: config.ai.openai.model,
+        messages: [{ role: 'user', content: prompt }],
+        max_tokens: 4096,
+        response_format: { type: responseFormat },
+      });
+      return response.choices[0].message.content;
+    } else if (this.provider === 'gemini' && this.geminiModel) {
+      const result = await this.geminiModel.generateContent(prompt);
+      const response = await result.response;
+      return response.text();
+    }
+    throw new Error('No AI provider configured or initialized.');
+  }
+
+  parseAIResponse(responseText) {
+    const cleanedText = responseText.replace(/```json/g, '').replace(/```/g, '');
+    if (!isValidJSON(cleanedText)) {
+      throw new Error('AI returned invalid JSON.');
+    }
+    return JSON.parse(cleanedText);
+  }
+
+  processAIAnalysis(parsedResponse, prData) {
+    const analysis = {
+      trackingId: generateTrackingId(),
+      timestamp: new Date().toISOString(),
+      prInfo: {
+        pullNumber: prData.pullNumber,
+        repository: prData.pr.repository,
+        author: prData.pr.author,
+        url: prData.pr.url,
+        reviewers: prData.reviewers || [],
+      },
+      ...parsedResponse,
+    };
+    if (analysis.humanReviewAnalysis) {
+      analysis.humanReviewAnalysis.reviewComments = prData.existingComments.length;
+    }
+    return analysis;
   }
 }
 
