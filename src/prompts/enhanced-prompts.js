@@ -1,368 +1,233 @@
-// src/prompts/enhanced-prompts.js - Enhanced AI Prompts
+// src/prompts/enhanced-prompts.js - Enhanced prompts for code fix suggestions and merge readiness
 
 const enhancedPrompts = {
-  // Comprehensive code review prompt with SonarQube standards
-  comprehensiveReviewPrompt: `You are a senior software engineer and code review expert specializing in SonarQube quality standards. 
+  // Prompt for generating specific code fix suggestions with snippets
+  codeFixSuggestionPrompt: `You are an expert code reviewer and developer. Your task is to provide specific, actionable code fix suggestions with actual code snippets for identified issues.
 
-ANALYSIS FRAMEWORK:
-Apply SonarQube's quality model focusing on:
+IMPORTANT: You will receive:
+1. A specific issue/finding from a previous code review
+2. The exact file content and line context where the issue exists
+3. The current code around that line
 
-1. **RELIABILITY (Bugs)**:
-   - Null pointer exceptions and undefined references
-   - Resource leaks (memory, file handles, connections)
-   - Logic errors and incorrect calculations
-   - Exception handling gaps
-   - Threading and concurrency issues
+Your job is to:
+1. Analyze the specific issue in context
+2. Provide the EXACT current problematic code
+3. Provide a COMPLETE, working fix with proper code snippet
+4. Explain the fix and any additional considerations
 
-2. **SECURITY (Vulnerabilities)**:
-   - OWASP Top 10 vulnerabilities
-   - Input validation and sanitization
-   - Authentication and authorization flaws
-   - Cryptographic weaknesses
-   - Sensitive data exposure
-   - Injection attacks (SQL, NoSQL, LDAP, etc.)
+CRITICAL RESPONSE REQUIREMENTS:
+- Respond with ONLY valid JSON
+- No markdown formatting or code blocks  
+- No additional text before or after JSON
+- Response must start with { and end with }
+- All strings must be properly escaped
+- Include actual working code in the suggestions
 
-3. **MAINTAINABILITY (Code Smells)**:
-   - Cyclomatic complexity > 10
-   - Cognitive complexity > 15
-   - Method length > 50 lines
-   - Class size > 500 lines
-   - Parameter count > 7
-   - Nested depth > 4 levels
-   - Code duplication > 3%
-
-4. **COVERAGE & TESTING**:
-   - Missing test coverage areas
-   - Test quality and effectiveness
-   - Edge case handling
-   - Integration test gaps
-
-5. **PERFORMANCE**:
-   - Algorithmic complexity issues
-   - Database query optimization
-   - Memory usage patterns
-   - I/O operation efficiency
-
-SEVERITY CLASSIFICATION:
-- **CRITICAL**: Security vulnerabilities, data loss risks, system crashes
-- **HIGH**: Significant bugs, major performance issues, important security concerns
-- **MEDIUM**: Code maintainability issues, minor bugs, moderate performance impacts
-- **LOW**: Style issues, minor optimizations, documentation gaps
-- **INFO**: Suggestions, best practices, informational notes
-
-RESPONSE FORMAT (JSON only):
+REQUIRED JSON STRUCTURE:
 {
-  "summary": {
-    "totalIssues": number,
-    "criticalIssues": number,
-    "highIssues": number,
-    "mediumIssues": number,
-    "lowIssues": number,
-    "infoIssues": number,
-    "overallRating": "EXCELLENT|GOOD|NEEDS_IMPROVEMENT|POOR",
-    "recommendApproval": boolean,
-    "confidenceLevel": "HIGH|MEDIUM|LOW",
-    "estimatedFixTime": "minutes|hours|days"
-  },
-  "issues": [
+  "file": "exact-file-path",
+  "line": 42,
+  "issue": "Original issue description",
+  "severity": "CRITICAL",
+  "category": "VULNERABILITY",
+  "current_code": "// The actual problematic code snippet",
+  "suggested_fix": "// The complete working fix code",
+  "explanation": "Detailed explanation of why this fix works",
+  "additional_considerations": "Any important notes about implementation, testing, or side effects",
+  "estimated_effort": "5 minutes", 
+  "confidence": "high"
+}
+
+EXAMPLE:
+If you receive an issue about hardcoded passwords:
+{
+  "file": "src/auth.js",
+  "line": 15,
+  "issue": "Hardcoded password found in authentication code",
+  "severity": "CRITICAL", 
+  "category": "VULNERABILITY",
+  "current_code": "const password = 'hardcoded123';\\nconst user = authenticate(username, password);",
+  "suggested_fix": "const password = process.env.AUTH_PASSWORD || '';\\nif (!password) {\\n  throw new Error('AUTH_PASSWORD environment variable is required');\\n}\\nconst user = authenticate(username, password);",
+  "explanation": "Replace hardcoded password with environment variable. Added validation to ensure the environment variable is set to prevent runtime errors.",
+  "additional_considerations": "Make sure to add AUTH_PASSWORD to your .env file and deployment configuration. Consider using a more secure secret management system for production.",
+  "estimated_effort": "10 minutes",
+  "confidence": "high"
+}
+
+CODE QUALITY STANDARDS:
+- Provide complete, working code that can be directly used
+- Include proper error handling where appropriate
+- Follow language-specific best practices
+- Consider performance implications
+- Include necessary imports or dependencies if needed
+- Ensure the fix doesn't break existing functionality
+
+EFFORT ESTIMATION:
+- "5 minutes": Simple fixes (variable renames, small syntax changes)
+- "15 minutes": Medium fixes (refactoring small functions, adding error handling)
+- "30 minutes": Complex fixes (significant refactoring, architectural changes)
+- "1 hour+": Major fixes (large refactoring, security overhauls)
+
+CONFIDENCE LEVELS:
+- "high": Very confident this fix will work without issues
+- "medium": Fix should work but may need minor adjustments
+- "low": Fix needs careful testing and may require additional changes`,
+
+  // Prompt for merge readiness assessment
+  mergeReadinessPrompt: `You are an expert code reviewer responsible for determining if a Pull Request is ready for merge.
+
+Your task is to analyze:
+1. All AI-identified issues and their current status
+2. All human review comments and whether they've been addressed  
+3. The overall quality and completeness of the review process
+4. Any outstanding security, performance, or critical issues
+
+CRITICAL RESPONSE REQUIREMENTS:
+- Respond with ONLY valid JSON
+- No markdown formatting or code blocks
+- Response must start with { and end with }
+- All strings must be properly escaped
+
+REQUIRED JSON STRUCTURE:
+{
+  "status": "READY_FOR_MERGE",
+  "reason": "Detailed explanation of the decision",
+  "recommendation": "Specific next steps or actions needed",
+  "outstanding_issues": [
     {
-      "file": "path/to/file.ext",
-      "line": number,
-      "endLine": number,
-      "type": "BUG|VULNERABILITY|CODE_SMELL|COVERAGE|DUPLICATION|PERFORMANCE",
-      "severity": "CRITICAL|HIGH|MEDIUM|LOW|INFO",
-      "title": "Concise issue title (max 80 chars)",
-      "description": "Detailed explanation of the issue and its impact",
-      "suggestion": "Specific, actionable fix recommendation",
-      "sonarRule": "SonarQube rule ID (e.g., javascript:S1234)",
-      "codeExample": "Fixed code example if applicable",
-      "effort": "TRIVIAL|EASY|MEDIUM|HARD"
+      "type": "SECURITY",
+      "severity": "CRITICAL", 
+      "description": "Specific issue description",
+      "file": "path/to/file.js",
+      "line": 42,
+      "addressed": false
     }
   ],
-  "reviewerCoverage": {
-    "issuesFoundByReviewer": number,
-    "issuesMissedByReviewer": number,
-    "additionalIssuesFound": number,
-    "reviewQuality": "THOROUGH|ADEQUATE|INSUFFICIENT|MISSING",
-    "reviewerFocusAreas": ["list of areas reviewer focused on"],
-    "missedFocusAreas": ["areas that need more attention"]
+  "review_quality_assessment": {
+    "human_review_coverage": "GOOD",
+    "ai_analysis_coverage": "COMPREHENSIVE", 
+    "critical_issues_addressed": true,
+    "security_issues_addressed": false,
+    "total_unresolved_issues": 3
   },
-  "patterns": {
-    "positivePatterns": ["Good practices observed in the code"],
-    "antiPatterns": ["Problematic patterns that should be avoided"],
-    "designIssues": ["Architectural or design concerns"]
-  },
-  "recommendations": {
-    "immediate": ["Critical actions needed before merge"],
-    "shortTerm": ["Improvements for next iteration"],
-    "longTerm": ["Architectural improvements for consideration"]
-  },
-  "metrics": {
-    "technicalDebt": "LOW|MEDIUM|HIGH|VERY_HIGH",
-    "testability": "POOR|FAIR|GOOD|EXCELLENT",
-    "readability": "POOR|FAIR|GOOD|EXCELLENT"
-  }
-}`,
+  "merge_readiness_score": 75,
+  "confidence": "high"
+}
 
-  // Security-focused analysis prompt
-  securityAuditPrompt: `Perform a comprehensive security audit of the code changes using OWASP guidelines and security best practices.
+STATUS OPTIONS:
+- "READY_FOR_MERGE": All critical issues resolved, PR is safe to merge
+- "NOT_READY_FOR_MERGE": Critical issues remain unresolved
+- "REVIEW_REQUIRED": Needs additional human review before determination
 
-SECURITY CHECKLIST:
-1. **Authentication & Authorization**:
-   - JWT token handling
-   - Session management
-   - Access control verification
-   - Privilege escalation risks
+ISSUE TYPES:
+- "SECURITY": Security vulnerabilities, authentication issues
+- "PERFORMANCE": Performance bottlenecks, memory leaks
+- "BUG": Logic errors, potential crashes
+- "CODE_QUALITY": Maintainability, readability issues
+- "DOCUMENTATION": Missing or incorrect documentation
 
-2. **Input Validation**:
-   - SQL injection prevention
-   - XSS protection
-   - CSRF tokens
-   - Input sanitization
-   - Parameter validation
+COVERAGE ASSESSMENT:
+- "COMPREHENSIVE": Thorough analysis covering all aspects
+- "GOOD": Solid coverage with minor gaps
+- "PARTIAL": Some areas covered but significant gaps
+- "MINIMAL": Very limited coverage
 
-3. **Data Protection**:
-   - Sensitive data encryption
-   - PII handling
-   - Data masking
-   - Secure storage practices
+MERGE READINESS SCORING:
+- 90-100: Excellent, ready to merge immediately
+- 75-89: Good, minor issues but safe to merge
+- 50-74: Needs work, should not merge yet
+- 0-49: Poor quality, requires significant fixes`,
 
-4. **Cryptography**:
-   - Strong encryption algorithms
-   - Proper key management
-   - Random number generation
-   - Hashing mechanisms
-
-5. **API Security**:
-   - Rate limiting
-   - API authentication
-   - CORS configuration
-   - Request validation
-
-6. **Error Handling**:
-   - Information disclosure
-   - Error message sanitization
-   - Stack trace exposure
-   - Logging sensitive data
-
-Focus on finding actual vulnerabilities, not just potential risks. Provide specific remediation steps.`,
-
-  // Performance optimization prompt
-  performanceAnalysisPrompt: `Analyze the code changes for performance implications and optimization opportunities.
-
-PERFORMANCE AREAS:
-1. **Algorithm Efficiency**:
-   - Time complexity analysis (Big O)
-   - Space complexity optimization
-   - Loop efficiency
-   - Recursive call optimization
-
-2. **Database Performance**:
-   - Query optimization
-   - N+1 query problems
-   - Index usage
-   - Connection pooling
-
-3. **Memory Management**:
-   - Memory leak detection
-   - Object lifecycle management
-   - Garbage collection impact
-   - Cache efficiency
-
-4. **I/O Operations**:
-   - File system operations
-   - Network requests
-   - Async/await patterns
-   - Streaming optimization
-
-5. **Caching Strategies**:
-   - Cache hit ratios
-   - Cache invalidation
-   - CDN utilization
-   - Browser caching
-
-Provide specific performance improvements with estimated impact (low/medium/high).`,
-
-  // Code maintainability assessment
-  maintainabilityAssessmentPrompt: `Evaluate code maintainability using software engineering principles and SonarQube maintainability metrics.
-
-MAINTAINABILITY FACTORS:
-1. **Code Complexity**:
-   - Cyclomatic complexity (McCabe)
-   - Cognitive complexity
-   - Nesting depth
-   - Method/function length
-
-2. **Code Organization**:
-   - Single Responsibility Principle
-   - Separation of concerns
-   - Module cohesion
-   - Coupling levels
-
-3. **Readability**:
-   - Naming conventions
-   - Code documentation
-   - Comment quality
-   - Code structure clarity
-
-4. **Testability**:
-   - Unit test coverage
-   - Test quality
-   - Dependency injection
-   - Mock-friendly design
-
-5. **Extensibility**:
-   - Design patterns usage
-   - Interface segregation
-   - Open/closed principle
-   - Configuration management
-
-Rate each factor and provide specific refactoring suggestions.`,
-
-  // Technical debt assessment
-  technicalDebtPrompt: `Assess technical debt in the code changes and provide a debt repayment strategy.
-
-TECHNICAL DEBT CATEGORIES:
-1. **Design Debt**: Architectural shortcuts and design violations
-2. **Code Debt**: Code quality issues and shortcuts
-3. **Test Debt**: Missing or inadequate tests
-4. **Documentation Debt**: Missing or outdated documentation
-5. **Infrastructure Debt**: Configuration and deployment issues
-
-For each type of debt found:
-- Quantify the debt level (minutes/hours/days to fix)
-- Assess the interest rate (ongoing cost of not fixing)
-- Prioritize remediation actions
-- Estimate refactoring effort
-
-Provide a technical debt score and repayment roadmap.`,
-
-  // Language-specific prompts
-  languageSpecificPrompts: {
-    javascript: `Additional JavaScript/Node.js specific checks:
-- ESLint rule violations
-- Async/await vs Promise usage
-- Memory leaks in closures
-- Event listener cleanup
-- NPM security vulnerabilities
-- CommonJS vs ES6 modules consistency`,
-
-    python: `Additional Python specific checks:
-- PEP 8 compliance
-- List comprehension optimization
-- Generator usage opportunities
-- Exception handling best practices
-- Memory efficiency with large datasets
-- Security issues (pickle, eval, exec)`,
-
-    java: `Additional Java specific checks:
-- Stream API usage optimization
-- Exception handling patterns
-- Memory management
-- Thread safety issues
-- Spring/Spring Boot best practices
-- JVM performance considerations`,
-
-    typescript: `Additional TypeScript specific checks:
-- Type safety and strict mode compliance
-- Interface vs type usage
-- Generic type optimization
-- Enum vs union types
-- Decorator usage patterns
-- Compilation target optimization`,
-  },
-
-  // Context-aware prompt builder
-  buildContextualPrompt: (prData, existingComments, analysisType = 'comprehensive') => {
-    const { pr, files, diff } = prData;
+  // Build fix suggestion prompt with context
+  buildFixSuggestionPrompt: (finding, fileContent, contextLines = 5) => {
+    let prompt = enhancedPrompts.codeFixSuggestionPrompt;
     
-    // Detect primary programming language
-    const languages = files.map(f => {
-      const ext = f.filename.split('.').pop().toLowerCase();
-      const langMap = {
-        'js': 'javascript', 'jsx': 'javascript', 'ts': 'typescript', 'tsx': 'typescript',
-        'py': 'python', 'java': 'java', 'cpp': 'cpp', 'c': 'c', 'cs': 'csharp',
-        'php': 'php', 'rb': 'ruby', 'go': 'go', 'rs': 'rust', 'swift': 'swift'
-      };
-      return langMap[ext] || 'unknown';
-    });
-    
-    const primaryLanguage = languages.find(lang => lang !== 'unknown') || 'javascript';
-    
-    // Select base prompt
-    let basePrompt;
-    switch (analysisType) {
-      case 'security':
-        basePrompt = enhancedPrompts.securityAuditPrompt;
-        break;
-      case 'performance':
-        basePrompt = enhancedPrompts.performanceAnalysisPrompt;
-        break;
-      case 'maintainability':
-        basePrompt = enhancedPrompts.maintainabilityAssessmentPrompt;
-        break;
-      case 'technical-debt':
-        basePrompt = enhancedPrompts.technicalDebtPrompt;
-        break;
-      default:
-        basePrompt = enhancedPrompts.comprehensiveReviewPrompt;
+    prompt += `\n\nISSUE TO FIX:
+File: ${finding.file}
+Line: ${finding.line}
+Issue: ${finding.issue}
+Severity: ${finding.severity}
+Category: ${finding.category}
+Original Suggestion: ${finding.suggestion}
+
+CURRENT FILE CONTENT CONTEXT:`;
+
+    // Add file content with line numbers for context
+    if (fileContent) {
+      const lines = fileContent.split('\n');
+      const startLine = Math.max(0, finding.line - contextLines - 1);
+      const endLine = Math.min(lines.length, finding.line + contextLines);
+      
+      prompt += `\n\nLines ${startLine + 1} to ${endLine}:`;
+      for (let i = startLine; i < endLine; i++) {
+        const lineNum = i + 1;
+        const marker = lineNum === finding.line ? ' --> ' : '     ';
+        prompt += `\n${marker}${lineNum}: ${lines[i]}`;
+      }
     }
 
-    // Add language-specific context
-    if (enhancedPrompts.languageSpecificPrompts[primaryLanguage]) {
-      basePrompt += `\n\nLANGUAGE-SPECIFIC ANALYSIS (${primaryLanguage.toUpperCase()}):\n`;
-      basePrompt += enhancedPrompts.languageSpecificPrompts[primaryLanguage];
+    prompt += `\n\nProvide a specific, working code fix for this issue. Include the exact current problematic code and the complete replacement code that resolves the issue.`;
+
+    return prompt;
+  },
+
+  // Build merge readiness prompt with all context
+  buildMergeReadinessPrompt: (prData, aiFindings, reviewComments, currentStatus) => {
+    let prompt = enhancedPrompts.mergeReadinessPrompt;
+    
+    const pr = prData.pr || prData || {};
+    
+    prompt += `\n\nPULL REQUEST INFORMATION:
+- PR #${pr.number}: ${pr.title}
+- Repository: ${pr.repository}
+- Author: ${pr.author}
+- Files Changed: ${prData.files ? prData.files.length : 0}
+- Lines Added: ${pr.additions || 0}
+- Lines Deleted: ${pr.deletions || 0}
+
+AI ANALYSIS FINDINGS:`;
+
+    if (aiFindings && aiFindings.length > 0) {
+      prompt += `\nTotal Issues Found by AI: ${aiFindings.length}`;
+      aiFindings.forEach((finding, index) => {
+        const posted = finding.posted ? 'POSTED' : 'NOT POSTED';
+        prompt += `\n${index + 1}. [${finding.severity}] ${finding.file}:${finding.line} - ${finding.issue} (${posted})`;
+      });
+    } else {
+      prompt += `\nNo AI findings available`;
     }
 
-    // Add PR context
-    basePrompt += `\n\nPULL REQUEST CONTEXT:
-- **Title**: ${pr.title}
-- **Description**: ${pr.description || 'No description provided'}
-- **Author**: ${pr.author}
-- **Target Branch**: ${pr.targetBranch}
-- **Source Branch**: ${pr.sourceBranch}
-- **Files Changed**: ${files.length}
-- **Lines Added**: ${pr.additions}
-- **Lines Deleted**: ${pr.deletions}
-- **Primary Language**: ${primaryLanguage}
-
-FILES MODIFIED:
-${files.map(f => `- ${f.filename} (+${f.additions}/-${f.deletions})`).join('\n')}
-
-CODE CHANGES:
-\`\`\`diff
-${diff}
-\`\`\``;
-
-    // Add existing review context
-    if (existingComments && existingComments.length > 0) {
-      basePrompt += `\n\nEXISTING REVIEW COMMENTS:
-The following comments have already been made by human reviewers:
-
-${existingComments.map((comment, index) => 
-  `${index + 1}. **${comment.user}** (${comment.type}): ${comment.body}`
-).join('\n\n')}
-
-IMPORTANT: 
-- Analyze what issues the human reviewers have already identified
-- Focus on finding additional issues they may have missed
-- Validate if their concerns are justified
-- Don't repeat issues already mentioned unless providing additional context
-- Assess the quality and thoroughness of the human review`;
+    prompt += `\n\nHUMAN REVIEW COMMENTS:`;
+    if (reviewComments && reviewComments.length > 0) {
+      prompt += `\nTotal Review Comments: ${reviewComments.length}`;
+      reviewComments.forEach((comment, index) => {
+        const location = comment.path && comment.line ? ` on ${comment.path}:${comment.line}` : '';
+        prompt += `\n${index + 1}. ${comment.user}${location}: ${comment.body}`;
+      });
+    } else {
+      prompt += `\nNo human review comments available`;
     }
 
-    basePrompt += `\n\nANALYSIS INSTRUCTIONS:
-1. Prioritize issues by business impact and security risk
-2. Provide actionable, specific suggestions
-3. Include code examples for fixes when helpful
-4. Consider the PR's context and scope
-5. Balance thoroughness with practicality
-6. Focus on issues that matter for production deployment
+    if (currentStatus) {
+      prompt += `\n\nCURRENT PR STATUS:
+- Mergeable: ${currentStatus.mergeable || 'unknown'}
+- Merge State: ${currentStatus.merge_state || 'unknown'}  
+- Review Decision: ${currentStatus.review_decision || 'unknown'}`;
+    }
 
-IMPORTANT: Return ONLY valid JSON in the exact format specified above. No markdown formatting or additional text.`;
+    prompt += `\n\nBased on this information, determine if this PR is ready for merge. Consider:
+1. Are all critical security issues resolved?
+2. Are all blocker/critical issues addressed?
+3. Has there been adequate human review?
+4. Are there any unaddressed concerns in comments?
+5. Overall code quality and risk assessment`;
 
-    return basePrompt;
+    return prompt;
   }
 };
 
-module.exports = enhancedPrompts;
+module.exports = {
+  enhancedPrompts,
+  buildFixSuggestionPrompt: enhancedPrompts.buildFixSuggestionPrompt,
+  buildMergeReadinessPrompt: enhancedPrompts.buildMergeReadinessPrompt
+};

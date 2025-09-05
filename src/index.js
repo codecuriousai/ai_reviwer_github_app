@@ -1,11 +1,42 @@
 const express = require('express');
-const config = require('./config/config');
-const logger = require('./utils/logger');
-const webhookService = require('./services/webhook.service');
-const authMiddleware = require('./middleware/auth.middleware');
-const checkRunButtonService = require('./services/check-run-button.service');
+
+// Enhanced startup logging
+function logStartup(message, isError = false) {
+  const timestamp = new Date().toISOString();
+  const prefix = isError ? '❌ ERROR' : '✅ INFO';
+  console.log(`${timestamp} [${prefix}]: ${message}`);
+}
+
+logStartup('Starting GitHub AI Reviewer application...');
+
+// Safe module loading with error handling
+let config, logger, webhookService, authMiddleware, checkRunButtonService;
+
+try {
+  logStartup('Loading configuration...');
+  config = require('./config/config');
+  logStartup('Configuration loaded successfully');
+  
+  logStartup('Initializing logger...');
+  logger = require('./utils/logger');
+  logStartup('Logger initialized successfully');
+  
+  logStartup('Loading services...');
+  webhookService = require('./services/webhook.service');
+  authMiddleware = require('./middleware/auth.middleware');
+  checkRunButtonService = require('./services/check-run-button.service');
+  logStartup('All services loaded successfully');
+  
+} catch (error) {
+  logStartup(`Failed to load required modules: ${error.message}`, true);
+  logStartup(`Error stack: ${error.stack}`, true);
+  process.exit(1);
+}
+
 const path = require('path');
 const app = express();
+
+logStartup('Express app created successfully');
 
 // Raw body parser for webhook signature verification
 app.use('/webhook', express.raw({ type: 'application/json' }));
@@ -149,6 +180,12 @@ app.get('/status', (req, res) => {
     },
     webhooks: webhookStatus,
     checkRunButtons: webhookStatus.checkRunButtons,
+    features: {
+      codeFixSuggestions: true,
+      mergeReadinessCheck: true,
+      enhancedComments: true,
+      aiAnalysis: true
+    },
     system: {
       activeReviews: webhookStatus.activeReviews,
       queueSize: webhookStatus.queueSize,
@@ -247,6 +284,357 @@ app.post('/api/check-runs/cleanup', (req, res) => {
     res.status(500).json({
       error: 'Failed to clean check runs',
       message: error.message
+    });
+  }
+});
+
+// NEW: Generate fix suggestions endpoint
+app.post('/api/check-runs/:checkRunId/commit-fixes', async (req, res) => {
+  try {
+    const { checkRunId } = req.params;
+    const checkRunData = checkRunButtonService.activeCheckRuns.get(parseInt(checkRunId));
+    
+    if (!checkRunData) {
+      return res.status(404).json({
+        error: 'Check run not found',
+        checkRunId: parseInt(checkRunId)
+      });
+    }
+
+    const { owner, repo, pullNumber, postableFindings } = checkRunData;
+    
+    // Trigger fix suggestions generation
+    const result = await checkRunButtonService.commitAllFixSuggestions(
+      owner, repo, pullNumber, postableFindings, checkRunData
+    );
+
+    res.json({
+      success: true,
+      message: 'Fix suggestions committed successfully',
+      checkRunId: parseInt(checkRunId),
+      results: {
+        successCount: result.successCount,
+        errorCount: result.errorCount,
+        errors: result.errors,
+        committedFixes: result.committedFixes
+      },
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    logger.error('Error committing fix suggestions:', error);
+    res.status(500).json({
+      error: 'Failed to commit fix suggestions',
+      message: error.message
+    });
+  }
+});
+
+// NEW: Check merge readiness endpoint
+app.post('/api/check-runs/:checkRunId/check-merge', async (req, res) => {
+  try {
+    const { checkRunId } = req.params;
+    const checkRunData = checkRunButtonService.activeCheckRuns.get(parseInt(checkRunId));
+    
+    if (!checkRunData) {
+      return res.status(404).json({
+        error: 'Check run not found',
+        checkRunId: parseInt(checkRunId)
+      });
+    }
+
+    const { owner, repo, pullNumber, analysis } = checkRunData;
+    
+    // Trigger merge readiness check
+    await checkRunButtonService.checkMergeReadiness(owner, repo, pullNumber, analysis, checkRunData);
+
+    res.json({
+      success: true,
+      message: 'Merge readiness assessment completed',
+      checkRunId: parseInt(checkRunId),
+      mergeAssessment: checkRunData.mergeAssessment,
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    logger.error('Error checking merge readiness:', error);
+    res.status(500).json({
+      error: 'Failed to check merge readiness',
+      message: error.message
+    });
+  }
+});
+
+// NEW: Get fix suggestions for a specific finding
+app.post('/api/fix-suggestion', async (req, res) => {
+  try {
+    const { owner, repo, pullNumber, finding } = req.body;
+    
+    if (!owner || !repo || !pullNumber || !finding) {
+      return res.status(400).json({
+        error: 'Missing required fields: owner, repo, pullNumber, finding'
+      });
+    }
+
+    // Get PR data for context
+    const githubService = require('./services/github.service');
+    const aiService = require('./services/ai.service');
+    
+    const prData = await githubService.getPullRequestData(owner, repo, pullNumber);
+    
+    // Get file content
+    const fileContent = await checkRunButtonService.getFileContent(owner, repo, finding.file, prData);
+    
+    // Generate fix suggestion
+    const fixSuggestion = await aiService.generateCodeFixSuggestion(finding, fileContent, prData);
+
+    res.json({
+      success: true,
+      fixSuggestion,
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    logger.error('Error generating fix suggestion:', error);
+    res.status(500).json({
+      error: 'Failed to generate fix suggestion',
+      message: error.message
+    });
+  }
+});
+
+// NEW: Assess merge readiness for a PR
+app.post('/api/merge-readiness', async (req, res) => {
+  try {
+    const { owner, repo, pullNumber } = req.body;
+    
+    if (!owner || !repo || !pullNumber) {
+      return res.status(400).json({
+        error: 'Missing required fields: owner, repo, pullNumber'
+      });
+    }
+
+    const githubService = require('./services/github.service');
+    const aiService = require('./services/ai.service');
+    
+    // Get PR data and current status
+    const prData = await githubService.getPullRequestData(owner, repo, pullNumber);
+    const reviewComments = prData.comments || [];
+    
+    const currentStatus = {
+      mergeable: prData.pr.mergeable,
+      merge_state: prData.pr.mergeable_state,
+      review_decision: prData.pr.review_decision
+    };
+
+    // For this endpoint, we'll need to get existing AI findings
+    // This is a simplified version - in practice you'd want to store/retrieve the analysis
+    const aiFindings = []; // You could store these in a database or retrieve from previous analysis
+    
+    // Assess merge readiness
+    const mergeAssessment = await aiService.assessMergeReadiness(
+      prData, aiFindings, reviewComments, currentStatus
+    );
+
+    res.json({
+      success: true,
+      mergeAssessment,
+      prData: {
+        number: prData.pr.number,
+        title: prData.pr.title,
+        author: prData.pr.user?.login,
+        mergeable: prData.pr.mergeable,
+        merge_state: prData.pr.mergeable_state
+      },
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    logger.error('Error assessing merge readiness:', error);
+    res.status(500).json({
+      error: 'Failed to assess merge readiness',
+      message: error.message
+    });
+  }
+});
+
+// NEW: Commit fix endpoint - Apply AI-suggested fixes directly
+app.get('/api/commit-fix', async (req, res) => {
+  try {
+    const { data } = req.query;
+    
+    if (!data) {
+      return res.status(400).json({ 
+        error: 'Missing commit data parameter' 
+      });
+    }
+
+    const commitData = JSON.parse(decodeURIComponent(data));
+    const { file, line, currentCode, suggestedFix, explanation, trackingId, findingIndex } = commitData;
+
+    logger.info(`Commit fix requested for ${file}:${line}`, { trackingId, findingIndex });
+
+    // Create a user-friendly response page with copy-to-clipboard functionality
+    const responseHtml = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <title>🔧 AI Code Fix - Commit Suggestion</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <style>
+          body { 
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; 
+            max-width: 900px; margin: 20px auto; padding: 20px; 
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+          }
+          .container { 
+            background: white; border-radius: 15px; padding: 30px; 
+            box-shadow: 0 20px 60px rgba(0,0,0,0.1);
+            border-left: 5px solid #28a745; 
+          }
+          .header { text-align: center; margin-bottom: 30px; }
+          .code { 
+            background: #f8f9fa; padding: 20px; border-radius: 8px; 
+            font-family: 'Monaco', 'Menlo', monospace; margin: 15px 0;
+            border: 1px solid #dee2e6; font-size: 14px; line-height: 1.5;
+            position: relative; overflow-x: auto;
+          }
+          .btn { 
+            background: #28a745; color: white; padding: 12px 24px; 
+            text-decoration: none; border-radius: 8px; display: inline-block; 
+            margin: 10px 10px 0 0; font-weight: 600; border: none; cursor: pointer;
+            transition: all 0.3s ease;
+          }
+          .btn:hover { background: #218838; transform: translateY(-2px); }
+          .btn-secondary { background: #6c757d; }
+          .btn-secondary:hover { background: #545b62; }
+          .btn-info { background: #17a2b8; }
+          .btn-info:hover { background: #138496; }
+          .success-msg { 
+            background: #d4edda; color: #155724; padding: 10px; 
+            border-radius: 5px; margin: 10px 0; display: none;
+          }
+          .section { margin: 25px 0; }
+          .diff-removed { background: #ffeaea; color: #d73a49; padding: 2px 4px; }
+          .diff-added { background: #e6ffed; color: #28a745; padding: 2px 4px; }
+          .copy-btn { 
+            position: absolute; top: 10px; right: 10px; 
+            background: #007bff; color: white; border: none; 
+            padding: 5px 10px; border-radius: 4px; font-size: 12px; cursor: pointer;
+          }
+          .copy-btn:hover { background: #0056b3; }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <div class="header">
+            <h1>🔧 AI Code Fix Suggestion</h1>
+            <p><strong>File:</strong> <code>${file}:${line}</code></p>
+            <p><strong>Tracking ID:</strong> <code>${trackingId}</code></p>
+          </div>
+          
+          <div class="section">
+            <h3>📋 Issue Description</h3>
+            <p>${explanation}</p>
+          </div>
+          
+          <div class="section">
+            <h3>❌ Current Code</h3>
+            <div class="code">
+              <button class="copy-btn" onclick="copyToClipboard(currentCode, this)">📋 Copy</button>
+              <pre>${currentCode}</pre>
+            </div>
+          </div>
+          
+          <div class="section">
+            <h3>✅ Suggested Fix</h3>
+            <div class="code">
+              <button class="copy-btn" onclick="copyToClipboard(suggestedFix, this)">📋 Copy</button>
+              <pre>${suggestedFix}</pre>
+            </div>
+          </div>
+          
+          <div class="section">
+            <h3>🚀 Next Steps</h3>
+            <ol>
+              <li>Review the suggested changes above</li>
+              <li>Copy the fixed code using the button</li>
+              <li>Apply the fix in your IDE</li>
+              <li>Test the changes thoroughly</li>
+              <li>Commit with the suggested message below</li>
+            </ol>
+          </div>
+          
+          <div class="section">
+            <h3>💬 Suggested Commit Message</h3>
+            <div class="code">
+              <button class="copy-btn" onclick="copyToClipboard(commitMsg, this)">📋 Copy</button>
+              <pre>Fix: ${explanation}
+
+AI-suggested fix for ${file}:${line}
+Tracking ID: ${trackingId}</pre>
+            </div>
+          </div>
+          
+          <div class="success-msg" id="successMsg">
+            ✅ Copied to clipboard!
+          </div>
+          
+          <div style="text-align: center; margin-top: 30px;">
+            <button onclick="copyToClipboard(suggestedFix)" class="btn">📋 Copy Fixed Code</button>
+            <button onclick="copyToClipboard(commitMsg)" class="btn btn-info">📝 Copy Commit Message</button>
+            <button onclick="window.close()" class="btn btn-secondary">✅ Done</button>
+          </div>
+          
+          <div style="text-align: center; margin-top: 20px; font-size: 12px; color: #666;">
+            <p>🤖 Generated by AI Code Reviewer | ${new Date().toLocaleString()}</p>
+          </div>
+        </div>
+        
+        <script>
+          const currentCode = ${JSON.stringify(currentCode)};
+          const suggestedFix = ${JSON.stringify(suggestedFix)};
+          const commitMsg = \`Fix: ${explanation}
+
+AI-suggested fix for ${file}:${line}
+Tracking ID: ${trackingId}\`;
+
+          function copyToClipboard(text, button) {
+            navigator.clipboard.writeText(text).then(() => {
+              const successMsg = document.getElementById('successMsg');
+              successMsg.style.display = 'block';
+              
+              if (button) {
+                const originalText = button.textContent;
+                button.textContent = '✅ Copied!';
+                button.style.background = '#28a745';
+                setTimeout(() => {
+                  button.textContent = originalText;
+                  button.style.background = '#007bff';
+                }, 2000);
+              }
+              
+              setTimeout(() => {
+                successMsg.style.display = 'none';
+              }, 3000);
+            }).catch(err => {
+              console.error('Failed to copy: ', err);
+              alert('Failed to copy to clipboard. Please select and copy manually.');
+            });
+          }
+        </script>
+      </body>
+      </html>
+    `;
+
+    res.send(responseHtml);
+
+  } catch (error) {
+    logger.error('Error in commit fix:', error);
+    res.status(500).json({ 
+      error: 'Commit fix failed',
+      details: error.message 
     });
   }
 });
@@ -416,15 +804,41 @@ app.use('*', (req, res) => {
 });
 
 // Start server
+logStartup('Preparing to start HTTP server...');
+
 const PORT = config.server.port;
+logStartup(`Attempting to listen on port ${PORT}...`);
+
 const server = app.listen(PORT, () => {
-  logger.info(`GitHub AI Reviewer server running on port ${PORT}`);
-  logger.info(`Webhook URL: http://localhost:${PORT}/webhook`);
-  logger.info(`Health check: http://localhost:${PORT}/health`);
-  logger.info(`Status endpoint: http://localhost:${PORT}/status`);
-  logger.info(`Dashboard: http://localhost:${PORT}/dashboard`);
-  logger.info(`Check Run Button API: http://localhost:${PORT}/api/check-runs/*`);
-  logger.info(`Interactive button system enabled - PR analysis will create clickable buttons for comment posting`);
+  logStartup(`✅ SERVER STARTED SUCCESSFULLY!`);
+  logStartup(`GitHub AI Reviewer server running on port ${PORT}`);
+  logStartup(`Webhook URL: http://localhost:${PORT}/webhook`);
+  logStartup(`Health check: http://localhost:${PORT}/health`);
+  logStartup(`Status endpoint: http://localhost:${PORT}/status`);
+  logStartup(`Dashboard: http://localhost:${PORT}/dashboard`);
+  logStartup(`Check Run Button API: http://localhost:${PORT}/api/check-runs/*`);
+  logStartup(`Interactive button system enabled - PR analysis will create clickable buttons for comment posting`);
+  
+  // Also log with logger if available
+  if (logger) {
+    logger.info(`GitHub AI Reviewer server running on port ${PORT}`);
+    logger.info(`Webhook URL: http://localhost:${PORT}/webhook`);
+    logger.info(`Health check: http://localhost:${PORT}/health`);
+    logger.info(`Status endpoint: http://localhost:${PORT}/status`);
+    logger.info(`Dashboard: http://localhost:${PORT}/dashboard`);
+    logger.info(`Check Run Button API: http://localhost:${PORT}/api/check-runs/*`);
+    logger.info(`Interactive button system enabled - PR analysis will create clickable buttons for comment posting`);
+  }
+});
+
+// Handle server startup errors
+server.on('error', (error) => {
+  logStartup(`Server startup error: ${error.message}`, true);
+  logStartup(`Error code: ${error.code}`, true);
+  if (error.code === 'EADDRINUSE') {
+    logStartup(`Port ${PORT} is already in use. Please check if another instance is running.`, true);
+  }
+  process.exit(1);
 });
 
 // Graceful shutdown

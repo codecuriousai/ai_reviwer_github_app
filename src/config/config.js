@@ -4,11 +4,21 @@ require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
 
+// Enhanced logging function for startup
+function logStartup(message, isError = false) {
+  const timestamp = new Date().toISOString();
+  const prefix = isError ? '❌ ERROR' : '✅ INFO';
+  console.log(`${timestamp} [${prefix}]: ${message}`);
+}
+
 // Handle private key for different deployment environments
 function getPrivateKey() {
+  logStartup('Attempting to load GitHub private key...');
+  
   if (process.env.GITHUB_PRIVATE_KEY_BASE64) {
     // Render/Cloud deployment: decode base64 key
     try {
+      logStartup('Attempting to use base64 encoded private key from environment');
       const privateKeyContent = Buffer.from(process.env.GITHUB_PRIVATE_KEY_BASE64, 'base64').toString('utf-8');
       
       // Basic validation
@@ -16,22 +26,38 @@ function getPrivateKey() {
         throw new Error('Invalid private key format after base64 decode');
       }
       
+      logStartup('Successfully decoded base64 private key');
       return privateKeyContent;
     } catch (error) {
+      logStartup(`Failed to decode base64 private key: ${error.message}`, true);
       throw new Error(`Failed to decode private key: ${error.message}`);
     }
   } else if (process.env.GITHUB_PRIVATE_KEY) {
     // Direct private key content
+    logStartup('Using direct private key from environment variable');
     return process.env.GITHUB_PRIVATE_KEY.replace(/\\n/g, '\n');
   } else if (process.env.GITHUB_PRIVATE_KEY_PATH && fs.existsSync(process.env.GITHUB_PRIVATE_KEY_PATH)) {
     // Local development: use file path
+    logStartup(`Using private key from file: ${process.env.GITHUB_PRIVATE_KEY_PATH}`);
     return fs.readFileSync(process.env.GITHUB_PRIVATE_KEY_PATH, 'utf8');
   } else if (fs.existsSync('./private-key.pem')) {
     // Fallback to default location
+    logStartup('Using private key from default location: ./private-key.pem');
     return fs.readFileSync('./private-key.pem', 'utf8');
   } else {
+    logStartup('No private key found in any location', true);
     throw new Error('GitHub private key not found. Set GITHUB_PRIVATE_KEY_BASE64 environment variable for cloud deployment.');
   }
+}
+
+// Safely get private key with error handling
+let privateKey;
+try {
+  privateKey = getPrivateKey();
+  logStartup('Private key loaded and validated successfully');
+} catch (error) {
+  logStartup(`Private key loading failed: ${error.message}`, true);
+  throw error;
 }
 
 const config = {
@@ -41,7 +67,7 @@ const config = {
   },
   github: {
     appId: process.env.GITHUB_APP_ID,
-    privateKey: getPrivateKey(), // Get key content directly
+    privateKey: privateKey, // Use the safely loaded key
     webhookSecret: process.env.GITHUB_WEBHOOK_SECRET,
     installationId: process.env.GITHUB_INSTALLATION_ID,
   },
@@ -81,12 +107,16 @@ const config = {
   },
 };
 
+logStartup('Configuration object created successfully');
+
 // Validation for required environment variables
 const requiredEnvVars = [
   'GITHUB_APP_ID',
   'GITHUB_WEBHOOK_SECRET',
   'GITHUB_INSTALLATION_ID',
 ];
+
+logStartup('Starting environment variable validation...');
 
 // Check AI provider requirements
 if (config.ai.provider === 'openai' && !config.ai.openai.apiKey) {
@@ -97,39 +127,47 @@ if (config.ai.provider === 'gemini' && !config.ai.gemini.apiKey) {
   requiredEnvVars.push('GEMINI_API_KEY');
 }
 
-// Private key requirement (check all possible methods)
-const hasPrivateKey = process.env.GITHUB_PRIVATE_KEY_BASE64 || 
-                     process.env.GITHUB_PRIVATE_KEY || 
-                     (process.env.GITHUB_PRIVATE_KEY_PATH && fs.existsSync(process.env.GITHUB_PRIVATE_KEY_PATH)) ||
-                     fs.existsSync('./private-key.pem');
-
-if (!hasPrivateKey) {
-  requiredEnvVars.push('GITHUB_PRIVATE_KEY_BASE64 (or GITHUB_PRIVATE_KEY_PATH)');
-}
-
+// Check which variables are actually missing
 const missingVars = requiredEnvVars.filter(varName => {
-  // Handle compound requirements
-  if (varName.includes('(or')) {
-    return false; // Skip compound checks, handled above
+  const value = process.env[varName];
+  const isMissing = !value;
+  
+  if (isMissing) {
+    logStartup(`Missing required environment variable: ${varName}`, true);
+  } else {
+    logStartup(`✓ Found environment variable: ${varName}`);
   }
-  return !process.env[varName];
+  
+  return isMissing;
 });
 
 if (missingVars.length > 0) {
-  console.error(`❌ Missing required environment variables: ${missingVars.join(', ')}`);
-  console.error('Please check your .env file or Render environment variables');
-  throw new Error(`Missing required environment variables: ${missingVars.join(', ')}`);
+  const errorMessage = `Missing required environment variables: ${missingVars.join(', ')}`;
+  logStartup(errorMessage, true);
+  logStartup('Please check your environment variables in Render dashboard', true);
+  
+  // Log available environment variables for debugging (without values)
+  logStartup('Available environment variables:');
+  Object.keys(process.env).forEach(key => {
+    if (key.startsWith('GITHUB_') || key.startsWith('OPENAI_') || key.startsWith('GEMINI_') || key.startsWith('AI_')) {
+      logStartup(`  - ${key}: ${process.env[key] ? '[SET]' : '[NOT SET]'}`);
+    }
+  });
+  
+  throw new Error(errorMessage);
 }
 
+logStartup('All required environment variables are present');
+
 // Log configuration summary (for debugging)
-if (config.logging.enableDebugMode) {
-  console.log('🔧 Configuration Summary:');
-  console.log(`  📡 Port: ${config.server.port}`);
-  console.log(`  🤖 AI Provider: ${config.ai.provider}`);
-  console.log(`  🔧 Environment: ${config.server.nodeEnv}`);
-  console.log(`  📝 Single Comment Mode: ${config.review.singleCommentMode}`);
-  console.log(`  📊 Max Files: ${config.review.maxFilesToAnalyze}`);
-  console.log(`  🎯 Target Branches: ${config.review.targetBranches.join(', ')}`);
-}
+logStartup('🔧 Configuration Summary:');
+logStartup(`  📡 Port: ${config.server.port}`);
+logStartup(`  🤖 AI Provider: ${config.ai.provider}`);
+logStartup(`  🔧 Environment: ${config.server.nodeEnv}`);
+logStartup(`  📝 Single Comment Mode: ${config.review.singleCommentMode}`);
+logStartup(`  📊 Max Files: ${config.review.maxFilesToAnalyze}`);
+logStartup(`  🎯 Target Branches: ${config.review.targetBranches.join(', ')}`);
+
+logStartup('Configuration loaded successfully - ready to start server');
 
 module.exports = config;

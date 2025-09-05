@@ -7,6 +7,14 @@ const path = require('path');
 const config = require('../config/config');
 const logger = require('../utils/logger');
 
+// Import interactive comment service to avoid loading issues
+let interactiveCommentService;
+try {
+  interactiveCommentService = require('./interactive-comment.service');
+} catch (error) {
+  logger.warn('Interactive comment service not available:', error.message);
+}
+
 class GitHubService {
   constructor() {
     this.privateKey = this.getPrivateKey();
@@ -549,19 +557,21 @@ class GitHubService {
     try {
       logger.info(`Posting enhanced structured review comment for ${owner}/${repo}#${pullNumber}`);
 
-      // Import interactive comment service
-      const interactiveCommentService = require('./interactive-comment.service');
-
       // Store pending comments for interactive posting
       const trackingId = analysis.trackingId || `analysis-${Date.now()}`;
       analysis.trackingId = trackingId; // Ensure trackingId is set
 
-      if (analysis.detailedFindings && analysis.detailedFindings.length > 0) {
-        interactiveCommentService.storePendingComments(
-          owner, repo, pullNumber,
-          analysis.detailedFindings,
-          trackingId
-        );
+      if (analysis.detailedFindings && analysis.detailedFindings.length > 0 && interactiveCommentService) {
+        try {
+          interactiveCommentService.storePendingComments(
+            owner, repo, pullNumber,
+            analysis.detailedFindings,
+            trackingId
+          );
+        } catch (error) {
+          logger.warn('Failed to store pending comments:', error.message);
+          // Continue with normal flow even if this fails
+        }
       }
 
       // Generate enhanced comment with interactive elements
@@ -634,8 +644,8 @@ class GitHubService {
     comment += `⚖️ **REVIEW ASSESSMENT:**\n`;
     comment += `${reviewAssessment || 'REVIEW REQUIRED'}\n\n`;
 
-    // ENHANCED: Detailed Findings with Interactive Comment Buttons
-    comment += `🔍 **DETAILED FINDINGS:**\n`;
+    // COMMENTED OUT: Detailed Findings heading for cleaner UI
+    // comment += `🔍 **DETAILED FINDINGS:**\n`;
 
     if (detailedFindings && Array.isArray(detailedFindings) && detailedFindings.length > 0) {
       // Filter postable findings (ones with valid file/line info)
@@ -655,6 +665,8 @@ class GitHubService {
         finding.file === 'AI_ANALYSIS_ERROR'
       );
 
+      // COMMENTED OUT: Interactive comment instructions - no longer needed with button interface
+      /*
       // Show postable findings with interactive buttons
       if (postableFindings.length > 0) {
         comment += `\n**📝 Issues that can be posted as inline comments:**\n\n`;
@@ -673,6 +685,7 @@ class GitHubService {
         comment += `🔄 **BULK ACTION:**\n`;
         comment += `Comment with \`/ai-comment ${trackingId}-all\` to post all ${postableFindings.length} findings as inline comments at once.\n\n`;
       }
+      */
 
       // Show non-postable findings (general issues)
       if (nonPostableFindings.length > 0) {
@@ -696,6 +709,8 @@ class GitHubService {
       comment += `No additional issues found that were missed by reviewers.\n\n`;
     }
 
+    // COMMENTED OUT: Interactive Instructions Section - no longer needed with button interface
+    /*
     // Interactive Instructions Section
     const postableCount = detailedFindings ? detailedFindings.filter(finding =>
       finding.file &&
@@ -713,16 +728,17 @@ class GitHubService {
       comment += `💡 **Example:** To post the first finding as an inline comment, reply with:\n`;
       comment += `\`/ai-comment ${trackingId}-finding-0\`\n\n`;
     }
+    */
 
     // Recommendation
     comment += `🎯 **RECOMMENDATION:**\n`;
     comment += `${recommendation || 'No specific recommendation available'}\n\n`;
 
-    // Footer
-    comment += `---\n`;
-    comment += `*🔧 Analysis completed by AI Code Reviewer using SonarQube Standards*\n`;
-    comment += `*⏱️ Generated at: ${new Date().toISOString()}*\n`;
-    comment += `*🆔 Analysis ID: \`${trackingId}\`*`;
+    // REMOVED: Footer clutter for cleaner UI
+    // comment += `---\n`;
+    // comment += `*🔧 Analysis completed by AI Code Reviewer using SonarQube Standards*\n`;
+    // comment += `*⏱️ Generated at: ${new Date().toISOString()}*\n`;
+    // comment += `*🆔 Analysis ID: \`${trackingId}\`*`;
 
     return comment;
   }
@@ -765,6 +781,93 @@ class GitHubService {
     } catch (error) {
       logger.error('Error posting general comment:', error);
       throw new Error(`Failed to post general comment: ${error.message}`);
+    }
+  }
+
+  // NEW: Post reply to an existing comment (threaded comment)
+  async postCommentReply(owner, repo, pullNumber, parentCommentId, body) {
+    try {
+      // GitHub doesn't support true threaded replies, so we'll post a new comment
+      // that references the parent comment
+      const replyBody = `> Reply to [comment #${parentCommentId}]\n\n${body}`;
+      
+      const { data: comment } = await this.octokit.rest.issues.createComment({
+        owner,
+        repo,
+        issue_number: pullNumber,
+        body: replyBody,
+      });
+
+      logger.info(`Reply comment posted: ${comment.id} (parent: ${parentCommentId})`);
+      return comment;
+    } catch (error) {
+      logger.error('Error posting reply comment:', error);
+      throw new Error(`Failed to post reply comment: ${error.message}`);
+    }
+  }
+
+  // MODIFIED: Get file content from repository with fallback branches
+  async getFileContent(owner, repo, path, ref = 'main') {
+    const branchesToTry = [ref];
+    
+    // If not main branch, also try main as fallback
+    if (ref !== 'main') {
+      branchesToTry.push('main');
+    }
+    
+    // Also try common default branches
+    if (!branchesToTry.includes('master')) {
+      branchesToTry.push('master');
+    }
+
+    for (const branch of branchesToTry) {
+      try {
+        logger.info(`Attempting to get file content for ${path} from branch: ${branch}`);
+        
+        const { data } = await this.octokit.rest.repos.getContent({
+          owner,
+          repo,
+          path,
+          ref: branch
+        });
+
+        if (data.type === 'file') {
+          logger.info(`Successfully found file ${path} on branch: ${branch}`);
+          return {
+            content: Buffer.from(data.content, 'base64').toString('utf8'),
+            sha: data.sha,
+            size: data.size,
+            branch: branch // Include which branch was used
+          };
+        }
+      } catch (error) {
+        logger.warn(`File ${path} not found on branch ${branch}: ${error.message}`);
+        // Continue to next branch
+      }
+    }
+    
+    logger.error(`File ${path} not found on any branch: ${branchesToTry.join(', ')}`);
+    return null;
+  }
+
+  // NEW: Update file content in repository
+  async updateFileContent(owner, repo, path, branch, content, message, sha) {
+    try {
+      const { data } = await this.octokit.rest.repos.createOrUpdateFileContents({
+        owner,
+        repo,
+        path,
+        message,
+        content: Buffer.from(content).toString('base64'),
+        branch,
+        sha
+      });
+
+      logger.info(`File updated: ${path} on branch ${branch}`);
+      return data;
+    } catch (error) {
+      logger.error(`Error updating file content for ${path}:`, error);
+      throw new Error(`Failed to update file: ${error.message}`);
     }
   }
 
@@ -825,6 +928,9 @@ class GitHubService {
     try {
       logger.info(`Creating check run: ${checkRunData.name} for ${owner}/${repo}`);
 
+      // Validate GitHub API limits before sending
+      this.validateCheckRunData(checkRunData);
+
       const { data: checkRun } = await this.octokit.rest.checks.create({
         owner,
         repo,
@@ -835,8 +941,66 @@ class GitHubService {
       return checkRun;
     } catch (error) {
       logger.error('Error creating check run:', error);
+      logger.error('Check run data that failed:', {
+        name: checkRunData.name,
+        status: checkRunData.status,
+        conclusion: checkRunData.conclusion,
+        summaryLength: checkRunData.output?.summary?.length,
+        textLength: checkRunData.output?.text?.length,
+        actionsCount: checkRunData.actions?.length,
+        actions: checkRunData.actions?.map(a => ({ label: a.label, identifier: a.identifier }))
+      });
       throw new Error(`Failed to create check run: ${error.message}`);
     }
+  }
+
+  // Validate check run data against GitHub limits
+  validateCheckRunData(checkRunData) {
+    const { name, output, actions } = checkRunData;
+
+    // Check name length (20 characters max)
+    if (name && name.length > 20) {
+      throw new Error(`Check run name too long: ${name.length} chars (max 20)`);
+    }
+
+    // Check output limits
+    if (output) {
+      if (output.title && output.title.length > 255) {
+        throw new Error(`Output title too long: ${output.title.length} chars (max 255)`);
+      }
+      if (output.summary && output.summary.length > 65535) {
+        throw new Error(`Output summary too long: ${output.summary.length} chars (max 65535)`);
+      }
+      if (output.text && output.text.length > 65535) {
+        throw new Error(`Output text too long: ${output.text.length} chars (max 65535)`);
+      }
+    }
+
+    // Check actions limits
+    if (actions) {
+      if (actions.length > 3) {
+        throw new Error(`Too many actions: ${actions.length} (max 3)`);
+      }
+      actions.forEach((action, index) => {
+        if (action.label && action.label.length > 20) {
+          throw new Error(`Action ${index} label too long: ${action.label.length} chars (max 20)`);
+        }
+        if (action.description && action.description.length > 40) {
+          throw new Error(`Action ${index} description too long: ${action.description.length} chars (max 40)`);
+        }
+        if (action.identifier && action.identifier.length > 20) {
+          throw new Error(`Action ${index} identifier too long: ${action.identifier.length} chars (max 20)`);
+        }
+      });
+    }
+
+    logger.info('Check run data validation passed', {
+      nameLength: name?.length,
+      titleLength: output?.title?.length,
+      summaryLength: output?.summary?.length,
+      textLength: output?.text?.length,
+      actionsCount: actions?.length
+    });
   }
 
   // Update existing check run
