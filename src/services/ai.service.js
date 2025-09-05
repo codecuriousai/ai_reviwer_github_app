@@ -8,7 +8,6 @@ const { getCodeReviewPrompt } = require('../prompts/prompts');
 const { buildFixSuggestionPrompt, buildMergeReadinessPrompt } = require('../prompts/enhanced-prompts');
 const { retryWithBackoff, sanitizeForAI, isValidJSON } = require('../utils/helpers');
 
-const aiService = new AIService();
 class AIService {
   constructor() {
     this.provider = config.ai.provider;
