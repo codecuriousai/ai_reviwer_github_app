@@ -560,7 +560,7 @@ function signup(username, password) {
                             <label>Action Type:</label>
                             <select id="actionType">
                                 <option value="post-all">Post All Comments</option>
-                                <option value="generate-fixes">Generate Fixes</option>
+                                <option value="commit-fixes">Commit Fixes</option>
                                 <option value="check-merge">Check Merge Ready</option>
                             </select>
                         </div>
@@ -1035,8 +1035,8 @@ function signup(username, password) {
                     case 'post-all':
                         endpoint = `/api/check-runs/${checkRunId}/post-comments`;
                         break;
-                    case 'generate-fixes':
-                        endpoint = `/api/check-runs/${checkRunId}/generate-fixes`;
+                    case 'commit-fixes':
+                        endpoint = `/api/check-runs/${checkRunId}/commit-fixes`;
                         break;
                     case 'check-merge':
                         endpoint = `/api/check-runs/${checkRunId}/check-merge`;

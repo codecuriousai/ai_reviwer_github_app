@@ -289,7 +289,7 @@ app.post('/api/check-runs/cleanup', (req, res) => {
 });
 
 // NEW: Generate fix suggestions endpoint
-app.post('/api/check-runs/:checkRunId/generate-fixes', async (req, res) => {
+app.post('/api/check-runs/:checkRunId/commit-fixes', async (req, res) => {
   try {
     const { checkRunId } = req.params;
     const checkRunData = checkRunButtonService.activeCheckRuns.get(parseInt(checkRunId));
@@ -304,26 +304,27 @@ app.post('/api/check-runs/:checkRunId/generate-fixes', async (req, res) => {
     const { owner, repo, pullNumber, postableFindings } = checkRunData;
     
     // Trigger fix suggestions generation
-    const result = await checkRunButtonService.generateAllFixSuggestions(
+    const result = await checkRunButtonService.commitAllFixSuggestions(
       owner, repo, pullNumber, postableFindings, checkRunData
     );
 
     res.json({
       success: true,
-      message: 'Fix suggestions generated successfully',
+      message: 'Fix suggestions committed successfully',
       checkRunId: parseInt(checkRunId),
       results: {
         successCount: result.successCount,
         errorCount: result.errorCount,
-        errors: result.errors
+        errors: result.errors,
+        committedFixes: result.committedFixes
       },
       timestamp: new Date().toISOString()
     });
 
   } catch (error) {
-    logger.error('Error generating fix suggestions:', error);
+    logger.error('Error committing fix suggestions:', error);
     res.status(500).json({
-      error: 'Failed to generate fix suggestions',
+      error: 'Failed to commit fix suggestions',
       message: error.message
     });
   }

@@ -800,6 +800,52 @@ class GitHubService {
     }
   }
 
+  // NEW: Get file content from repository
+  async getFileContent(owner, repo, path, ref = 'main') {
+    try {
+      const { data } = await this.octokit.rest.repos.getContent({
+        owner,
+        repo,
+        path,
+        ref
+      });
+
+      if (data.type === 'file') {
+        return {
+          content: Buffer.from(data.content, 'base64').toString('utf8'),
+          sha: data.sha,
+          size: data.size
+        };
+      }
+      
+      return null;
+    } catch (error) {
+      logger.error(`Error getting file content for ${path}:`, error);
+      return null;
+    }
+  }
+
+  // NEW: Update file content in repository
+  async updateFileContent(owner, repo, path, branch, content, message, sha) {
+    try {
+      const { data } = await this.octokit.rest.repos.createOrUpdateFileContents({
+        owner,
+        repo,
+        path,
+        message,
+        content: Buffer.from(content).toString('base64'),
+        branch,
+        sha
+      });
+
+      logger.info(`File updated: ${path} on branch ${branch}`);
+      return data;
+    } catch (error) {
+      logger.error(`Error updating file content for ${path}:`, error);
+      throw new Error(`Failed to update file: ${error.message}`);
+    }
+  }
+
   // Post review comment (for compatibility)
   async postReviewComment(owner, repo, pullNumber, comments) {
     try {
