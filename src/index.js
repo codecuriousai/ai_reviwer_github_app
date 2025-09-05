@@ -1,11 +1,42 @@
 const express = require('express');
-const config = require('./config/config');
-const logger = require('./utils/logger');
-const webhookService = require('./services/webhook.service');
-const authMiddleware = require('./middleware/auth.middleware');
-const checkRunButtonService = require('./services/check-run-button.service');
+
+// Enhanced startup logging
+function logStartup(message, isError = false) {
+  const timestamp = new Date().toISOString();
+  const prefix = isError ? '❌ ERROR' : '✅ INFO';
+  console.log(`${timestamp} [${prefix}]: ${message}`);
+}
+
+logStartup('Starting GitHub AI Reviewer application...');
+
+// Safe module loading with error handling
+let config, logger, webhookService, authMiddleware, checkRunButtonService;
+
+try {
+  logStartup('Loading configuration...');
+  config = require('./config/config');
+  logStartup('Configuration loaded successfully');
+  
+  logStartup('Initializing logger...');
+  logger = require('./utils/logger');
+  logStartup('Logger initialized successfully');
+  
+  logStartup('Loading services...');
+  webhookService = require('./services/webhook.service');
+  authMiddleware = require('./middleware/auth.middleware');
+  checkRunButtonService = require('./services/check-run-button.service');
+  logStartup('All services loaded successfully');
+  
+} catch (error) {
+  logStartup(`Failed to load required modules: ${error.message}`, true);
+  logStartup(`Error stack: ${error.stack}`, true);
+  process.exit(1);
+}
+
 const path = require('path');
 const app = express();
+
+logStartup('Express app created successfully');
 
 // Raw body parser for webhook signature verification
 app.use('/webhook', express.raw({ type: 'application/json' }));
@@ -591,15 +622,41 @@ app.use('*', (req, res) => {
 });
 
 // Start server
+logStartup('Preparing to start HTTP server...');
+
 const PORT = config.server.port;
+logStartup(`Attempting to listen on port ${PORT}...`);
+
 const server = app.listen(PORT, () => {
-  logger.info(`GitHub AI Reviewer server running on port ${PORT}`);
-  logger.info(`Webhook URL: http://localhost:${PORT}/webhook`);
-  logger.info(`Health check: http://localhost:${PORT}/health`);
-  logger.info(`Status endpoint: http://localhost:${PORT}/status`);
-  logger.info(`Dashboard: http://localhost:${PORT}/dashboard`);
-  logger.info(`Check Run Button API: http://localhost:${PORT}/api/check-runs/*`);
-  logger.info(`Interactive button system enabled - PR analysis will create clickable buttons for comment posting`);
+  logStartup(`✅ SERVER STARTED SUCCESSFULLY!`);
+  logStartup(`GitHub AI Reviewer server running on port ${PORT}`);
+  logStartup(`Webhook URL: http://localhost:${PORT}/webhook`);
+  logStartup(`Health check: http://localhost:${PORT}/health`);
+  logStartup(`Status endpoint: http://localhost:${PORT}/status`);
+  logStartup(`Dashboard: http://localhost:${PORT}/dashboard`);
+  logStartup(`Check Run Button API: http://localhost:${PORT}/api/check-runs/*`);
+  logStartup(`Interactive button system enabled - PR analysis will create clickable buttons for comment posting`);
+  
+  // Also log with logger if available
+  if (logger) {
+    logger.info(`GitHub AI Reviewer server running on port ${PORT}`);
+    logger.info(`Webhook URL: http://localhost:${PORT}/webhook`);
+    logger.info(`Health check: http://localhost:${PORT}/health`);
+    logger.info(`Status endpoint: http://localhost:${PORT}/status`);
+    logger.info(`Dashboard: http://localhost:${PORT}/dashboard`);
+    logger.info(`Check Run Button API: http://localhost:${PORT}/api/check-runs/*`);
+    logger.info(`Interactive button system enabled - PR analysis will create clickable buttons for comment posting`);
+  }
+});
+
+// Handle server startup errors
+server.on('error', (error) => {
+  logStartup(`Server startup error: ${error.message}`, true);
+  logStartup(`Error code: ${error.code}`, true);
+  if (error.code === 'EADDRINUSE') {
+    logStartup(`Port ${PORT} is already in use. Please check if another instance is running.`, true);
+  }
+  process.exit(1);
 });
 
 // Graceful shutdown
