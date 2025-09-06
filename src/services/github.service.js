@@ -1067,60 +1067,55 @@ class GitHubService {
   //     throw new Error(`Failed to update file: ${error.message}`);
   //   }
   // }
-  async updateFileContent(
-    owner,
-    repo,
-    path,
-    branch,
-    content,
-    message,
-    sha = null
-  ) {
+  async updateFileContent(owner, repo, path, branch, content, message, sha = null) {
     try {
+      logger.info(`Updating file ${path} on branch ${branch}`, {
+        hasContent: !!content,
+        contentLength: content.length,
+        hasSha: !!sha,
+        branch
+      });
+  
       const updateParams = {
         owner,
         repo,
         path,
         message,
-        content: Buffer.from(content).toString("base64"),
-        branch,
+        content: Buffer.from(content).toString('base64'),
+        branch
       };
-
+  
       // Only include sha if provided (for existing files)
       if (sha) {
         updateParams.sha = sha;
       }
-
-      const { data } = await this.octokit.rest.repos.createOrUpdateFileContents(
-        updateParams
-      );
-
-      logger.info(
-        `File ${sha ? "updated" : "created"}: ${path} on branch ${branch}`
-      );
+  
+      const { data } = await this.octokit.rest.repos.createOrUpdateFileContents(updateParams);
+  
+      logger.info(`File ${sha ? 'updated' : 'created'} successfully: ${path}`, {
+        commitSha: data.commit.sha,
+        commitUrl: data.commit.html_url,
+        branch
+      });
+  
       return data;
     } catch (error) {
-      logger.error(
-        `Error ${sha ? "updating" : "creating"} file content for ${path}:`,
-        error
-      );
-
+      logger.error(`Error ${sha ? 'updating' : 'creating'} file ${path} on branch ${branch}:`, {
+        error: error.message,
+        status: error.status,
+        response: error.response?.data
+      });
+      
       // Provide more specific error messages
       if (error.status === 404) {
-        throw new Error(
-          `Repository or branch not found: ${owner}/${repo}:${branch}`
-        );
+        throw new Error(`Repository or branch not found: ${owner}/${repo}:${branch}`);
       } else if (error.status === 409) {
-        throw new Error(
-          `File ${path} has been modified. Please refresh and try again.`
-        );
+        throw new Error(`File ${path} has been modified. Please refresh and try again.`);
       } else if (error.status === 422) {
-        throw new Error(`Invalid file content or path: ${path}`);
+        throw new Error(`Invalid file content or path: ${path}. Details: ${JSON.stringify(error.response?.data)}`);
       }
-
-      throw new Error(
-        `Failed to ${sha ? "update" : "create"} file: ${error.message}`
-      );
+      
+      throw new Error(`Failed to ${sha ? 'update' : 'create'} file: ${error.message}`);
     }
   }
   // Post review comment (for compatibility)
@@ -2062,109 +2057,307 @@ class GitHubService {
     }
   }
 
-  // ENHANCED: Commit fixes to PR source branch
-  async commitFixesToPRBranch(
-    owner,
-    repo,
-    pullNumber,
-    fixes,
-    commitMessage = "Apply AI-suggested code fixes"
-  ) {
+  // ENHANCED: Commit fixes to PR source branch with detailed logging
+  async commitFixesToPRBranch(owner, repo, pullNumber, fixes, commitMessage = 'Apply AI-suggested code fixes') {
     try {
-      logger.info(`Committing ${fixes.length} fixes to PR #${pullNumber}`);
-
+      logger.info(`Starting commitFixesToPRBranch for PR #${pullNumber}`, {
+        fixesCount: fixes.length,
+        fixes: fixes.map(f => ({ file: f.file, line: f.line, issue: f.issue }))
+      });
+      
       const results = {
         successful: [],
         failed: [],
-        skipped: [],
+        skipped: []
       };
-
-      for (const fix of fixes) {
+      
+      for (let i = 0; i < fixes.length; i++) {
+        const fix = fixes[i];
+        logger.info(`Processing fix ${i + 1}/${fixes.length} for ${fix.file}:${fix.line}`);
+        
         try {
-          // Get current file content from PR context
-          const fileInfo = await this.getFileContentFromPR(
-            owner,
-            repo,
-            pullNumber,
-            fix.file
-          );
-
+          // Step 1: Get current file content from PR context
+          logger.info(`Step 1: Getting file content for ${fix.file} from PR #${pullNumber}`);
+          const fileInfo = await this.getFileContentFromPR(owner, repo, pullNumber, fix.file);
+          
           if (!fileInfo) {
-            logger.warn(
-              `File ${fix.file} not found in repository. Skipping fix commit for non-existent file.`
-            );
+            logger.warn(`Step 1 FAILED: File ${fix.file} not found in repository`);
             results.skipped.push({
               file: fix.file,
-              reason: "File not found in repository",
-              fix: fix,
+              reason: 'File not found in repository',
+              fix: fix
             });
             continue;
           }
-
-          // Apply the fix to the current content
-          const updatedContent = this.applyFixToContent(fileInfo.content, fix);
-
-          if (updatedContent === fileInfo.content) {
-            logger.info(
-              `No changes needed for ${fix.file} - fix may already be applied`
-            );
+          
+          logger.info(`Step 1 SUCCESS: File ${fix.file} found`, {
+            branch: fileInfo.sourceBranch,
+            hasContent: !!fileInfo.content,
+            contentLength: fileInfo.content?.length,
+            hasSha: !!fileInfo.sha
+          });
+          
+          // Step 2: Generate AI fix suggestion first
+          logger.info(`Step 2: Generating AI fix suggestion for ${fix.file}:${fix.line}`);
+          let fixSuggestion = null;
+          
+          try {
+            // Get detailed fix suggestion from AI service
+            fixSuggestion = await aiService.generateCodeFixSuggestion(fix, fileInfo.content, {
+              files: [{ filename: fix.file, patch: null }],
+              pr: { number: pullNumber }
+            });
+            
+            if (fixSuggestion && !fixSuggestion.error) {
+              logger.info(`Step 2 SUCCESS: AI fix generated`, {
+                hasCurrentCode: !!fixSuggestion.current_code,
+                hasSuggestedFix: !!fixSuggestion.suggested_fix,
+                explanation: fixSuggestion.explanation?.substring(0, 100) + '...'
+              });
+            } else {
+              throw new Error(fixSuggestion?.error_message || 'AI fix generation failed');
+            }
+          } catch (aiError) {
+            logger.warn(`Step 2 PARTIAL: AI fix failed, using basic fix: ${aiError.message}`);
+            // Fallback to basic fix
+            fixSuggestion = {
+              current_code: null,
+              suggested_fix: fix.suggestion,
+              explanation: fix.issue
+            };
+          }
+          
+          // Step 3: Apply the fix to the current content
+          logger.info(`Step 3: Applying fix to content for ${fix.file}`);
+          const updatedContent = this.applyAdvancedFixToContent(fileInfo.content, fix, fixSuggestion);
+          
+          if (!updatedContent || updatedContent === fileInfo.content) {
+            logger.warn(`Step 3 FAILED: No changes could be applied to ${fix.file}`);
             results.skipped.push({
               file: fix.file,
-              reason: "No changes needed",
+              reason: 'No changes could be applied - content unchanged',
               fix: fix,
+              details: {
+                originalLength: fileInfo.content.length,
+                updatedLength: updatedContent?.length || 0,
+                hasFixSuggestion: !!fixSuggestion?.suggested_fix
+              }
             });
             continue;
           }
-
-          // Commit the updated content to the PR source branch
+          
+          logger.info(`Step 3 SUCCESS: Content updated for ${fix.file}`, {
+            originalLength: fileInfo.content.length,
+            updatedLength: updatedContent.length,
+            changesMade: updatedContent !== fileInfo.content
+          });
+          
+          // Step 4: Commit the updated content to the PR source branch
+          logger.info(`Step 4: Committing changes to ${fileInfo.sourceBranch} for ${fix.file}`);
+          
+          const detailedCommitMessage = [
+            commitMessage,
+            '',
+            `Fix for ${fix.file}:${fix.line}`,
+            `Issue: ${fix.issue}`,
+            `Suggestion: ${fix.suggestion}`,
+            fixSuggestion?.explanation ? `AI Explanation: ${fixSuggestion.explanation}` : '',
+            '',
+            `Applied via AI Code Reviewer`
+          ].filter(Boolean).join('\n');
+          
           const commitResult = await this.updateFileContent(
             owner,
             repo,
             fix.file,
-            fileInfo.sourceBranch, // Commit to PR source branch
+            fileInfo.sourceBranch,
             updatedContent,
-            `${commitMessage}\n\nFixed: ${fix.issue}\nSuggestion: ${fix.suggestion}`,
-            fileInfo.sha // Include SHA if file exists
+            detailedCommitMessage,
+            fileInfo.sha
           );
-
-          logger.info(
-            `Successfully committed fix for ${fix.file} to branch ${fileInfo.sourceBranch}`
-          );
+          
+          logger.info(`Step 4 SUCCESS: Committed fix for ${fix.file}`, {
+            commitSha: commitResult.commit.sha,
+            commitUrl: commitResult.commit.html_url,
+            branch: fileInfo.sourceBranch
+          });
+          
           results.successful.push({
             file: fix.file,
             branch: fileInfo.sourceBranch,
             commitSha: commitResult.commit.sha,
             commitUrl: commitResult.commit.html_url,
             fix: fix,
+            appliedFix: fixSuggestion
           });
-
+          
           // Small delay to avoid rate limiting
-          await new Promise((resolve) => setTimeout(resolve, 100));
+          await new Promise(resolve => setTimeout(resolve, 200));
+          
         } catch (error) {
-          logger.error(`Error committing fix for ${fix.file}:`, error);
+          logger.error(`Error processing fix ${i + 1} for ${fix.file}:`, error);
           results.failed.push({
             file: fix.file,
             error: error.message,
-            fix: fix,
+            stack: error.stack,
+            fix: fix
           });
         }
       }
-
-      logger.info(`Commit fixes completed for PR #${pullNumber}`, {
+      
+      logger.info(`commitFixesToPRBranch completed for PR #${pullNumber}`, {
         successful: results.successful.length,
         failed: results.failed.length,
         skipped: results.skipped.length,
+        successfulFiles: results.successful.map(r => `${r.file} (${r.commitSha.substring(0, 7)})`),
+        failedFiles: results.failed.map(r => `${r.file}: ${r.error}`),
+        skippedFiles: results.skipped.map(r => `${r.file}: ${r.reason}`)
       });
-
+      
       return results;
+      
     } catch (error) {
-      logger.error(
-        `Error in commitFixesToPRBranch for PR #${pullNumber}:`,
-        error
-      );
+      logger.error(`Critical error in commitFixesToPRBranch for PR #${pullNumber}:`, error);
       throw error;
     }
   }
+
+  // ENHANCED: Advanced fix application with multiple strategies
+applyAdvancedFixToContent(currentContent, fix, fixSuggestion) {
+  try {
+    logger.info(`Attempting to apply fix to ${fix.file}:${fix.line}`, {
+      hasCurrentCode: !!fixSuggestion?.current_code,
+      hasSuggestedFix: !!fixSuggestion?.suggested_fix,
+      fixLine: fix.line,
+      contentLines: currentContent.split('\n').length
+    });
+
+    // Strategy 1: Use AI-generated current_code and suggested_fix for exact replacement
+    if (fixSuggestion?.current_code && fixSuggestion?.suggested_fix) {
+      const currentCode = fixSuggestion.current_code.trim();
+      const suggestedFix = fixSuggestion.suggested_fix.trim();
+      
+      logger.info(`Strategy 1: Trying exact code replacement`, {
+        currentCodeLength: currentCode.length,
+        suggestedFixLength: suggestedFix.length,
+        currentCodePreview: currentCode.substring(0, 100)
+      });
+      
+      // Try exact match first
+      if (currentContent.includes(currentCode)) {
+        const updatedContent = currentContent.replace(currentCode, suggestedFix);
+        logger.info(`Strategy 1 SUCCESS: Exact replacement applied`);
+        return updatedContent;
+      }
+      
+      // Try with normalized whitespace
+      const normalizedContent = currentContent.replace(/\s+/g, ' ');
+      const normalizedCurrentCode = currentCode.replace(/\s+/g, ' ');
+      const normalizedSuggestedFix = suggestedFix.replace(/\s+/g, ' ');
+      
+      if (normalizedContent.includes(normalizedCurrentCode)) {
+        const updatedContent = currentContent.replace(
+          new RegExp(normalizedCurrentCode.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'),
+          suggestedFix
+        );
+        logger.info(`Strategy 1 PARTIAL: Normalized replacement applied`);
+        return updatedContent;
+      }
+    }
+
+    // Strategy 2: Line-based replacement using fix.line
+    if (fix.line && typeof fix.line === 'number' && fixSuggestion?.suggested_fix) {
+      logger.info(`Strategy 2: Trying line-based replacement at line ${fix.line}`);
+      
+      const lines = currentContent.split('\n');
+      const lineIndex = fix.line - 1; // Convert to 0-based index
+      
+      if (lineIndex >= 0 && lineIndex < lines.length) {
+        const originalLine = lines[lineIndex];
+        const suggestedFix = fixSuggestion.suggested_fix.trim();
+        
+        // Preserve indentation from original line
+        const indentMatch = originalLine.match(/^(\s*)/);
+        const indent = indentMatch ? indentMatch[1] : '';
+        
+        lines[lineIndex] = indent + suggestedFix;
+        
+        const updatedContent = lines.join('\n');
+        logger.info(`Strategy 2 SUCCESS: Line replacement applied`, {
+          originalLine: originalLine.trim(),
+          newLine: (indent + suggestedFix).trim()
+        });
+        return updatedContent;
+      }
+    }
+
+    // Strategy 3: Pattern-based replacement using the issue description
+    if (fix.suggestion && fixSuggestion?.suggested_fix) {
+      logger.info(`Strategy 3: Trying pattern-based replacement`);
+      
+      // Look for common patterns in the issue and try to replace them
+      const lines = currentContent.split('\n');
+      let foundLine = -1;
+      
+      // Search for lines that might match the issue context
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i].toLowerCase();
+        
+        // Look for keywords from the issue in the line
+        const issueKeywords = fix.issue.toLowerCase().split(' ').filter(word => 
+          word.length > 3 && !['the', 'and', 'for', 'with', 'this', 'that', 'should', 'could', 'would'].includes(word)
+        );
+        
+        const matchingKeywords = issueKeywords.filter(keyword => line.includes(keyword));
+        
+        if (matchingKeywords.length > 0) {
+          foundLine = i;
+          logger.info(`Strategy 3: Found potential line ${i + 1} with keywords: ${matchingKeywords.join(', ')}`);
+          break;
+        }
+      }
+      
+      if (foundLine >= 0) {
+        const originalLine = lines[foundLine];
+        const indentMatch = originalLine.match(/^(\s*)/);
+        const indent = indentMatch ? indentMatch[1] : '';
+        
+        lines[foundLine] = indent + fixSuggestion.suggested_fix.trim();
+        
+        const updatedContent = lines.join('\n');
+        logger.info(`Strategy 3 SUCCESS: Pattern replacement applied at line ${foundLine + 1}`);
+        return updatedContent;
+      }
+    }
+
+    // Strategy 4: Append fix as comment (fallback)
+    if (fixSuggestion?.suggested_fix || fix.suggestion) {
+      logger.info(`Strategy 4: Fallback - adding fix as comment`);
+      
+      const fixToApply = fixSuggestion?.suggested_fix || fix.suggestion;
+      const fixComment = [
+        '',
+        `// AI Fix Suggestion for line ${fix.line || 'unknown'}:`,
+        `// Issue: ${fix.issue}`,
+        `// Suggested fix:`,
+        fixToApply.split('\n').map(line => `// ${line}`).join('\n'),
+        ''
+      ].join('\n');
+      
+      const updatedContent = currentContent + fixComment;
+      logger.info(`Strategy 4 SUCCESS: Fix added as comment`);
+      return updatedContent;
+    }
+
+    logger.warn(`All strategies failed: Could not apply fix for ${fix.file}:${fix.line}`);
+    return currentContent;
+    
+  } catch (error) {
+    logger.error(`Error applying fix to content for ${fix.file}:`, error);
+    return currentContent;
+  }
+}
+    
 
   // NEW: Apply a fix suggestion to file content
   applyFixToContent(currentContent, fix) {
