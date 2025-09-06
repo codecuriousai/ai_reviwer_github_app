@@ -105,107 +105,7 @@ class AIService {
   }
 
   // NEW: Generate specific code fix suggestions for a finding
-  async generateCodeFixSuggestion(finding, fileContent, prData) {
-    try {
-      logger.info(
-        `Generating code fix suggestion for ${finding.file}:${finding.line}`,
-        {
-          issue: finding.issue,
-          severity: finding.severity,
-        }
-      );
-
-      const prompt = buildFixSuggestionPrompt(finding, fileContent);
-
-      let rawResponse;
-      try {
-        rawResponse = await retryWithBackoff(async () => {
-          if (this.provider === "openai") {
-            return await this.analyzeWithOpenAI(prompt);
-          } else if (this.provider === "gemini") {
-            return await this.analyzeWithGemini(prompt);
-          } else {
-            throw new Error(`Unsupported AI provider: ${this.provider}`);
-          }
-        });
-      } catch (aiError) {
-        logger.error("AI provider error for fix suggestion:", aiError);
-        return this.createErrorFixSuggestion(
-          finding,
-          `AI Provider Error: ${aiError.message}`
-        );
-      }
-
-      // Parse the fix suggestion response
-      let fixSuggestion;
-      try {
-        fixSuggestion = this.parseFixSuggestionResponse(rawResponse);
-      } catch (parseError) {
-        logger.error("Fix suggestion parsing error:", parseError);
-        return this.createErrorFixSuggestion(
-          finding,
-          `Parsing Error: ${parseError.message}`
-        );
-      }
-
-      logger.info(
-        `Code fix suggestion generated successfully for ${finding.file}:${finding.line}`
-      );
-      return fixSuggestion;
-    } catch (error) {
-      logger.error("Critical error generating fix suggestion:", error);
-      return this.createErrorFixSuggestion(
-        finding,
-        `Critical Error: ${error.message}`
-      );
-    }
-  }
-
-  // NEW: Assess merge readiness based on all available data
-  // async assessMergeReadiness(prData, aiFindings, reviewComments, currentStatus) {
-  //   try {
-  //     logger.info(`Assessing merge readiness for PR #${prData.pr?.number}`, {
-  //       aiFindings: aiFindings?.length || 0,
-  //       reviewComments: reviewComments?.length || 0
-  //     });
-
-  //     const prompt = buildMergeReadinessPrompt(prData, aiFindings, reviewComments, currentStatus);
-
-  //     let rawResponse;
-  //     try {
-  //       rawResponse = await retryWithBackoff(async () => {
-  //         if (this.provider === 'openai') {
-  //           return await this.analyzeWithOpenAI(prompt);
-  //         } else if (this.provider === 'gemini') {
-  //           return await this.analyzeWithGemini(prompt);
-  //         } else {
-  //           throw new Error(`Unsupported AI provider: ${this.provider}`);
-  //         }
-  //       });
-  //     } catch (aiError) {
-  //       logger.error('AI provider error for merge readiness:', aiError);
-  //       return this.createErrorMergeAssessment(`AI Provider Error: ${aiError.message}`);
-  //     }
-
-  //     // Parse the merge readiness response
-  //     let mergeAssessment;
-  //     try {
-  //       mergeAssessment = this.parseMergeReadinessResponse(rawResponse);
-  //     } catch (parseError) {
-  //       logger.error('Merge readiness parsing error:', parseError);
-  //       return this.createErrorMergeAssessment(`Parsing Error: ${parseError.message}`);
-  //     }
-
-  //     logger.info(`Merge readiness assessment completed: ${mergeAssessment.status}`);
-  //     return mergeAssessment;
-
-  //   } catch (error) {
-  //     logger.error('Critical error assessing merge readiness:', error);
-  //     return this.createErrorMergeAssessment(`Critical Error: ${error.message}`);
-  //   }
-  // }
-
-  async assessMergeReadiness(
+   async assessMergeReadiness(
     prData,
     aiFindings,
     reviewComments,
@@ -1529,9 +1429,7 @@ class AIService {
       const problematicLine = lines[lineIndex] || '';
       
       // Create a more detailed prompt for the AI
-      const detailedPrompt = {
-        role: "system",
-        content: `You are a security-focused code reviewer. Your task is to provide EXACT code replacements for security vulnerabilities and code issues.
+      const detailedPrompt = `You are a security-focused code reviewer. Your task is to provide EXACT code replacements for security vulnerabilities and code issues.
   
   CRITICAL REQUIREMENTS:
   1. Provide EXACT code that can directly replace the problematic code
@@ -1564,7 +1462,7 @@ class AIService {
   SQL Injection:
   {
     "current_code": "const query = \`SELECT * FROM users WHERE username = '\${username}' AND password = '\${password}'\`;",
-    "suggested_fix": "const query = 'SELECT * FROM users WHERE username = ? AND password = ?';\n    executeQuery(query, [username, password]);",
+    "suggested_fix": "const query = 'SELECT * FROM users WHERE username = ? AND password = ?';\\nexecuteQuery(query, [username, password]);",
     "explanation": "Uses parameterized queries to prevent SQL injection",
     "confidence": "High"
   }
@@ -1577,10 +1475,10 @@ class AIService {
     "confidence": "High"
   }
   
-  Provide ONLY the JSON response, no additional text.`
-      };
+  Provide ONLY the JSON response, no additional text.`;
   
-      const aiResponse = await this.callAIService([detailedPrompt]);
+      // Use your existing callAI method instead of callAIService
+      const aiResponse = await this.callAI(detailedPrompt, "json_object");
       
       if (!aiResponse) {
         throw new Error('AI service returned empty response');
@@ -1595,10 +1493,10 @@ class AIService {
       } catch (parseError) {
         logger.error('Failed to parse AI response as JSON:', parseError);
         
-        // Fallback: try to extract code from markdown blocks
-        const currentCodeMatch = aiResponse.match(/current_code['"]\s*:\s*['"]([^'"]*)['"]/s);
-        const suggestedFixMatch = aiResponse.match(/suggested_fix['"]\s*:\s*['"]([^'"]*)['"]/s);
-        const explanationMatch = aiResponse.match(/explanation['"]\s*:\s*['"]([^'"]*)['"]/s);
+        // Fallback: try to extract code from the response
+        const currentCodeMatch = aiResponse.match(/["']current_code["']\s*:\s*["']([^"']*?)["']/s);
+        const suggestedFixMatch = aiResponse.match(/["']suggested_fix["']\s*:\s*["']([^"']*?)["']/s);
+        const explanationMatch = aiResponse.match(/["']explanation["']\s*:\s*["']([^"']*?)["']/s);
         
         if (currentCodeMatch && suggestedFixMatch) {
           fixData = {
@@ -1665,9 +1563,7 @@ class AIService {
       const contextCode = lines.slice(startLine, endLine + 1).join('\n');
       const problematicLine = lines[lineIndex] || '';
       
-      const prompt = {
-        role: "system",
-        content: `You are a security-focused code reviewer. Provide EXACT code replacements for this issue.
+      const prompt = `You are a security-focused code reviewer. Provide EXACT code replacements for this issue.
   
   File: ${finding.file}
   Issue: ${finding.issue}
@@ -1690,10 +1586,10 @@ class AIService {
   
   For SQL injection, provide parameterized queries.
   For XSS, use textContent or proper escaping.
-  Maintain original code structure and style.`
-      };
+  Maintain original code structure and style.`;
   
-      const response = await this.callAIService([prompt]);
+      // Use your existing callAI method
+      const response = await this.callAI(prompt, "json_object");
       
       if (!response) {
         throw new Error('AI service returned empty response');
@@ -1706,12 +1602,10 @@ class AIService {
         fixData = JSON.parse(cleanResponse);
       } catch (parseError) {
         // Fallback parsing
-        const currentMatch = response.match(/"current_code":\s*"([^"]*)"/) || 
-                            response.match(/'current_code':\s*'([^']*)'/) ||
-                            response.match(/current_code['"]\s*:\s*['"]([^'"]*)['"]/);
-        const fixMatch = response.match(/"suggested_fix":\s*"([^"]*)"/) || 
-                        response.match(/'suggested_fix':\s*'([^']*)'/) ||
-                        response.match(/suggested_fix['"]\s*:\s*['"]([^'"]*)['"]/);
+        const currentMatch = response.match(/["']current_code["']\s*:\s*["']([^"']*?)["']/s) || 
+                            response.match(/current_code["']\s*:\s*["']([^"']*?)["']/s);
+        const fixMatch = response.match(/["']suggested_fix["']\s*:\s*["']([^"']*?)["']/s) || 
+                        response.match(/suggested_fix["']\s*:\s*["']([^"']*?)["']/s);
         
         if (currentMatch && fixMatch) {
           fixData = {
