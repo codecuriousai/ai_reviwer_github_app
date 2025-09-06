@@ -1511,6 +1511,235 @@ class AIService {
     }
     return analysis;
   }
+  
+  async generateDetailedCodeFix(enhancedContext) {
+    try {
+      const { file, issue, pr } = enhancedContext;
+      
+      logger.info(`Generating detailed code fix for ${file.name}:${file.line}`);
+      
+      // Extract the problematic code around the line
+      const lines = file.content.split('\n');
+      const lineIndex = file.line - 1;
+      const contextLines = 3; // Get 3 lines before and after
+      
+      const startLine = Math.max(0, lineIndex - contextLines);
+      const endLine = Math.min(lines.length - 1, lineIndex + contextLines);
+      const contextCode = lines.slice(startLine, endLine + 1).join('\n');
+      const problematicLine = lines[lineIndex] || '';
+      
+      // Create a more detailed prompt for the AI
+      const detailedPrompt = {
+        role: "system",
+        content: `You are a security-focused code reviewer. Your task is to provide EXACT code replacements for security vulnerabilities and code issues.
+  
+  CRITICAL REQUIREMENTS:
+  1. Provide EXACT code that can directly replace the problematic code
+  2. Maintain the same function structure and variable names
+  3. Preserve indentation and code style
+  4. Focus on the actual code fix, not explanations
+  
+  Current file: ${file.name}
+  Issue: ${issue.description}
+  Category: ${issue.category}
+  Severity: ${issue.severity}
+  
+  Problematic line ${file.line}: "${problematicLine.trim()}"
+  
+  Context code around the issue:
+  \`\`\`javascript
+  ${contextCode}
+  \`\`\`
+  
+  Provide your response in this EXACT JSON format:
+  {
+    "current_code": "exact problematic code that needs to be replaced",
+    "suggested_fix": "exact replacement code that fixes the issue",
+    "explanation": "brief explanation of why this fixes the issue",
+    "confidence": "High|Medium|Low"
+  }
+  
+  EXAMPLES for common issues:
+  
+  SQL Injection:
+  {
+    "current_code": "const query = \`SELECT * FROM users WHERE username = '\${username}' AND password = '\${password}'\`;",
+    "suggested_fix": "const query = 'SELECT * FROM users WHERE username = ? AND password = ?';\n    executeQuery(query, [username, password]);",
+    "explanation": "Uses parameterized queries to prevent SQL injection",
+    "confidence": "High"
+  }
+  
+  XSS Prevention:
+  {
+    "current_code": "element.innerHTML = userInput;",
+    "suggested_fix": "element.textContent = userInput;",
+    "explanation": "Uses textContent instead of innerHTML to prevent XSS",
+    "confidence": "High"
+  }
+  
+  Provide ONLY the JSON response, no additional text.`
+      };
+  
+      const aiResponse = await this.callAIService([detailedPrompt]);
+      
+      if (!aiResponse) {
+        throw new Error('AI service returned empty response');
+      }
+      
+      // Parse the AI response
+      let fixData;
+      try {
+        // Clean the response to extract JSON
+        const cleanResponse = aiResponse.replace(/```json\n?/g, '').replace(/```/g, '').trim();
+        fixData = JSON.parse(cleanResponse);
+      } catch (parseError) {
+        logger.error('Failed to parse AI response as JSON:', parseError);
+        
+        // Fallback: try to extract code from markdown blocks
+        const currentCodeMatch = aiResponse.match(/current_code['"]\s*:\s*['"]([^'"]*)['"]/s);
+        const suggestedFixMatch = aiResponse.match(/suggested_fix['"]\s*:\s*['"]([^'"]*)['"]/s);
+        const explanationMatch = aiResponse.match(/explanation['"]\s*:\s*['"]([^'"]*)['"]/s);
+        
+        if (currentCodeMatch && suggestedFixMatch) {
+          fixData = {
+            current_code: currentCodeMatch[1].replace(/\\n/g, '\n').replace(/\\"/g, '"'),
+            suggested_fix: suggestedFixMatch[1].replace(/\\n/g, '\n').replace(/\\"/g, '"'),
+            explanation: explanationMatch ? explanationMatch[1] : 'AI-generated fix',
+            confidence: 'Medium'
+          };
+        } else {
+          throw new Error(`Could not parse AI response: ${parseError.message}`);
+        }
+      }
+      
+      // Validate the response
+      if (!fixData.current_code || !fixData.suggested_fix) {
+        throw new Error('AI response missing required fields: current_code or suggested_fix');
+      }
+      
+      // Clean up the code strings
+      fixData.current_code = fixData.current_code.replace(/\\n/g, '\n').replace(/\\t/g, '\t');
+      fixData.suggested_fix = fixData.suggested_fix.replace(/\\n/g, '\n').replace(/\\t/g, '\t');
+      
+      logger.info(`Detailed code fix generated successfully`, {
+        hasCurrentCode: !!fixData.current_code,
+        hasSuggestedFix: !!fixData.suggested_fix,
+        confidence: fixData.confidence,
+        currentCodeLength: fixData.current_code.length,
+        suggestedFixLength: fixData.suggested_fix.length
+      });
+      
+      return {
+        current_code: fixData.current_code,
+        suggested_fix: fixData.suggested_fix,
+        explanation: fixData.explanation || 'AI-generated security fix',
+        confidence: fixData.confidence || 'Medium',
+        estimated_effort: 'Low',
+        category: issue.category,
+        severity: issue.severity
+      };
+      
+    } catch (error) {
+      logger.error('Error generating detailed code fix:', error);
+      return {
+        error: true,
+        error_message: error.message,
+        current_code: null,
+        suggested_fix: null
+      };
+    }
+  }
+  
+  // FALLBACK: If you don't have the above method, enhance the existing generateCodeFixSuggestion method
+  async generateCodeFixSuggestion(finding, fileContent, prData) {
+    try {
+      logger.info(`Generating code fix suggestion for ${finding.file}:${finding.line}`);
+      
+      // Extract context around the problematic line
+      const lines = fileContent.split('\n');
+      const lineIndex = finding.line - 1;
+      const contextLines = 5;
+      
+      const startLine = Math.max(0, lineIndex - contextLines);
+      const endLine = Math.min(lines.length - 1, lineIndex + contextLines);
+      const contextCode = lines.slice(startLine, endLine + 1).join('\n');
+      const problematicLine = lines[lineIndex] || '';
+      
+      const prompt = {
+        role: "system",
+        content: `You are a security-focused code reviewer. Provide EXACT code replacements for this issue.
+  
+  File: ${finding.file}
+  Issue: ${finding.issue}
+  Suggestion: ${finding.suggestion}
+  Severity: ${finding.severity}
+  
+  Problematic line ${finding.line}: "${problematicLine.trim()}"
+  
+  Code context:
+  \`\`\`javascript
+  ${contextCode}
+  \`\`\`
+  
+  Respond ONLY with valid JSON:
+  {
+    "current_code": "exact code to replace",
+    "suggested_fix": "exact replacement code", 
+    "explanation": "brief explanation"
+  }
+  
+  For SQL injection, provide parameterized queries.
+  For XSS, use textContent or proper escaping.
+  Maintain original code structure and style.`
+      };
+  
+      const response = await this.callAIService([prompt]);
+      
+      if (!response) {
+        throw new Error('AI service returned empty response');
+      }
+      
+      // Parse JSON response
+      let fixData;
+      try {
+        const cleanResponse = response.replace(/```json\n?/g, '').replace(/```/g, '').trim();
+        fixData = JSON.parse(cleanResponse);
+      } catch (parseError) {
+        // Fallback parsing
+        const currentMatch = response.match(/"current_code":\s*"([^"]*)"/) || 
+                            response.match(/'current_code':\s*'([^']*)'/) ||
+                            response.match(/current_code['"]\s*:\s*['"]([^'"]*)['"]/);
+        const fixMatch = response.match(/"suggested_fix":\s*"([^"]*)"/) || 
+                        response.match(/'suggested_fix':\s*'([^']*)'/) ||
+                        response.match(/suggested_fix['"]\s*:\s*['"]([^'"]*)['"]/);
+        
+        if (currentMatch && fixMatch) {
+          fixData = {
+            current_code: currentMatch[1].replace(/\\n/g, '\n'),
+            suggested_fix: fixMatch[1].replace(/\\n/g, '\n'),
+            explanation: 'AI-generated fix'
+          };
+        } else {
+          throw parseError;
+        }
+      }
+      
+      return {
+        current_code: fixData.current_code?.replace(/\\n/g, '\n') || null,
+        suggested_fix: fixData.suggested_fix?.replace(/\\n/g, '\n') || finding.suggestion,
+        explanation: fixData.explanation || 'AI-generated code fix',
+        confidence: 'High',
+        estimated_effort: 'Low'
+      };
+      
+    } catch (error) {
+      logger.error('Error generating code fix suggestion:', error);
+      return {
+        error: true,
+        error_message: error.message
+      };
+    }
+  }
 }
 
 module.exports = new AIService();

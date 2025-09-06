@@ -1067,55 +1067,80 @@ class GitHubService {
   //     throw new Error(`Failed to update file: ${error.message}`);
   //   }
   // }
-  async updateFileContent(owner, repo, path, branch, content, message, sha = null) {
+  async updateFileContent(
+    owner,
+    repo,
+    path,
+    branch,
+    content,
+    message,
+    sha = null
+  ) {
     try {
       logger.info(`Updating file ${path} on branch ${branch}`, {
         hasContent: !!content,
         contentLength: content.length,
         hasSha: !!sha,
-        branch
+        branch,
       });
-  
+
       const updateParams = {
         owner,
         repo,
         path,
         message,
-        content: Buffer.from(content).toString('base64'),
-        branch
+        content: Buffer.from(content).toString("base64"),
+        branch,
       };
-  
+
       // Only include sha if provided (for existing files)
       if (sha) {
         updateParams.sha = sha;
       }
-  
-      const { data } = await this.octokit.rest.repos.createOrUpdateFileContents(updateParams);
-  
-      logger.info(`File ${sha ? 'updated' : 'created'} successfully: ${path}`, {
+
+      const { data } = await this.octokit.rest.repos.createOrUpdateFileContents(
+        updateParams
+      );
+
+      logger.info(`File ${sha ? "updated" : "created"} successfully: ${path}`, {
         commitSha: data.commit.sha,
         commitUrl: data.commit.html_url,
-        branch
+        branch,
       });
-  
+
       return data;
     } catch (error) {
-      logger.error(`Error ${sha ? 'updating' : 'creating'} file ${path} on branch ${branch}:`, {
-        error: error.message,
-        status: error.status,
-        response: error.response?.data
-      });
-      
+      logger.error(
+        `Error ${
+          sha ? "updating" : "creating"
+        } file ${path} on branch ${branch}:`,
+        {
+          error: error.message,
+          status: error.status,
+          response: error.response?.data,
+        }
+      );
+
       // Provide more specific error messages
       if (error.status === 404) {
-        throw new Error(`Repository or branch not found: ${owner}/${repo}:${branch}`);
+        throw new Error(
+          `Repository or branch not found: ${owner}/${repo}:${branch}`
+        );
       } else if (error.status === 409) {
-        throw new Error(`File ${path} has been modified. Please refresh and try again.`);
+        throw new Error(
+          `File ${path} has been modified. Please refresh and try again.`
+        );
       } else if (error.status === 422) {
-        throw new Error(`Invalid file content or path: ${path}. Details: ${JSON.stringify(error.response?.data)}`);
+        throw new Error(
+          `Invalid file content or path: ${path}. Details: ${JSON.stringify(
+            error.response?.data
+          )}`
+        );
       }
-      
-      throw new Error(`Failed to ${sha ? 'update' : 'create'} file: ${error.message}`);
+
+      throw new Error(
+        `Failed to ${sha ? "update" : "create"} file: ${error.message}`
+      );
     }
   }
   // Post review comment (for compatibility)
@@ -2058,114 +2083,289 @@ class GitHubService {
   }
 
   // ENHANCED: Commit fixes to PR source branch with detailed logging
-  async commitFixesToPRBranch(owner, repo, pullNumber, fixes, commitMessage = 'Apply AI-suggested code fixes') {
+  // async commitFixesToPRBranch(owner, repo, pullNumber, fixes, commitMessage = 'Apply AI-suggested code fixes') {
+  //   try {
+  //     logger.info(`Starting commitFixesToPRBranch for PR #${pullNumber}`, {
+  //       fixesCount: fixes.length,
+  //       fixes: fixes.map(f => ({ file: f.file, line: f.line, issue: f.issue }))
+  //     });
+
+  //     const results = {
+  //       successful: [],
+  //       failed: [],
+  //       skipped: []
+  //     };
+
+  //     for (let i = 0; i < fixes.length; i++) {
+  //       const fix = fixes[i];
+  //       logger.info(`Processing fix ${i + 1}/${fixes.length} for ${fix.file}:${fix.line}`);
+
+  //       try {
+  //         // Step 1: Get current file content from PR context
+  //         logger.info(`Step 1: Getting file content for ${fix.file} from PR #${pullNumber}`);
+  //         const fileInfo = await this.getFileContentFromPR(owner, repo, pullNumber, fix.file);
+
+  //         if (!fileInfo) {
+  //           logger.warn(`Step 1 FAILED: File ${fix.file} not found in repository`);
+  //           results.skipped.push({
+  //             file: fix.file,
+  //             reason: 'File not found in repository',
+  //             fix: fix
+  //           });
+  //           continue;
+  //         }
+
+  //         logger.info(`Step 1 SUCCESS: File ${fix.file} found`, {
+  //           branch: fileInfo.sourceBranch,
+  //           hasContent: !!fileInfo.content,
+  //           contentLength: fileInfo.content?.length,
+  //           hasSha: !!fileInfo.sha
+  //         });
+
+  //         // Step 2: Generate AI fix suggestion first
+  //         logger.info(`Step 2: Generating AI fix suggestion for ${fix.file}:${fix.line}`);
+  //         let fixSuggestion = null;
+
+  //         try {
+  //           // Get detailed fix suggestion from AI service
+  //           fixSuggestion = await aiService.generateCodeFixSuggestion(fix, fileInfo.content, {
+  //             files: [{ filename: fix.file, patch: null }],
+  //             pr: { number: pullNumber }
+  //           });
+
+  //           if (fixSuggestion && !fixSuggestion.error) {
+  //             logger.info(`Step 2 SUCCESS: AI fix generated`, {
+  //               hasCurrentCode: !!fixSuggestion.current_code,
+  //               hasSuggestedFix: !!fixSuggestion.suggested_fix,
+  //               explanation: fixSuggestion.explanation?.substring(0, 100) + '...'
+  //             });
+  //           } else {
+  //             throw new Error(fixSuggestion?.error_message || 'AI fix generation failed');
+  //           }
+  //         } catch (aiError) {
+  //           logger.warn(`Step 2 PARTIAL: AI fix failed, using basic fix: ${aiError.message}`);
+  //           // Fallback to basic fix
+  //           fixSuggestion = {
+  //             current_code: null,
+  //             suggested_fix: fix.suggestion,
+  //             explanation: fix.issue
+  //           };
+  //         }
+
+  //         // Step 3: Apply the fix to the current content
+  //         logger.info(`Step 3: Applying fix to content for ${fix.file}`);
+  //         const updatedContent = this.applyAdvancedFixToContent(fileInfo.content, fix, fixSuggestion);
+
+  //         if (!updatedContent || updatedContent === fileInfo.content) {
+  //           logger.warn(`Step 3 FAILED: No changes could be applied to ${fix.file}`);
+  //           results.skipped.push({
+  //             file: fix.file,
+  //             reason: 'No changes could be applied - content unchanged',
+  //             fix: fix,
+  //             details: {
+  //               originalLength: fileInfo.content.length,
+  //               updatedLength: updatedContent?.length || 0,
+  //               hasFixSuggestion: !!fixSuggestion?.suggested_fix
+  //             }
+  //           });
+  //           continue;
+  //         }
+
+  //         logger.info(`Step 3 SUCCESS: Content updated for ${fix.file}`, {
+  //           originalLength: fileInfo.content.length,
+  //           updatedLength: updatedContent.length,
+  //           changesMade: updatedContent !== fileInfo.content
+  //         });
+
+  //         // Step 4: Commit the updated content to the PR source branch
+  //         logger.info(`Step 4: Committing changes to ${fileInfo.sourceBranch} for ${fix.file}`);
+
+  //         const detailedCommitMessage = [
+  //           commitMessage,
+  //           '',
+  //           `Fix for ${fix.file}:${fix.line}`,
+  //           `Issue: ${fix.issue}`,
+  //           `Suggestion: ${fix.suggestion}`,
+  //           fixSuggestion?.explanation ? `AI Explanation: ${fixSuggestion.explanation}` : '',
+  //           '',
+  //           `Applied via AI Code Reviewer`
+  //         ].filter(Boolean).join('\n');
+
+  //         const commitResult = await this.updateFileContent(
+  //           owner,
+  //           repo,
+  //           fix.file,
+  //           fileInfo.sourceBranch,
+  //           updatedContent,
+  //           detailedCommitMessage,
+  //           fileInfo.sha
+  //         );
+
+  //         logger.info(`Step 4 SUCCESS: Committed fix for ${fix.file}`, {
+  //           commitSha: commitResult.commit.sha,
+  //           commitUrl: commitResult.commit.html_url,
+  //           branch: fileInfo.sourceBranch
+  //         });
+
+  //         results.successful.push({
+  //           file: fix.file,
+  //           branch: fileInfo.sourceBranch,
+  //           commitSha: commitResult.commit.sha,
+  //           commitUrl: commitResult.commit.html_url,
+  //           fix: fix,
+  //           appliedFix: fixSuggestion
+  //         });
+
+  //         // Small delay to avoid rate limiting
+  //         await new Promise(resolve => setTimeout(resolve, 200));
+
+  //       } catch (error) {
+  //         logger.error(`Error processing fix ${i + 1} for ${fix.file}:`, error);
+  //         results.failed.push({
+  //           file: fix.file,
+  //           error: error.message,
+  //           stack: error.stack,
+  //           fix: fix
+  //         });
+  //       }
+  //     }
+
+  //     logger.info(`commitFixesToPRBranch completed for PR #${pullNumber}`, {
+  //       successful: results.successful.length,
+  //       failed: results.failed.length,
+  //       skipped: results.skipped.length,
+  //       successfulFiles: results.successful.map(r => `${r.file} (${r.commitSha.substring(0, 7)})`),
+  //       failedFiles: results.failed.map(r => `${r.file}: ${r.error}`),
+  //       skippedFiles: results.skipped.map(r => `${r.file}: ${r.reason}`)
+  //     });
+
+  //     return results;
+
+  //   } catch (error) {
+  //     logger.error(`Critical error in commitFixesToPRBranch for PR #${pullNumber}:`, error);
+  //     throw error;
+  //   }
+  // }
+  async commitFixesToPRBranch(
+    owner,
+    repo,
+    pullNumber,
+    fixes,
+    commitMessage = "Apply AI-suggested code fixes"
+  ) {
     try {
       logger.info(`Starting commitFixesToPRBranch for PR #${pullNumber}`, {
         fixesCount: fixes.length,
-        fixes: fixes.map(f => ({ file: f.file, line: f.line, issue: f.issue }))
       });
-      
+
       const results = {
         successful: [],
         failed: [],
-        skipped: []
+        skipped: [],
       };
-      
+
       for (let i = 0; i < fixes.length; i++) {
         const fix = fixes[i];
-        logger.info(`Processing fix ${i + 1}/${fixes.length} for ${fix.file}:${fix.line}`);
-        
+        logger.info(
+          `Processing fix ${i + 1}/${fixes.length} for ${fix.file}:${fix.line}`
+        );
+
         try {
           // Step 1: Get current file content from PR context
-          logger.info(`Step 1: Getting file content for ${fix.file} from PR #${pullNumber}`);
-          const fileInfo = await this.getFileContentFromPR(owner, repo, pullNumber, fix.file);
-          
+          const fileInfo = await this.getFileContentFromPR(
+            owner,
+            repo,
+            pullNumber,
+            fix.file
+          );
+
           if (!fileInfo) {
-            logger.warn(`Step 1 FAILED: File ${fix.file} not found in repository`);
+            logger.warn(`File ${fix.file} not found in repository`);
             results.skipped.push({
               file: fix.file,
-              reason: 'File not found in repository',
-              fix: fix
-            });
-            continue;
-          }
-          
-          logger.info(`Step 1 SUCCESS: File ${fix.file} found`, {
-            branch: fileInfo.sourceBranch,
-            hasContent: !!fileInfo.content,
-            contentLength: fileInfo.content?.length,
-            hasSha: !!fileInfo.sha
-          });
-          
-          // Step 2: Generate AI fix suggestion first
-          logger.info(`Step 2: Generating AI fix suggestion for ${fix.file}:${fix.line}`);
-          let fixSuggestion = null;
-          
-          try {
-            // Get detailed fix suggestion from AI service
-            fixSuggestion = await aiService.generateCodeFixSuggestion(fix, fileInfo.content, {
-              files: [{ filename: fix.file, patch: null }],
-              pr: { number: pullNumber }
-            });
-            
-            if (fixSuggestion && !fixSuggestion.error) {
-              logger.info(`Step 2 SUCCESS: AI fix generated`, {
-                hasCurrentCode: !!fixSuggestion.current_code,
-                hasSuggestedFix: !!fixSuggestion.suggested_fix,
-                explanation: fixSuggestion.explanation?.substring(0, 100) + '...'
-              });
-            } else {
-              throw new Error(fixSuggestion?.error_message || 'AI fix generation failed');
-            }
-          } catch (aiError) {
-            logger.warn(`Step 2 PARTIAL: AI fix failed, using basic fix: ${aiError.message}`);
-            // Fallback to basic fix
-            fixSuggestion = {
-              current_code: null,
-              suggested_fix: fix.suggestion,
-              explanation: fix.issue
-            };
-          }
-          
-          // Step 3: Apply the fix to the current content
-          logger.info(`Step 3: Applying fix to content for ${fix.file}`);
-          const updatedContent = this.applyAdvancedFixToContent(fileInfo.content, fix, fixSuggestion);
-          
-          if (!updatedContent || updatedContent === fileInfo.content) {
-            logger.warn(`Step 3 FAILED: No changes could be applied to ${fix.file}`);
-            results.skipped.push({
-              file: fix.file,
-              reason: 'No changes could be applied - content unchanged',
+              reason: "File not found in repository",
               fix: fix,
-              details: {
-                originalLength: fileInfo.content.length,
-                updatedLength: updatedContent?.length || 0,
-                hasFixSuggestion: !!fixSuggestion?.suggested_fix
-              }
             });
             continue;
           }
-          
-          logger.info(`Step 3 SUCCESS: Content updated for ${fix.file}`, {
+
+          // Step 2: Generate DETAILED AI fix suggestion
+          logger.info(
+            `Generating AI fix suggestion for ${fix.file}:${fix.line}`
+          );
+
+          // Create enhanced context for AI
+          const enhancedContext = {
+            file: {
+              name: fix.file,
+              content: fileInfo.content,
+              line: fix.line,
+            },
+            issue: {
+              description: fix.issue,
+              severity: fix.severity,
+              category: fix.category,
+              suggestion: fix.suggestion,
+            },
+            pr: {
+              number: pullNumber,
+              branch: fileInfo.sourceBranch,
+            },
+          };
+
+          const fixSuggestion = await aiService.generateDetailedCodeFix(
+            enhancedContext
+          );
+
+          if (!fixSuggestion || fixSuggestion.error) {
+            throw new Error(
+              fixSuggestion?.error_message || "AI fix generation failed"
+            );
+          }
+
+          logger.info(`AI fix generated successfully`, {
+            hasCurrentCode: !!fixSuggestion.current_code,
+            hasSuggestedFix: !!fixSuggestion.suggested_fix,
+            explanation: fixSuggestion.explanation?.substring(0, 100),
+          });
+
+          // Step 3: Apply the fix to the current content
+          const updatedContent = this.applyAdvancedFixToContent(
+            fileInfo.content,
+            fix,
+            fixSuggestion
+          );
+
+          if (!updatedContent || updatedContent === fileInfo.content) {
+            logger.warn(`No changes could be applied to ${fix.file}`);
+            results.skipped.push({
+              file: fix.file,
+              reason:
+                "No changes could be applied - fix did not modify content",
+              fix: fix,
+              aiResponse: fixSuggestion,
+            });
+            continue;
+          }
+
+          logger.info(`Content successfully updated for ${fix.file}`, {
             originalLength: fileInfo.content.length,
             updatedLength: updatedContent.length,
-            changesMade: updatedContent !== fileInfo.content
+            changesMade: true,
           });
-          
+
           // Step 4: Commit the updated content to the PR source branch
-          logger.info(`Step 4: Committing changes to ${fileInfo.sourceBranch} for ${fix.file}`);
-          
           const detailedCommitMessage = [
             commitMessage,
-            '',
-            `Fix for ${fix.file}:${fix.line}`,
-            `Issue: ${fix.issue}`,
-            `Suggestion: ${fix.suggestion}`,
-            fixSuggestion?.explanation ? `AI Explanation: ${fixSuggestion.explanation}` : '',
-            '',
-            `Applied via AI Code Reviewer`
-          ].filter(Boolean).join('\n');
-          
+            "",
+            `Fix: ${fix.issue}`,
+            `File: ${fix.file}:${fix.line}`,
+            "",
+            fixSuggestion.explanation || fix.suggestion,
+            "",
+            `Applied via AI Code Reviewer`,
+          ].join("\n");
+
           const commitResult = await this.updateFileContent(
             owner,
             repo,
@@ -2175,189 +2375,471 @@ class GitHubService {
             detailedCommitMessage,
             fileInfo.sha
           );
-          
-          logger.info(`Step 4 SUCCESS: Committed fix for ${fix.file}`, {
+
+          logger.info(`Successfully committed fix for ${fix.file}`, {
             commitSha: commitResult.commit.sha,
             commitUrl: commitResult.commit.html_url,
-            branch: fileInfo.sourceBranch
           });
-          
+
           results.successful.push({
             file: fix.file,
             branch: fileInfo.sourceBranch,
             commitSha: commitResult.commit.sha,
             commitUrl: commitResult.commit.html_url,
             fix: fix,
-            appliedFix: fixSuggestion
+            appliedFix: fixSuggestion,
           });
-          
+
           // Small delay to avoid rate limiting
-          await new Promise(resolve => setTimeout(resolve, 200));
-          
+          await new Promise((resolve) => setTimeout(resolve, 200));
         } catch (error) {
-          logger.error(`Error processing fix ${i + 1} for ${fix.file}:`, error);
+          logger.error(`Error processing fix for ${fix.file}:`, error);
           results.failed.push({
             file: fix.file,
             error: error.message,
-            stack: error.stack,
-            fix: fix
+            fix: fix,
           });
         }
       }
-      
-      logger.info(`commitFixesToPRBranch completed for PR #${pullNumber}`, {
+
+      logger.info(`commitFixesToPRBranch completed`, {
         successful: results.successful.length,
         failed: results.failed.length,
         skipped: results.skipped.length,
-        successfulFiles: results.successful.map(r => `${r.file} (${r.commitSha.substring(0, 7)})`),
-        failedFiles: results.failed.map(r => `${r.file}: ${r.error}`),
-        skippedFiles: results.skipped.map(r => `${r.file}: ${r.reason}`)
       });
-      
+
       return results;
-      
     } catch (error) {
-      logger.error(`Critical error in commitFixesToPRBranch for PR #${pullNumber}:`, error);
+      logger.error(`Critical error in commitFixesToPRBranch:`, error);
       throw error;
     }
   }
 
   // ENHANCED: Advanced fix application with multiple strategies
-applyAdvancedFixToContent(currentContent, fix, fixSuggestion) {
-  try {
-    logger.info(`Attempting to apply fix to ${fix.file}:${fix.line}`, {
-      hasCurrentCode: !!fixSuggestion?.current_code,
-      hasSuggestedFix: !!fixSuggestion?.suggested_fix,
-      fixLine: fix.line,
-      contentLines: currentContent.split('\n').length
-    });
+  // applyAdvancedFixToContent(currentContent, fix, fixSuggestion) {
+  //   try {
+  //     logger.info(`Attempting to apply fix to ${fix.file}:${fix.line}`, {
+  //       hasCurrentCode: !!fixSuggestion?.current_code,
+  //       hasSuggestedFix: !!fixSuggestion?.suggested_fix,
+  //       fixLine: fix.line,
+  //       contentLines: currentContent.split('\n').length
+  //     });
 
-    // Strategy 1: Use AI-generated current_code and suggested_fix for exact replacement
-    if (fixSuggestion?.current_code && fixSuggestion?.suggested_fix) {
-      const currentCode = fixSuggestion.current_code.trim();
-      const suggestedFix = fixSuggestion.suggested_fix.trim();
-      
-      logger.info(`Strategy 1: Trying exact code replacement`, {
-        currentCodeLength: currentCode.length,
-        suggestedFixLength: suggestedFix.length,
-        currentCodePreview: currentCode.substring(0, 100)
+  //     // Strategy 1: Use AI-generated current_code and suggested_fix for exact replacement
+  //     if (fixSuggestion?.current_code && fixSuggestion?.suggested_fix) {
+  //       const currentCode = fixSuggestion.current_code.trim();
+  //       const suggestedFix = fixSuggestion.suggested_fix.trim();
+
+  //       logger.info(`Strategy 1: Trying exact code replacement`, {
+  //         currentCodeLength: currentCode.length,
+  //         suggestedFixLength: suggestedFix.length,
+  //         currentCodePreview: currentCode.substring(0, 100)
+  //       });
+
+  //       // Try exact match first
+  //       if (currentContent.includes(currentCode)) {
+  //         const updatedContent = currentContent.replace(currentCode, suggestedFix);
+  //         logger.info(`Strategy 1 SUCCESS: Exact replacement applied`);
+  //         return updatedContent;
+  //       }
+
+  //       // Try with normalized whitespace
+  //       const normalizedContent = currentContent.replace(/\s+/g, ' ');
+  //       const normalizedCurrentCode = currentCode.replace(/\s+/g, ' ');
+  //       const normalizedSuggestedFix = suggestedFix.replace(/\s+/g, ' ');
+
+  //       if (normalizedContent.includes(normalizedCurrentCode)) {
+  //         const updatedContent = currentContent.replace(
+  //           new RegExp(normalizedCurrentCode.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'),
+  //           suggestedFix
+  //         );
+  //         logger.info(`Strategy 1 PARTIAL: Normalized replacement applied`);
+  //         return updatedContent;
+  //       }
+  //     }
+
+  //     // Strategy 2: Line-based replacement using fix.line
+  //     if (fix.line && typeof fix.line === 'number' && fixSuggestion?.suggested_fix) {
+  //       logger.info(`Strategy 2: Trying line-based replacement at line ${fix.line}`);
+
+  //       const lines = currentContent.split('\n');
+  //       const lineIndex = fix.line - 1; // Convert to 0-based index
+
+  //       if (lineIndex >= 0 && lineIndex < lines.length) {
+  //         const originalLine = lines[lineIndex];
+  //         const suggestedFix = fixSuggestion.suggested_fix.trim();
+
+  //         // Preserve indentation from original line
+  //         const indentMatch = originalLine.match(/^(\s*)/);
+  //         const indent = indentMatch ? indentMatch[1] : '';
+
+  //         lines[lineIndex] = indent + suggestedFix;
+
+  //         const updatedContent = lines.join('\n');
+  //         logger.info(`Strategy 2 SUCCESS: Line replacement applied`, {
+  //           originalLine: originalLine.trim(),
+  //           newLine: (indent + suggestedFix).trim()
+  //         });
+  //         return updatedContent;
+  //       }
+  //     }
+
+  //     // Strategy 3: Pattern-based replacement using the issue description
+  //     if (fix.suggestion && fixSuggestion?.suggested_fix) {
+  //       logger.info(`Strategy 3: Trying pattern-based replacement`);
+
+  //       // Look for common patterns in the issue and try to replace them
+  //       const lines = currentContent.split('\n');
+  //       let foundLine = -1;
+
+  //       // Search for lines that might match the issue context
+  //       for (let i = 0; i < lines.length; i++) {
+  //         const line = lines[i].toLowerCase();
+
+  //         // Look for keywords from the issue in the line
+  //         const issueKeywords = fix.issue.toLowerCase().split(' ').filter(word =>
+  //           word.length > 3 && !['the', 'and', 'for', 'with', 'this', 'that', 'should', 'could', 'would'].includes(word)
+  //         );
+
+  //         const matchingKeywords = issueKeywords.filter(keyword => line.includes(keyword));
+
+  //         if (matchingKeywords.length > 0) {
+  //           foundLine = i;
+  //           logger.info(`Strategy 3: Found potential line ${i + 1} with keywords: ${matchingKeywords.join(', ')}`);
+  //           break;
+  //         }
+  //       }
+
+  //       if (foundLine >= 0) {
+  //         const originalLine = lines[foundLine];
+  //         const indentMatch = originalLine.match(/^(\s*)/);
+  //         const indent = indentMatch ? indentMatch[1] : '';
+
+  //         lines[foundLine] = indent + fixSuggestion.suggested_fix.trim();
+
+  //         const updatedContent = lines.join('\n');
+  //         logger.info(`Strategy 3 SUCCESS: Pattern replacement applied at line ${foundLine + 1}`);
+  //         return updatedContent;
+  //       }
+  //     }
+
+  //     // Strategy 4: Append fix as comment (fallback)
+  //     if (fixSuggestion?.suggested_fix || fix.suggestion) {
+  //       logger.info(`Strategy 4: Fallback - adding fix as comment`);
+
+  //       const fixToApply = fixSuggestion?.suggested_fix || fix.suggestion;
+  //       const fixComment = [
+  //         '',
+  //         `// AI Fix Suggestion for line ${fix.line || 'unknown'}:`,
+  //         `// Issue: ${fix.issue}`,
+  //         `// Suggested fix:`,
+  //         fixToApply.split('\n').map(line => `// ${line}`).join('\n'),
+  //         ''
+  //       ].join('\n');
+
+  //       const updatedContent = currentContent + fixComment;
+  //       logger.info(`Strategy 4 SUCCESS: Fix added as comment`);
+  //       return updatedContent;
+  //     }
+
+  //     logger.warn(`All strategies failed: Could not apply fix for ${fix.file}:${fix.line}`);
+  //     return currentContent;
+
+  //   } catch (error) {
+  //     logger.error(`Error applying fix to content for ${fix.file}:`, error);
+  //     return currentContent;
+  //   }
+  // }
+  applyAdvancedFixToContent(currentContent, fix, fixSuggestion) {
+    try {
+      logger.info(`Attempting to apply fix to ${fix.file}:${fix.line}`, {
+        hasCurrentCode: !!fixSuggestion?.current_code,
+        hasSuggestedFix: !!fixSuggestion?.suggested_fix,
+        fixLine: fix.line,
+        contentLines: currentContent.split("\n").length,
       });
-      
-      // Try exact match first
-      if (currentContent.includes(currentCode)) {
-        const updatedContent = currentContent.replace(currentCode, suggestedFix);
-        logger.info(`Strategy 1 SUCCESS: Exact replacement applied`);
-        return updatedContent;
-      }
-      
-      // Try with normalized whitespace
-      const normalizedContent = currentContent.replace(/\s+/g, ' ');
-      const normalizedCurrentCode = currentCode.replace(/\s+/g, ' ');
-      const normalizedSuggestedFix = suggestedFix.replace(/\s+/g, ' ');
-      
-      if (normalizedContent.includes(normalizedCurrentCode)) {
-        const updatedContent = currentContent.replace(
-          new RegExp(normalizedCurrentCode.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'),
-          suggestedFix
-        );
-        logger.info(`Strategy 1 PARTIAL: Normalized replacement applied`);
-        return updatedContent;
-      }
-    }
 
-    // Strategy 2: Line-based replacement using fix.line
-    if (fix.line && typeof fix.line === 'number' && fixSuggestion?.suggested_fix) {
-      logger.info(`Strategy 2: Trying line-based replacement at line ${fix.line}`);
-      
-      const lines = currentContent.split('\n');
-      const lineIndex = fix.line - 1; // Convert to 0-based index
-      
-      if (lineIndex >= 0 && lineIndex < lines.length) {
-        const originalLine = lines[lineIndex];
+      // Strategy 1: Use AI-generated current_code and suggested_fix for exact replacement
+      if (fixSuggestion?.current_code && fixSuggestion?.suggested_fix) {
+        const currentCode = fixSuggestion.current_code.trim();
         const suggestedFix = fixSuggestion.suggested_fix.trim();
-        
-        // Preserve indentation from original line
-        const indentMatch = originalLine.match(/^(\s*)/);
-        const indent = indentMatch ? indentMatch[1] : '';
-        
-        lines[lineIndex] = indent + suggestedFix;
-        
-        const updatedContent = lines.join('\n');
-        logger.info(`Strategy 2 SUCCESS: Line replacement applied`, {
-          originalLine: originalLine.trim(),
-          newLine: (indent + suggestedFix).trim()
-        });
-        return updatedContent;
-      }
-    }
 
-    // Strategy 3: Pattern-based replacement using the issue description
-    if (fix.suggestion && fixSuggestion?.suggested_fix) {
-      logger.info(`Strategy 3: Trying pattern-based replacement`);
-      
-      // Look for common patterns in the issue and try to replace them
-      const lines = currentContent.split('\n');
-      let foundLine = -1;
-      
-      // Search for lines that might match the issue context
-      for (let i = 0; i < lines.length; i++) {
-        const line = lines[i].toLowerCase();
-        
-        // Look for keywords from the issue in the line
-        const issueKeywords = fix.issue.toLowerCase().split(' ').filter(word => 
-          word.length > 3 && !['the', 'and', 'for', 'with', 'this', 'that', 'should', 'could', 'would'].includes(word)
-        );
-        
-        const matchingKeywords = issueKeywords.filter(keyword => line.includes(keyword));
-        
-        if (matchingKeywords.length > 0) {
-          foundLine = i;
-          logger.info(`Strategy 3: Found potential line ${i + 1} with keywords: ${matchingKeywords.join(', ')}`);
-          break;
+        logger.info(`Strategy 1: Trying exact code replacement`, {
+          currentCodePreview: currentCode.substring(0, 200),
+          suggestedFixPreview: suggestedFix.substring(0, 200),
+        });
+
+        // Try exact match first
+        if (currentContent.includes(currentCode)) {
+          const updatedContent = currentContent.replace(
+            currentCode,
+            suggestedFix
+          );
+          logger.info(`Strategy 1 SUCCESS: Exact replacement applied`);
+          return updatedContent;
+        }
+
+        // Try with normalized whitespace and line breaks
+        const lines = currentContent.split("\n");
+        const currentCodeLines = currentCode.split("\n").map((l) => l.trim());
+        const suggestedFixLines = suggestedFix.split("\n");
+
+        // Find the starting line that matches the first line of current code
+        for (let i = 0; i < lines.length; i++) {
+          if (lines[i].trim() === currentCodeLines[0]) {
+            // Check if subsequent lines also match
+            let allMatch = true;
+            for (let j = 1; j < currentCodeLines.length; j++) {
+              if (
+                i + j >= lines.length ||
+                lines[i + j].trim() !== currentCodeLines[j]
+              ) {
+                allMatch = false;
+                break;
+              }
+            }
+
+            if (allMatch) {
+              // Replace the matching lines with suggested fix
+              const beforeLines = lines.slice(0, i);
+              const afterLines = lines.slice(i + currentCodeLines.length);
+
+              // Preserve indentation from the first line
+              const indent = lines[i].match(/^(\s*)/)[0];
+              const indentedSuggestedLines = suggestedFixLines.map(
+                (line, idx) =>
+                  idx === 0
+                    ? indent + line.trim()
+                    : line.trim()
+                    ? indent + line.trim()
+                    : line
+              );
+
+              const updatedContent = [
+                ...beforeLines,
+                ...indentedSuggestedLines,
+                ...afterLines,
+              ].join("\n");
+
+              logger.info(
+                `Strategy 1 MULTI-LINE SUCCESS: Multi-line replacement applied`,
+                {
+                  startLine: i + 1,
+                  replacedLines: currentCodeLines.length,
+                  newLines: suggestedFixLines.length,
+                }
+              );
+              return updatedContent;
+            }
+          }
         }
       }
-      
-      if (foundLine >= 0) {
-        const originalLine = lines[foundLine];
-        const indentMatch = originalLine.match(/^(\s*)/);
-        const indent = indentMatch ? indentMatch[1] : '';
-        
-        lines[foundLine] = indent + fixSuggestion.suggested_fix.trim();
-        
-        const updatedContent = lines.join('\n');
-        logger.info(`Strategy 3 SUCCESS: Pattern replacement applied at line ${foundLine + 1}`);
-        return updatedContent;
+
+      // Strategy 2: Line-based replacement using fix.line with AI suggested fix
+      if (
+        fix.line &&
+        typeof fix.line === "number" &&
+        fixSuggestion?.suggested_fix
+      ) {
+        logger.info(
+          `Strategy 2: Trying line-based replacement at line ${fix.line}`
+        );
+
+        const lines = currentContent.split("\n");
+        const lineIndex = fix.line - 1; // Convert to 0-based index
+
+        if (lineIndex >= 0 && lineIndex < lines.length) {
+          const originalLine = lines[lineIndex];
+          const suggestedFixLines = fixSuggestion.suggested_fix.split("\n");
+
+          // Preserve indentation from original line
+          const indentMatch = originalLine.match(/^(\s*)/);
+          const indent = indentMatch ? indentMatch[1] : "";
+
+          // Replace single line or insert multiple lines
+          if (suggestedFixLines.length === 1) {
+            // Single line replacement
+            lines[lineIndex] = indent + suggestedFixLines[0].trim();
+          } else {
+            // Multi-line replacement - remove original line and insert new lines
+            const beforeLines = lines.slice(0, lineIndex);
+            const afterLines = lines.slice(lineIndex + 1);
+
+            const indentedNewLines = suggestedFixLines.map((line) =>
+              line.trim() ? indent + line.trim() : line
+            );
+
+            lines.splice(lineIndex, 1, ...indentedNewLines);
+          }
+
+          const updatedContent = lines.join("\n");
+          logger.info(`Strategy 2 SUCCESS: Line-based replacement applied`, {
+            originalLine: originalLine.trim(),
+            newLines: suggestedFixLines.length,
+            replacementPreview: suggestedFixLines[0].trim(),
+          });
+          return updatedContent;
+        }
       }
-    }
 
-    // Strategy 4: Append fix as comment (fallback)
-    if (fixSuggestion?.suggested_fix || fix.suggestion) {
-      logger.info(`Strategy 4: Fallback - adding fix as comment`);
-      
-      const fixToApply = fixSuggestion?.suggested_fix || fix.suggestion;
-      const fixComment = [
-        '',
-        `// AI Fix Suggestion for line ${fix.line || 'unknown'}:`,
-        `// Issue: ${fix.issue}`,
-        `// Suggested fix:`,
-        fixToApply.split('\n').map(line => `// ${line}`).join('\n'),
-        ''
-      ].join('\n');
-      
-      const updatedContent = currentContent + fixComment;
-      logger.info(`Strategy 4 SUCCESS: Fix added as comment`);
-      return updatedContent;
-    }
+      // Strategy 3: Function-level replacement (for cases like your SQL injection fix)
+      if (fixSuggestion?.current_code && fixSuggestion?.suggested_fix) {
+        logger.info(`Strategy 3: Trying function-level replacement`);
 
-    logger.warn(`All strategies failed: Could not apply fix for ${fix.file}:${fix.line}`);
-    return currentContent;
-    
-  } catch (error) {
-    logger.error(`Error applying fix to content for ${fix.file}:`, error);
-    return currentContent;
+        // Look for function patterns and replace entire function bodies
+        const currentCode = fixSuggestion.current_code.trim();
+        const suggestedFix = fixSuggestion.suggested_fix.trim();
+
+        // Extract just the problematic line(s) from current_code
+        const currentCodeLines = currentCode.split("\n");
+        const lines = currentContent.split("\n");
+
+        // Find lines that contain key parts of the problematic code
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i];
+
+          // Look for the problematic pattern (e.g., SQL injection pattern)
+          const problematicPatterns = [
+            /\$\{.*\}/, // Template literal injection
+            /'\s*\+\s*.*\+\s*'/, // String concatenation
+            /SELECT.*FROM.*WHERE.*=.*'.*\$/, // SQL injection patterns
+          ];
+
+          const hasProblematicPattern = problematicPatterns.some((pattern) =>
+            pattern.test(line)
+          );
+
+          if (hasProblematicPattern) {
+            logger.info(
+              `Strategy 3: Found problematic pattern at line ${
+                i + 1
+              }: ${line.trim()}`
+            );
+
+            // Replace this line with the suggested fix
+            const indent = line.match(/^(\s*)/)[0];
+            const suggestedFixLines = suggestedFix.split("\n");
+            const indentedSuggestedLines = suggestedFixLines.map((line) =>
+              line.trim() ? indent + line.trim() : line
+            );
+
+            // Replace the problematic line(s)
+            lines.splice(i, 1, ...indentedSuggestedLines);
+
+            const updatedContent = lines.join("\n");
+            logger.info(
+              `Strategy 3 SUCCESS: Function-level replacement applied`
+            );
+            return updatedContent;
+          }
+        }
+      }
+
+      // Strategy 4: Smart pattern matching for common code issues
+      if (fix.line && fixSuggestion?.suggested_fix) {
+        logger.info(
+          `Strategy 4: Trying smart pattern matching around line ${fix.line}`
+        );
+
+        const lines = currentContent.split("\n");
+        const targetLineIndex = fix.line - 1;
+        const searchRange = 3; // Search 3 lines above and below
+
+        const startSearch = Math.max(0, targetLineIndex - searchRange);
+        const endSearch = Math.min(
+          lines.length - 1,
+          targetLineIndex + searchRange
+        );
+
+        // Look for lines that need fixing based on the issue description
+        for (let i = startSearch; i <= endSearch; i++) {
+          const line = lines[i];
+
+          // Check if this line contains the problematic pattern mentioned in the issue
+          let shouldReplace = false;
+
+          // SQL Injection patterns
+          if (fix.issue.toLowerCase().includes("sql injection")) {
+            shouldReplace =
+              /SELECT.*FROM.*WHERE.*=.*['"`].*\$/.test(line) ||
+              /\$\{.*\}/.test(line) ||
+              line.includes("${username}") ||
+              line.includes("${password}");
+          }
+
+          // XSS patterns
+          if (
+            fix.issue.toLowerCase().includes("xss") ||
+            fix.issue.toLowerCase().includes("cross-site scripting")
+          ) {
+            shouldReplace =
+              /innerHTML.*=/.test(line) || /document\.write/.test(line);
+          }
+
+          // Add more patterns as needed
+
+          if (shouldReplace) {
+            logger.info(
+              `Strategy 4: Found line to replace at ${i + 1}: ${line.trim()}`
+            );
+
+            const indent = line.match(/^(\s*)/)[0];
+            const suggestedFixLines = fixSuggestion.suggested_fix.split("\n");
+            const indentedSuggestedLines = suggestedFixLines.map((fixLine) =>
+              fixLine.trim() ? indent + fixLine.trim() : fixLine
+            );
+
+            lines.splice(i, 1, ...indentedSuggestedLines);
+
+            const updatedContent = lines.join("\n");
+            logger.info(
+              `Strategy 4 SUCCESS: Smart pattern replacement applied`
+            );
+            return updatedContent;
+          }
+        }
+      }
+
+      // Strategy 5: Last resort - insert suggested fix near the problematic line
+      if (fix.line && fixSuggestion?.suggested_fix) {
+        logger.info(
+          `Strategy 5: Last resort - inserting fix near line ${fix.line}`
+        );
+
+        const lines = currentContent.split("\n");
+        const insertIndex = fix.line; // Insert after the problematic line
+
+        if (insertIndex >= 0 && insertIndex <= lines.length) {
+          const referenceIndent =
+            insertIndex > 0
+              ? lines[insertIndex - 1].match(/^(\s*)/)?.[0] || ""
+              : "";
+
+          const suggestedFixLines = fixSuggestion.suggested_fix.split("\n");
+          const indentedSuggestedLines = suggestedFixLines.map((line) =>
+            line.trim() ? referenceIndent + line.trim() : line
+          );
+
+          // Add a comment explaining the fix
+          const fixComment = referenceIndent + `// AI Fix: ${fix.issue}`;
+
+          lines.splice(insertIndex, 0, fixComment, ...indentedSuggestedLines);
+
+          const updatedContent = lines.join("\n");
+          logger.info(`Strategy 5 SUCCESS: Fix inserted near problematic line`);
+          return updatedContent;
+        }
+      }
+
+      logger.warn(
+        `All strategies failed: Could not apply fix for ${fix.file}:${fix.line}`
+      );
+      return null; // Return null instead of original content to indicate failure
+    } catch (error) {
+      logger.error(`Error applying fix to content for ${fix.file}:`, error);
+      return null;
+    }
   }
-}
-    
 
   // NEW: Apply a fix suggestion to file content
   applyFixToContent(currentContent, fix) {
