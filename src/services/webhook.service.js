@@ -71,29 +71,70 @@ class WebhookService {
   }
 
   // Create initial AI Review button (before analysis)
+  // async createInitialAIReviewButton(repository, pullRequest) {
+  //   const owner = repository.owner.login;
+  //   const repo = repository.name;
+  //   const headSha = pullRequest.head.sha;
+
+  //   try {
+  //     logger.info(`Creating initial AI Review button for PR #${pullRequest.number}`);
+
+  //     const checkRun = await githubService.createCheckRun(owner, repo, {
+  //       name: 'AI Code Review',
+  //       head_sha: headSha,
+  //       status: 'queued',
+  //       output: {
+  //         title: 'AI Code Review Available',
+  //         summary: `Click "Start AI Review" to analyze this PR with SonarQube standards.\n\n**Files to analyze:** ${pullRequest.changed_files}\n**Lines changed:** +${pullRequest.additions} -${pullRequest.deletions}`,
+  //       },
+  //       actions: [{
+  //         label: 'Start AI Review',
+  //         description: 'Trigger code analysis for this PR', // Shortened to fit character limit
+  //         identifier: 'ai_review'
+  //       }]
+  //     });
+
+  //     logger.info(`Initial AI Review button created: ${checkRun.id} for PR #${pullRequest.number}`);
+  //   } catch (error) {
+  //     logger.error('Error creating AI Review button:', error);
+      
+  //     // Fallback: Post instruction comment
+  //     await githubService.postGeneralComment(
+  //       owner,
+  //       repo,
+  //       pullRequest.number,
+  //       `**AI Code Review Available**\n\n` +
+  //       `Click the "Start AI Review" button above or comment \`/ai-review\` to trigger analysis.\n\n` +
+  //       `**Files to analyze:** ${pullRequest.changed_files}\n` +
+  //       `**Lines changed:** +${pullRequest.additions} -${pullRequest.deletions}\n\n` +
+  //       `*Analysis will create interactive buttons for posting AI findings directly to your code.*`
+  //     );
+  //   }
+  // }
   async createInitialAIReviewButton(repository, pullRequest) {
     const owner = repository.owner.login;
     const repo = repository.name;
     const headSha = pullRequest.head.sha;
-
+  
     try {
       logger.info(`Creating initial AI Review button for PR #${pullRequest.number}`);
-
+  
       const checkRun = await githubService.createCheckRun(owner, repo, {
         name: 'AI Code Review',
         head_sha: headSha,
         status: 'queued',
         output: {
           title: 'AI Code Review Available',
-          summary: `Click "Start AI Review" to analyze this PR with SonarQube standards.\n\n**Files to analyze:** ${pullRequest.changed_files}\n**Lines changed:** +${pullRequest.additions} -${pullRequest.deletions}`,
+          summary: `Click "Start AI Review" to analyze this PR with SonarQube standards.\n\n**Files to analyze:** ${pullRequest.changed_files}\n**Lines changed:** +${pullRequest.additions} -${pullRequest.deletions}`
+          // REMOVED: text field to prevent empty DETAILS section
         },
         actions: [{
           label: 'Start AI Review',
-          description: 'Trigger code analysis for this PR', // Shortened to fit character limit
+          description: 'Trigger code analysis for this PR',
           identifier: 'ai_review'
         }]
       });
-
+  
       logger.info(`Initial AI Review button created: ${checkRun.id} for PR #${pullRequest.number}`);
     } catch (error) {
       logger.error('Error creating AI Review button:', error);
@@ -111,7 +152,7 @@ class WebhookService {
       );
     }
   }
-
+  
   // ENHANCED: Handle check run button clicks (both initial AI review and comment posting)
   async handleCheckRunEvent(payload) {
     const { action, check_run, repository, requested_action } = payload;
@@ -466,10 +507,42 @@ class WebhookService {
   }
 
   // NEW: Complete with a retry button for AI failures
+  // async completeWithRetryButton(owner, repo, pullNumber, checkRun, analysis, prData) {
+  //   try {
+  //     const errorFinding = analysis.detailedFindings[0];
+
+  //     await githubService.updateCheckRun(owner, repo, checkRun.id, {
+  //       status: 'completed',
+  //       conclusion: 'failure',
+  //       output: {
+  //         title: 'AI Review Failed',
+  //         summary: `The AI analysis failed to produce a valid response.\n\n` + 
+  //                  `**Reason:** ${errorFinding.issue}\n\n` +
+  //                  `**Suggestion:** ${errorFinding.suggestion}\n\n` +
+  //                  `Please click the retry button below to try again.`,
+  //       },
+  //       actions: [{
+  //         label: 'Retry AI Review',
+  //         description: 'Re-run the AI code analysis on this PR',
+  //         identifier: 'retry_review'
+  //       }]
+  //     });
+
+  //     logger.warn(`AI review failed for PR #${pullNumber}, check run updated with retry button`, {
+  //       trackingId: analysis.trackingId,
+  //       error: errorFinding.issue
+  //     });
+      
+  //   } catch (error) {
+  //     logger.error('Error completing check run with retry button:', error);
+  //     this.completeWithError(owner, repo, pullNumber, checkRun, error, analysis.trackingId);
+  //   }
+  // }
+
   async completeWithRetryButton(owner, repo, pullNumber, checkRun, analysis, prData) {
     try {
       const errorFinding = analysis.detailedFindings[0];
-
+  
       await githubService.updateCheckRun(owner, repo, checkRun.id, {
         status: 'completed',
         conclusion: 'failure',
@@ -478,7 +551,8 @@ class WebhookService {
           summary: `The AI analysis failed to produce a valid response.\n\n` + 
                    `**Reason:** ${errorFinding.issue}\n\n` +
                    `**Suggestion:** ${errorFinding.suggestion}\n\n` +
-                   `Please click the retry button below to try again.`,
+                   `Please click the retry button below to try again.`
+          // REMOVED: text field to prevent empty DETAILS section
         },
         actions: [{
           label: 'Retry AI Review',
@@ -486,7 +560,7 @@ class WebhookService {
           identifier: 'retry_review'
         }]
       });
-
+  
       logger.warn(`AI review failed for PR #${pullNumber}, check run updated with retry button`, {
         trackingId: analysis.trackingId,
         error: errorFinding.issue
@@ -497,8 +571,57 @@ class WebhookService {
       this.completeWithError(owner, repo, pullNumber, checkRun, error, analysis.trackingId);
     }
   }
+  
 
   // Complete with no files (simplified version)
+  // async completeWithNoFilesButtons(owner, repo, pullNumber, checkRun, prData, trackingId) {
+  //   try {
+  //     const analysis = {
+  //       trackingId,
+  //       prInfo: {
+  //         prId: prData.pr.number,
+  //         title: prData.pr.title,
+  //         repository: prData.pr.repository,
+  //         author: prData.pr.author,
+  //         reviewers: prData.reviewers || [],
+  //         url: prData.pr.url,
+  //       },
+  //       automatedAnalysis: {
+  //         totalIssues: 0,
+  //         severityBreakdown: { blocker: 0, critical: 0, major: 0, minor: 0, info: 0 },
+  //         categories: { bugs: 0, vulnerabilities: 0, securityHotspots: 0, codeSmells: 0 },
+  //         technicalDebtMinutes: 0
+  //       },
+  //       humanReviewAnalysis: {
+  //         reviewComments: prData.comments.length,
+  //         issuesAddressedByReviewers: 0,
+  //         securityIssuesCaught: 0,
+  //         codeQualityIssuesCaught: 0
+  //       },
+  //       reviewAssessment: 'REVIEW REQUIRED',
+  //       detailedFindings: [],
+  //       recommendation: 'No code files found to analyze. This PR contains only documentation or configuration changes.'
+  //     };
+
+  //     // Post structured comment
+  //     await githubService.postStructuredReviewComment(owner, repo, pullNumber, analysis);
+
+  //     // Update check run
+  //     await githubService.updateCheckRun(owner, repo, checkRun.id, {
+  //       status: 'completed',
+  //       conclusion: 'neutral',
+  //       output: {
+  //         title: 'AI Code Review Completed',
+  //         summary: `No code files found to analyze for PR #${pullNumber}.\n\nThis PR may contain only documentation or configuration changes.\n\n**Analysis ID:** \`${trackingId}\``,
+  //       }
+  //     });
+
+  //     logger.info(`AI review completed (no files) for PR #${pullNumber}`, { trackingId });
+
+  //   } catch (error) {
+  //     await this.completeWithError(owner, repo, pullNumber, checkRun, error, trackingId);
+  //   }
+  // }
   async completeWithNoFilesButtons(owner, repo, pullNumber, checkRun, prData, trackingId) {
     try {
       const analysis = {
@@ -527,28 +650,59 @@ class WebhookService {
         detailedFindings: [],
         recommendation: 'No code files found to analyze. This PR contains only documentation or configuration changes.'
       };
-
+  
       // Post structured comment
       await githubService.postStructuredReviewComment(owner, repo, pullNumber, analysis);
-
-      // Update check run
+  
+      // Update check run WITHOUT text field
       await githubService.updateCheckRun(owner, repo, checkRun.id, {
         status: 'completed',
         conclusion: 'neutral',
         output: {
           title: 'AI Code Review Completed',
-          summary: `No code files found to analyze for PR #${pullNumber}.\n\nThis PR may contain only documentation or configuration changes.\n\n**Analysis ID:** \`${trackingId}\``,
+          summary: `No code files found to analyze for PR #${pullNumber}.\n\nThis PR may contain only documentation or configuration changes.\n\n**Analysis ID:** \`${trackingId}\``
+          // REMOVED: text field to prevent empty DETAILS section
         }
       });
-
+  
       logger.info(`AI review completed (no files) for PR #${pullNumber}`, { trackingId });
-
+  
     } catch (error) {
       await this.completeWithError(owner, repo, pullNumber, checkRun, error, trackingId);
     }
   }
+  
 
   // Complete with error
+  // async completeWithError(owner, repo, pullNumber, checkRun, error, trackingId) {
+  //   try {
+  //     await githubService.postGeneralComment(
+  //       owner,
+  //       repo,
+  //       pullNumber,
+  //       `**Unable to Complete AI Review**\n\n` +
+  //       `The AI analysis encountered an error and could not be completed for PR #${pullNumber}.\n\n` +
+  //       `**Error:** ${error.message}\n` +
+  //       `**Analysis ID:** \`${trackingId}\`\n` +
+  //       `**Time:** ${new Date().toISOString()}\n\n` +
+  //       `Please try clicking "Start AI Review" again or contact the administrator if this persists.`
+  //     );
+
+  //     await githubService.updateCheckRun(owner, repo, checkRun.id, {
+  //       status: 'completed',
+  //       conclusion: 'failure',
+  //       output: {
+  //         title: 'AI Code Review Failed',
+  //         summary: `Analysis failed for PR #${pullNumber}: ${error.message}\n\nPlease try again or contact administrator.\n\n**Tracking ID:** ${trackingId}`,
+  //       }
+  //     });
+
+  //     logger.error(`AI review failed for PR #${pullNumber}`, { trackingId, error: error.message });
+
+  //   } catch (postError) {
+  //     logger.error('Error posting failure message:', postError);
+  //   }
+  // }
   async completeWithError(owner, repo, pullNumber, checkRun, error, trackingId) {
     try {
       await githubService.postGeneralComment(
@@ -562,18 +716,19 @@ class WebhookService {
         `**Time:** ${new Date().toISOString()}\n\n` +
         `Please try clicking "Start AI Review" again or contact the administrator if this persists.`
       );
-
+  
       await githubService.updateCheckRun(owner, repo, checkRun.id, {
         status: 'completed',
         conclusion: 'failure',
         output: {
           title: 'AI Code Review Failed',
-          summary: `Analysis failed for PR #${pullNumber}: ${error.message}\n\nPlease try again or contact administrator.\n\n**Tracking ID:** ${trackingId}`,
+          summary: `Analysis failed for PR #${pullNumber}: ${error.message}\n\nPlease try again or contact administrator.\n\n**Tracking ID:** ${trackingId}`
+          // REMOVED: text field to prevent empty DETAILS section
         }
       });
-
+  
       logger.error(`AI review failed for PR #${pullNumber}`, { trackingId, error: error.message });
-
+  
     } catch (postError) {
       logger.error('Error posting failure message:', postError);
     }
