@@ -1,18 +1,18 @@
 // src/services/github.service.js - Enhanced with Interactive Comment Support and Correct Line Finding
 
-const { Octokit } = require('@octokit/rest');
-const { createAppAuth } = require('@octokit/auth-app');
-const fs = require('fs');
-const path = require('path');
-const config = require('../config/config');
-const logger = require('../utils/logger');
+const { Octokit } = require("@octokit/rest");
+const { createAppAuth } = require("@octokit/auth-app");
+const fs = require("fs");
+const path = require("path");
+const config = require("../config/config");
+const logger = require("../utils/logger");
 
 // Import interactive comment service to avoid loading issues
 let interactiveCommentService;
 try {
-  interactiveCommentService = require('./interactive-comment.service');
+  interactiveCommentService = require("./interactive-comment.service");
 } catch (error) {
-  logger.warn('Interactive comment service not available:', error.message);
+  logger.warn("Interactive comment service not available:", error.message);
 }
 
 class GitHubService {
@@ -35,62 +35,82 @@ class GitHubService {
 
       // Method 1: Base64 encoded private key (for Render/Cloud deployment)
       if (process.env.GITHUB_PRIVATE_KEY_BASE64) {
-        logger.info('Attempting to use base64 encoded private key from environment');
+        logger.info(
+          "Attempting to use base64 encoded private key from environment"
+        );
 
         try {
           const base64Key = process.env.GITHUB_PRIVATE_KEY_BASE64.trim();
 
           // Validate base64 format
           if (!this.isValidBase64(base64Key)) {
-            throw new Error('Invalid base64 format');
+            throw new Error("Invalid base64 format");
           }
 
-          privateKeyContent = Buffer.from(base64Key, 'base64').toString('utf-8');
-          logger.info('Successfully decoded base64 private key');
-
+          privateKeyContent = Buffer.from(base64Key, "base64").toString(
+            "utf-8"
+          );
+          logger.info("Successfully decoded base64 private key");
         } catch (decodeError) {
-          logger.error('Failed to decode base64 private key:', decodeError.message);
-          throw new Error(`Base64 private key decode failed: ${decodeError.message}`);
+          logger.error(
+            "Failed to decode base64 private key:",
+            decodeError.message
+          );
+          throw new Error(
+            `Base64 private key decode failed: ${decodeError.message}`
+          );
         }
       }
 
       // Method 2: Direct private key content (fallback)
       else if (process.env.GITHUB_PRIVATE_KEY) {
-        logger.info('Using direct private key content from environment');
-        privateKeyContent = process.env.GITHUB_PRIVATE_KEY.replace(/\\n/g, '\n');
+        logger.info("Using direct private key content from environment");
+        privateKeyContent = process.env.GITHUB_PRIVATE_KEY.replace(
+          /\\n/g,
+          "\n"
+        );
       }
 
       // Method 3: Private key file path (local development)
-      else if (process.env.GITHUB_PRIVATE_KEY_PATH && fs.existsSync(process.env.GITHUB_PRIVATE_KEY_PATH)) {
-        logger.info('Using private key from specified file path');
-        privateKeyContent = fs.readFileSync(process.env.GITHUB_PRIVATE_KEY_PATH, 'utf8');
+      else if (
+        process.env.GITHUB_PRIVATE_KEY_PATH &&
+        fs.existsSync(process.env.GITHUB_PRIVATE_KEY_PATH)
+      ) {
+        logger.info("Using private key from specified file path");
+        privateKeyContent = fs.readFileSync(
+          process.env.GITHUB_PRIVATE_KEY_PATH,
+          "utf8"
+        );
       }
 
       // Method 4: Default file location (local development fallback)
       else {
-        const defaultPath = path.join(process.cwd(), 'private-key.pem');
+        const defaultPath = path.join(process.cwd(), "private-key.pem");
         if (fs.existsSync(defaultPath)) {
-          logger.info('Using private key from default location');
-          privateKeyContent = fs.readFileSync(defaultPath, 'utf8');
+          logger.info("Using private key from default location");
+          privateKeyContent = fs.readFileSync(defaultPath, "utf8");
         }
       }
 
       // Validate the private key content
       if (!privateKeyContent) {
-        throw new Error('No private key content found. Please set GITHUB_PRIVATE_KEY_BASE64 environment variable.');
+        throw new Error(
+          "No private key content found. Please set GITHUB_PRIVATE_KEY_BASE64 environment variable."
+        );
       }
 
       // Validate private key format
       if (!this.validatePrivateKeyFormat(privateKeyContent)) {
-        logger.error('Private key validation failed');
-        throw new Error('Invalid private key format. Expected PEM format starting with -----BEGIN');
+        logger.error("Private key validation failed");
+        throw new Error(
+          "Invalid private key format. Expected PEM format starting with -----BEGIN"
+        );
       }
 
-      logger.info('Private key loaded and validated successfully');
+      logger.info("Private key loaded and validated successfully");
       return privateKeyContent;
-
     } catch (error) {
-      logger.error('Error getting GitHub private key:', error);
+      logger.error("Error getting GitHub private key:", error);
       throw new Error(`Failed to load GitHub private key: ${error.message}`);
     }
   }
@@ -98,7 +118,7 @@ class GitHubService {
   // Validate base64 format
   isValidBase64(str) {
     try {
-      const decoded = Buffer.from(str, 'base64').toString('base64');
+      const decoded = Buffer.from(str, "base64").toString("base64");
       return decoded === str;
     } catch (error) {
       return false;
@@ -107,26 +127,33 @@ class GitHubService {
 
   // Validate private key format
   validatePrivateKeyFormat(keyContent) {
-    if (!keyContent || typeof keyContent !== 'string') {
+    if (!keyContent || typeof keyContent !== "string") {
       return false;
     }
 
     const trimmedKey = keyContent.trim();
-    const hasBeginMarker = trimmedKey.includes('-----BEGIN');
-    const hasEndMarker = trimmedKey.includes('-----END');
-    const hasPrivateKeyLabel = trimmedKey.includes('PRIVATE KEY');
+    const hasBeginMarker = trimmedKey.includes("-----BEGIN");
+    const hasEndMarker = trimmedKey.includes("-----END");
+    const hasPrivateKeyLabel = trimmedKey.includes("PRIVATE KEY");
 
-    return hasBeginMarker && hasEndMarker && hasPrivateKeyLabel && trimmedKey.length > 200;
+    return (
+      hasBeginMarker &&
+      hasEndMarker &&
+      hasPrivateKeyLabel &&
+      trimmedKey.length > 200
+    );
   }
 
   // Test GitHub App authentication
   async testAuthentication() {
     try {
       const { data: app } = await this.octokit.rest.apps.getAuthenticated();
-      logger.info(`GitHub App authenticated successfully: ${app.name} (ID: ${app.id})`);
+      logger.info(
+        `GitHub App authenticated successfully: ${app.name} (ID: ${app.id})`
+      );
       return { success: true, app: app.name, id: app.id };
     } catch (error) {
-      logger.error('GitHub App authentication failed:', error);
+      logger.error("GitHub App authentication failed:", error);
       return { success: false, error: error.message };
     }
   }
@@ -136,14 +163,16 @@ class GitHubService {
     try {
       const authResult = await this.testAuthentication();
       return {
-        status: authResult.success ? 'healthy' : 'unhealthy',
+        status: authResult.success ? "healthy" : "unhealthy",
         authenticated: authResult.success,
         timestamp: new Date().toISOString(),
-        ...(authResult.success ? { appName: authResult.app, appId: authResult.id } : { error: authResult.error })
+        ...(authResult.success
+          ? { appName: authResult.app, appId: authResult.id }
+          : { error: authResult.error }),
       };
     } catch (error) {
       return {
-        status: 'unhealthy',
+        status: "unhealthy",
         error: error.message,
         timestamp: new Date().toISOString(),
       };
@@ -176,17 +205,25 @@ class GitHubService {
       const diff = await this.getPullRequestDiff(owner, repo, pullNumber);
 
       // Get existing review comments
-      const comments = await this.getPullRequestComments(owner, repo, pullNumber);
+      const comments = await this.getPullRequestComments(
+        owner,
+        repo,
+        pullNumber
+      );
 
       // Get reviewers list
-      const reviewers = await this.getPullRequestReviewers(owner, repo, pullNumber);
+      const reviewers = await this.getPullRequestReviewers(
+        owner,
+        repo,
+        pullNumber
+      );
 
       return {
         pr: {
           id: pr.id,
           number: pr.number,
           title: pr.title,
-          description: pr.body || '',
+          description: pr.body || "",
           author: pr.user.login,
           targetBranch: pr.base.ref,
           sourceBranch: pr.head.ref,
@@ -205,7 +242,7 @@ class GitHubService {
         reviewers,
       };
     } catch (error) {
-      logger.error('Error fetching PR data:', error);
+      logger.error("Error fetching PR data:", error);
       throw new Error(`Failed to fetch PR data: ${error.message}`);
     }
   }
@@ -219,13 +256,13 @@ class GitHubService {
         pull_number: pullNumber,
       });
 
-      const reviewers = Array.from(new Set(
-        reviews.map(review => review.user.login)
-      ));
+      const reviewers = Array.from(
+        new Set(reviews.map((review) => review.user.login))
+      );
 
       return reviewers;
     } catch (error) {
-      logger.error('Error fetching PR reviewers:', error);
+      logger.error("Error fetching PR reviewers:", error);
       return [];
     }
   }
@@ -238,13 +275,13 @@ class GitHubService {
         repo,
         pull_number: pullNumber,
         mediaType: {
-          format: 'diff',
+          format: "diff",
         },
       });
 
       return diff;
     } catch (error) {
-      logger.error('Error fetching PR diff:', error);
+      logger.error("Error fetching PR diff:", error);
       throw new Error(`Failed to fetch PR diff: ${error.message}`);
     }
   }
@@ -252,7 +289,9 @@ class GitHubService {
   // NEW: Finds the closest line in the diff that can be commented on.
   async findCommentableLine(owner, repo, pullNumber, filePath, targetLine) {
     try {
-      logger.info(`Finding commentable line for ${filePath}:${targetLine} in PR #${pullNumber}`);
+      logger.info(
+        `Finding commentable line for ${filePath}:${targetLine} in PR #${pullNumber}`
+      );
 
       const { data: files } = await this.octokit.rest.pulls.listFiles({
         owner,
@@ -260,7 +299,7 @@ class GitHubService {
         pull_number: pullNumber,
       });
 
-      const targetFile = files.find(file => file.filename === filePath);
+      const targetFile = files.find((file) => file.filename === filePath);
       if (!targetFile || !targetFile.patch) {
         logger.warn(`File not found in PR diff or has no patch: ${filePath}`);
         return null;
@@ -270,38 +309,52 @@ class GitHubService {
       const lineMapping = this.parseDiffLineMapping(targetFile.patch);
 
       // Find the exact commentable line for the target
-      const commentableLine = this.findExactCommentableLine(lineMapping, targetLine);
+      const commentableLine = this.findExactCommentableLine(
+        lineMapping,
+        targetLine
+      );
 
       if (commentableLine) {
-        logger.info(`Found exact commentable line ${commentableLine} for target ${targetLine} in ${filePath}`);
+        logger.info(
+          `Found exact commentable line ${commentableLine} for target ${targetLine} in ${filePath}`
+        );
         return commentableLine;
       }
 
       // If exact line not found, try to find nearest commentable line in same context
-      const nearestLine = this.findNearestCommentableLine(lineMapping, targetLine);
+      const nearestLine = this.findNearestCommentableLine(
+        lineMapping,
+        targetLine
+      );
 
       if (nearestLine) {
-        logger.info(`Using nearest commentable line ${nearestLine} for target ${targetLine} in ${filePath} (original line not in diff)`);
+        logger.info(
+          `Using nearest commentable line ${nearestLine} for target ${targetLine} in ${filePath} (original line not in diff)`
+        );
         return nearestLine;
       }
 
-      logger.error(`No commentable line found near ${targetLine} for file ${filePath}`);
+      logger.error(
+        `No commentable line found near ${targetLine} for file ${filePath}`
+      );
       return null;
-
     } catch (error) {
-      logger.error(`Error finding commentable line for ${filePath}:${targetLine}:`, error);
+      logger.error(
+        `Error finding commentable line for ${filePath}:${targetLine}:`,
+        error
+      );
       return null;
     }
   }
 
   // NEW: Parse diff patch to create accurate line mapping
   parseDiffLineMapping(patch) {
-    const lines = patch.split('\n');
+    const lines = patch.split("\n");
     const mapping = {
       commentableLines: new Set(), // Lines that can receive comments (added or modified)
       fileLineToCommentLine: new Map(), // Maps file line number to commentable line number
       contextLines: new Map(), // Maps file line to context info
-      hunks: []
+      hunks: [],
     };
 
     let currentHunk = null;
@@ -312,7 +365,7 @@ class GitHubService {
       const line = lines[i];
 
       // Parse hunk header: @@ -oldStart,oldCount +newStart,newCount @@
-      if (line.startsWith('@@')) {
+      if (line.startsWith("@@")) {
         const hunkMatch = line.match(/@@\s*-(\d+),?\d*\s*\+(\d+),?\d*\s*@@/);
         if (hunkMatch) {
           oldLineNum = parseInt(hunkMatch[1]) - 1; // -1 because we increment before processing
@@ -321,7 +374,7 @@ class GitHubService {
           currentHunk = {
             oldStart: parseInt(hunkMatch[1]),
             newStart: parseInt(hunkMatch[2]),
-            lines: []
+            lines: [],
           };
           mapping.hunks.push(currentHunk);
         }
@@ -333,45 +386,43 @@ class GitHubService {
       const lineType = line.charAt(0);
       const content = line.slice(1);
 
-      if (lineType === '-') {
+      if (lineType === "-") {
         // Deleted line - only increment old line number
         oldLineNum++;
         currentHunk.lines.push({
-          type: 'deleted',
+          type: "deleted",
           oldLine: oldLineNum,
           newLine: null,
-          content
+          content,
         });
-      }
-      else if (lineType === '+') {
+      } else if (lineType === "+") {
         // Added line - increment new line number and mark as commentable
         newLineNum++;
         mapping.commentableLines.add(newLineNum);
         mapping.fileLineToCommentLine.set(newLineNum, newLineNum);
 
         currentHunk.lines.push({
-          type: 'added',
+          type: "added",
           oldLine: null,
           newLine: newLineNum,
           content,
-          commentable: true
+          commentable: true,
         });
-      }
-      else if (lineType === ' ') {
+      } else if (lineType === " ") {
         // Context line - increment both line numbers
         oldLineNum++;
         newLineNum++;
         mapping.contextLines.set(newLineNum, {
           oldLine: oldLineNum,
           newLine: newLineNum,
-          content
+          content,
         });
 
         currentHunk.lines.push({
-          type: 'context',
+          type: "context",
           oldLine: oldLineNum,
           newLine: newLineNum,
-          content
+          content,
         });
       }
     }
@@ -379,7 +430,7 @@ class GitHubService {
     logger.debug(`Parsed diff mapping for file`, {
       commentableLines: Array.from(mapping.commentableLines),
       totalHunks: mapping.hunks.length,
-      fileLineMapping: Array.from(mapping.fileLineToCommentLine.entries())
+      fileLineMapping: Array.from(mapping.fileLineToCommentLine.entries()),
     });
 
     return mapping;
@@ -402,7 +453,9 @@ class GitHubService {
 
   // NEW: Find nearest commentable line within reasonable range
   findNearestCommentableLine(mapping, targetLine) {
-    const commentableLines = Array.from(mapping.commentableLines).sort((a, b) => a - b);
+    const commentableLines = Array.from(mapping.commentableLines).sort(
+      (a, b) => a - b
+    );
 
     if (commentableLines.length === 0) {
       return null;
@@ -423,7 +476,9 @@ class GitHubService {
 
     // Prefer lines after the target over lines before (more natural for code review)
     if (closest === null) {
-      const linesAfter = commentableLines.filter(line => line > targetLine && line - targetLine <= maxDistance);
+      const linesAfter = commentableLines.filter(
+        (line) => line > targetLine && line - targetLine <= maxDistance
+      );
       if (linesAfter.length > 0) {
         closest = linesAfter[0]; // First line after target
       }
@@ -441,16 +496,18 @@ class GitHubService {
         pull_number: pullNumber,
       });
 
-      const targetFile = files.find(file => file.filename === filePath);
+      const targetFile = files.find((file) => file.filename === filePath);
       if (!targetFile || !targetFile.patch) {
         return false;
       }
 
       const mapping = this.parseDiffLineMapping(targetFile.patch);
       return mapping.commentableLines.has(lineNumber);
-
     } catch (error) {
-      logger.error(`Error validating commentable line ${filePath}:${lineNumber}:`, error);
+      logger.error(
+        `Error validating commentable line ${filePath}:${lineNumber}:`,
+        error
+      );
       return false;
     }
   }
@@ -472,27 +529,29 @@ class GitHubService {
       ]);
 
       const allComments = [
-        ...reviewComments.data.map(comment => ({
+        ...reviewComments.data.map((comment) => ({
           id: comment.id,
           body: comment.body,
           user: comment.user.login,
           createdAt: comment.created_at,
           path: comment.path,
           line: comment.line,
-          type: 'review',
+          type: "review",
         })),
-        ...issueComments.data.map(comment => ({
+        ...issueComments.data.map((comment) => ({
           id: comment.id,
           body: comment.body,
           user: comment.user.login,
           createdAt: comment.created_at,
-          type: 'issue',
+          type: "issue",
         })),
       ];
 
-      return allComments.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+      return allComments.sort(
+        (a, b) => new Date(a.createdAt) - new Date(b.createdAt)
+      );
     } catch (error) {
-      logger.error('Error fetching PR comments:', error);
+      logger.error("Error fetching PR comments:", error);
       throw new Error(`Failed to fetch PR comments: ${error.message}`);
     }
   }
@@ -501,19 +560,21 @@ class GitHubService {
   async postReviewComments(owner, repo, pullNumber, headSha, comments) {
     try {
       if (!Array.isArray(comments) || comments.length === 0) {
-        logger.info('No comments to post, skipping review creation.');
+        logger.info("No comments to post, skipping review creation.");
         return;
       }
 
-      logger.info(`Posting ${comments.length} review comments for ${owner}/${repo}#${pullNumber}`);
+      logger.info(
+        `Posting ${comments.length} review comments for ${owner}/${repo}#${pullNumber}`
+      );
 
       const review = await this.octokit.rest.pulls.createReview({
         owner,
         repo,
         pull_number: pullNumber,
         commit_id: headSha,
-        event: 'COMMENT', // Use 'COMMENT' to submit without approving/requesting changes
-        comments: comments.map(comment => ({
+        event: "COMMENT", // Use 'COMMENT' to submit without approving/requesting changes
+        comments: comments.map((comment) => ({
           path: comment.path,
           line: comment.line,
           body: comment.body,
@@ -521,10 +582,12 @@ class GitHubService {
         })),
       });
 
-      logger.info(`Review with comments posted successfully: ${review.data.id}`);
+      logger.info(
+        `Review with comments posted successfully: ${review.data.id}`
+      );
       return review;
     } catch (error) {
-      logger.error('Error posting review with comments:', error);
+      logger.error("Error posting review with comments:", error);
       throw new Error(`Failed to post review with comments: ${error.message}`);
     }
   }
@@ -534,10 +597,10 @@ class GitHubService {
     const { excludeFiles, maxFilesToAnalyze, maxFileSizeBytes } = config.review;
 
     return files
-      .filter(file => {
+      .filter((file) => {
         // Check file extension exclusions
-        const isExcluded = excludeFiles.some(pattern => {
-          const regex = new RegExp(pattern.replace('*', '.*'));
+        const isExcluded = excludeFiles.some((pattern) => {
+          const regex = new RegExp(pattern.replace("*", ".*"));
           return regex.test(file.filename);
         });
 
@@ -545,7 +608,7 @@ class GitHubService {
         const isTooLarge = file.changes > maxFileSizeBytes;
 
         // Only include added or modified files
-        const isRelevant = ['added', 'modified'].includes(file.status);
+        const isRelevant = ["added", "modified"].includes(file.status);
 
         return !isExcluded && !isTooLarge && isRelevant;
       })
@@ -555,27 +618,38 @@ class GitHubService {
   // ENHANCED: Post structured comment with interactive buttons
   async postStructuredReviewComment(owner, repo, pullNumber, analysis) {
     try {
-      logger.info(`Posting enhanced structured review comment for ${owner}/${repo}#${pullNumber}`);
+      logger.info(
+        `Posting enhanced structured review comment for ${owner}/${repo}#${pullNumber}`
+      );
 
       // Store pending comments for interactive posting
       const trackingId = analysis.trackingId || `analysis-${Date.now()}`;
       analysis.trackingId = trackingId; // Ensure trackingId is set
 
-      if (analysis.detailedFindings && analysis.detailedFindings.length > 0 && interactiveCommentService) {
+      if (
+        analysis.detailedFindings &&
+        analysis.detailedFindings.length > 0 &&
+        interactiveCommentService
+      ) {
         try {
           interactiveCommentService.storePendingComments(
-            owner, repo, pullNumber,
+            owner,
+            repo,
+            pullNumber,
             analysis.detailedFindings,
             trackingId
           );
         } catch (error) {
-          logger.warn('Failed to store pending comments:', error.message);
+          logger.warn("Failed to store pending comments:", error.message);
           // Continue with normal flow even if this fails
         }
       }
 
       // Generate enhanced comment with interactive elements
-      const commentBody = this.formatEnhancedStructuredComment(analysis, trackingId);
+      const commentBody = this.formatEnhancedStructuredComment(
+        analysis,
+        trackingId
+      );
 
       const { data: comment } = await this.octokit.rest.issues.createComment({
         owner,
@@ -587,8 +661,10 @@ class GitHubService {
       logger.info(`Enhanced structured review comment posted: ${comment.id}`);
       return comment;
     } catch (error) {
-      logger.error('Error posting enhanced structured review comment:', error);
-      throw new Error(`Failed to post enhanced structured review comment: ${error.message}`);
+      logger.error("Error posting enhanced structured review comment:", error);
+      throw new Error(
+        `Failed to post enhanced structured review comment: ${error.message}`
+      );
     }
   }
 
@@ -600,7 +676,7 @@ class GitHubService {
       humanReviewAnalysis,
       reviewAssessment,
       detailedFindings,
-      recommendation
+      recommendation,
     } = analysis;
 
     let comment = `🔍 **MERGE REQUEST REVIEW ANALYSIS**\n`;
@@ -608,12 +684,16 @@ class GitHubService {
 
     // PR Information Section
     comment += `📋 **Pull Request Information:**\n`;
-    comment += `• PR ID: ${prInfo.prId || 'unknown'}\n`;
-    comment += `• Title: ${prInfo.title || 'No title'}\n`;
-    comment += `• Repository: ${prInfo.repository || 'unknown/unknown'}\n`;
-    comment += `• Author: ${prInfo.author || 'unknown'}\n`;
-    comment += `• Reviewer(s): ${(prInfo.reviewers && prInfo.reviewers.length > 0) ? prInfo.reviewers.join(', ') : 'None yet'}\n`;
-    comment += `• URL: ${prInfo.url || '#'}\n\n`;
+    comment += `• PR ID: ${prInfo.prId || "unknown"}\n`;
+    comment += `• Title: ${prInfo.title || "No title"}\n`;
+    comment += `• Repository: ${prInfo.repository || "unknown/unknown"}\n`;
+    comment += `• Author: ${prInfo.author || "unknown"}\n`;
+    comment += `• Reviewer(s): ${
+      prInfo.reviewers && prInfo.reviewers.length > 0
+        ? prInfo.reviewers.join(", ")
+        : "None yet"
+    }\n`;
+    comment += `• URL: ${prInfo.url || "#"}\n\n`;
 
     // Automated Analysis Results
     comment += `🤖 **AUTOMATED ANALYSIS RESULTS:**\n`;
@@ -631,38 +711,54 @@ class GitHubService {
     comment += `🔒 ${categories.vulnerabilities || 0} | `;
     comment += `⚠️ ${categories.securityHotspots || 0} | `;
     comment += `💨 ${categories.codeSmell || 0}\n`;
-    comment += `• Technical Debt: ${automatedAnalysis.technicalDebtMinutes || 0} minutes\n\n`;
+    comment += `• Technical Debt: ${
+      automatedAnalysis.technicalDebtMinutes || 0
+    } minutes\n\n`;
 
     // Human Review Analysis
     comment += `👥 **HUMAN REVIEW ANALYSIS:**\n`;
-    comment += `• Review Comments: ${humanReviewAnalysis.reviewComments || 0}\n`;
-    comment += `• Issues Addressed by Reviewers: ${humanReviewAnalysis.issuesAddressedByReviewers || 0}\n`;
-    comment += `• Security Issues Caught: ${humanReviewAnalysis.securityIssuesCaught || 0}\n`;
-    comment += `• Code Quality Issues Caught: ${humanReviewAnalysis.codeQualityIssuesCaught || 0}\n\n`;
+    comment += `• Review Comments: ${
+      humanReviewAnalysis.reviewComments || 0
+    }\n`;
+    comment += `• Issues Addressed by Reviewers: ${
+      humanReviewAnalysis.issuesAddressedByReviewers || 0
+    }\n`;
+    comment += `• Security Issues Caught: ${
+      humanReviewAnalysis.securityIssuesCaught || 0
+    }\n`;
+    comment += `• Code Quality Issues Caught: ${
+      humanReviewAnalysis.codeQualityIssuesCaught || 0
+    }\n\n`;
 
     // Review Assessment
     comment += `⚖️ **REVIEW ASSESSMENT:**\n`;
-    comment += `${reviewAssessment || 'REVIEW REQUIRED'}\n\n`;
+    comment += `${reviewAssessment || "REVIEW REQUIRED"}\n\n`;
 
     // COMMENTED OUT: Detailed Findings heading for cleaner UI
     // comment += `🔍 **DETAILED FINDINGS:**\n`;
 
-    if (detailedFindings && Array.isArray(detailedFindings) && detailedFindings.length > 0) {
+    if (
+      detailedFindings &&
+      Array.isArray(detailedFindings) &&
+      detailedFindings.length > 0
+    ) {
       // Filter postable findings (ones with valid file/line info)
-      const postableFindings = detailedFindings.filter(finding =>
-        finding.file &&
-        finding.file !== 'unknown-file' &&
-        finding.line &&
-        finding.line > 0 &&
-        finding.file !== 'AI_ANALYSIS_ERROR'
+      const postableFindings = detailedFindings.filter(
+        (finding) =>
+          finding.file &&
+          finding.file !== "unknown-file" &&
+          finding.line &&
+          finding.line > 0 &&
+          finding.file !== "AI_ANALYSIS_ERROR"
       );
 
-      const nonPostableFindings = detailedFindings.filter(finding =>
-        !finding.file ||
-        finding.file === 'unknown-file' ||
-        !finding.line ||
-        finding.line <= 0 ||
-        finding.file === 'AI_ANALYSIS_ERROR'
+      const nonPostableFindings = detailedFindings.filter(
+        (finding) =>
+          !finding.file ||
+          finding.file === "unknown-file" ||
+          !finding.line ||
+          finding.line <= 0 ||
+          finding.file === "AI_ANALYSIS_ERROR"
       );
 
       // COMMENTED OUT: Interactive comment instructions - no longer needed with button interface
@@ -695,7 +791,11 @@ class GitHubService {
           const severityEmoji = this.getSeverityEmoji(finding.severity);
           const categoryEmoji = this.getCategoryEmoji(finding.category);
 
-          comment += `**${postableFindings.length + index + 1}.** ${severityEmoji} ${categoryEmoji} **${finding.file || 'General'}**\n`;
+          comment += `**${
+            postableFindings.length + index + 1
+          }.** ${severityEmoji} ${categoryEmoji} **${
+            finding.file || "General"
+          }**\n`;
           comment += `   └─ **Issue:** ${finding.issue}\n`;
           comment += `   └─ **Suggestion:** ${finding.suggestion}\n\n`;
         });
@@ -704,7 +804,6 @@ class GitHubService {
       if (postableFindings.length === 0 && nonPostableFindings.length === 0) {
         comment += `No specific issues found that were missed by reviewers.\n\n`;
       }
-
     } else {
       comment += `No additional issues found that were missed by reviewers.\n\n`;
     }
@@ -732,7 +831,9 @@ class GitHubService {
 
     // Recommendation
     comment += `🎯 **RECOMMENDATION:**\n`;
-    comment += `${recommendation || 'No specific recommendation available'}\n\n`;
+    comment += `${
+      recommendation || "No specific recommendation available"
+    }\n\n`;
 
     // REMOVED: Footer clutter for cleaner UI
     // comment += `---\n`;
@@ -746,24 +847,24 @@ class GitHubService {
   // Helper: Get severity emoji
   getSeverityEmoji(severity) {
     const emojiMap = {
-      'BLOCKER': '🚫',
-      'CRITICAL': '🔴',
-      'MAJOR': '🟡',
-      'MINOR': '🔵',
-      'INFO': 'ℹ️'
+      BLOCKER: "🚫",
+      CRITICAL: "🔴",
+      MAJOR: "🟡",
+      MINOR: "🔵",
+      INFO: "ℹ️",
     };
-    return emojiMap[severity] || 'ℹ️';
+    return emojiMap[severity] || "ℹ️";
   }
 
   // Helper: Get category emoji
   getCategoryEmoji(category) {
     const emojiMap = {
-      'BUG': '🐛',
-      'VULNERABILITY': '🔒',
-      'SECURITY_HOTSPOT': '⚠️',
-      'CODE_SMELL': '💨'
+      BUG: "🐛",
+      VULNERABILITY: "🔒",
+      SECURITY_HOTSPOT: "⚠️",
+      CODE_SMELL: "💨",
     };
-    return emojiMap[category] || '💨';
+    return emojiMap[category] || "💨";
   }
 
   // Post a general comment on the PR (for notifications)
@@ -779,7 +880,7 @@ class GitHubService {
       logger.info(`General comment posted: ${comment.id}`);
       return comment;
     } catch (error) {
-      logger.error('Error posting general comment:', error);
+      logger.error("Error posting general comment:", error);
       throw new Error(`Failed to post general comment: ${error.message}`);
     }
   }
@@ -790,7 +891,7 @@ class GitHubService {
       // GitHub doesn't support true threaded replies, so we'll post a new comment
       // that references the parent comment
       const replyBody = `> Reply to [comment #${parentCommentId}]\n\n${body}`;
-      
+
       const { data: comment } = await this.octokit.rest.issues.createComment({
         owner,
         repo,
@@ -798,91 +899,245 @@ class GitHubService {
         body: replyBody,
       });
 
-      logger.info(`Reply comment posted: ${comment.id} (parent: ${parentCommentId})`);
+      logger.info(
+        `Reply comment posted: ${comment.id} (parent: ${parentCommentId})`
+      );
       return comment;
     } catch (error) {
-      logger.error('Error posting reply comment:', error);
+      logger.error("Error posting reply comment:", error);
       throw new Error(`Failed to post reply comment: ${error.message}`);
     }
   }
 
   // MODIFIED: Get file content from repository with fallback branches
-  async getFileContent(owner, repo, path, ref = 'main') {
-    const branchesToTry = [ref];
-    
-    // If not main branch, also try main as fallback
-    if (ref !== 'main') {
-      branchesToTry.push('main');
-    }
-    
-    // Also try common default branches
-    if (!branchesToTry.includes('master')) {
-      branchesToTry.push('master');
-    }
+  // async getFileContent(owner, repo, path, ref = 'main') {
+  //   const branchesToTry = [ref];
 
-    for (const branch of branchesToTry) {
-      try {
-        logger.info(`Attempting to get file content for ${path} from branch: ${branch}`);
-        
-        const { data } = await this.octokit.rest.repos.getContent({
-          owner,
-          repo,
-          path,
-          ref: branch
-        });
+  //   // If not main branch, also try main as fallback
+  //   if (ref !== 'main') {
+  //     branchesToTry.push('main');
+  //   }
 
-        if (data.type === 'file') {
-          logger.info(`Successfully found file ${path} on branch: ${branch}`);
-          return {
-            content: Buffer.from(data.content, 'base64').toString('utf8'),
-            sha: data.sha,
-            size: data.size,
-            branch: branch // Include which branch was used
-          };
+  //   // Also try common default branches
+  //   if (!branchesToTry.includes('master')) {
+  //     branchesToTry.push('master');
+  //   }
+
+  //   for (const branch of branchesToTry) {
+  //     try {
+  //       logger.info(`Attempting to get file content for ${path} from branch: ${branch}`);
+
+  //       const { data } = await this.octokit.rest.repos.getContent({
+  //         owner,
+  //         repo,
+  //         path,
+  //         ref: branch
+  //       });
+
+  //       if (data.type === 'file') {
+  //         logger.info(`Successfully found file ${path} on branch: ${branch}`);
+  //         return {
+  //           content: Buffer.from(data.content, 'base64').toString('utf8'),
+  //           sha: data.sha,
+  //           size: data.size,
+  //           branch: branch // Include which branch was used
+  //         };
+  //       }
+  //     } catch (error) {
+  //       logger.warn(`File ${path} not found on branch ${branch}: ${error.message}`);
+  //       // Continue to next branch
+  //     }
+  //   }
+
+  //   logger.error(`File ${path} not found on any branch: ${branchesToTry.join(', ')}`);
+  //   return null;
+  // }
+  async getFileContent(owner, repo, path, ref = null) {
+    try {
+      // Step 1: If no ref provided, get the default branch
+      let branchesToTry = [];
+
+      if (ref) {
+        branchesToTry.push(ref);
+      } else {
+        // Get repository info to find the actual default branch
+        try {
+          const { data: repoInfo } = await this.octokit.rest.repos.get({
+            owner,
+            repo,
+          });
+          const defaultBranch = repoInfo.default_branch;
+          branchesToTry.push(defaultBranch);
+          logger.info(`Repository default branch: ${defaultBranch}`);
+        } catch (repoError) {
+          logger.warn(
+            "Could not get repository info, using common branch names:",
+            repoError.message
+          );
+          branchesToTry = ["main", "master", "develop"];
         }
-      } catch (error) {
-        logger.warn(`File ${path} not found on branch ${branch}: ${error.message}`);
-        // Continue to next branch
       }
+
+      // Add common fallback branches if not already included
+      const fallbackBranches = ["main", "master", "develop"];
+      for (const branch of fallbackBranches) {
+        if (!branchesToTry.includes(branch)) {
+          branchesToTry.push(branch);
+        }
+      }
+
+      logger.info(
+        `Attempting to get file content for ${path} from branches: ${branchesToTry.join(
+          ", "
+        )}`
+      );
+
+      // Step 2: Try each branch until we find the file
+      for (const branch of branchesToTry) {
+        try {
+          logger.info(
+            `Attempting to get file content for ${path} from branch: ${branch}`
+          );
+
+          const { data } = await this.octokit.rest.repos.getContent({
+            owner,
+            repo,
+            path,
+            ref: branch,
+          });
+
+          if (data.type === "file") {
+            logger.info(`Successfully found file ${path} on branch: ${branch}`);
+            return {
+              content: Buffer.from(data.content, "base64").toString("utf8"),
+              sha: data.sha,
+              size: data.size,
+              branch: branch,
+            };
+          }
+        } catch (error) {
+          // Log different error types with appropriate levels
+          if (error.status === 404) {
+            logger.warn(
+              `File ${path} not found on branch ${branch}: ${error.message}`
+            );
+          } else {
+            logger.error(
+              `Error accessing file ${path} on branch ${branch}: ${error.message}`
+            );
+          }
+          // Continue to next branch
+          continue;
+        }
+      }
+
+      // Step 3: If file not found in any branch, try to find it in the PR's changed files
+      logger.info(
+        `File ${path} not found on any branch, checking if it's a new file in PR changes`
+      );
+
+      // This will be used by the calling function to determine if it's a new file
+      logger.error(
+        `File ${path} not found on any branch: ${branchesToTry.join(", ")}`
+      );
+      return null;
+    } catch (error) {
+      logger.error(`Error in getFileContent for ${path}:`, error);
+      throw new Error(`Failed to get file content: ${error.message}`);
     }
-    
-    logger.error(`File ${path} not found on any branch: ${branchesToTry.join(', ')}`);
-    return null;
   }
 
   // NEW: Update file content in repository
-  async updateFileContent(owner, repo, path, branch, content, message, sha) {
+  // async updateFileContent(owner, repo, path, branch, content, message, sha) {
+  //   try {
+  //     const { data } = await this.octokit.rest.repos.createOrUpdateFileContents({
+  //       owner,
+  //       repo,
+  //       path,
+  //       message,
+  //       content: Buffer.from(content).toString('base64'),
+  //       branch,
+  //       sha
+  //     });
+
+  //     logger.info(`File updated: ${path} on branch ${branch}`);
+  //     return data;
+  //   } catch (error) {
+  //     logger.error(`Error updating file content for ${path}:`, error);
+  //     throw new Error(`Failed to update file: ${error.message}`);
+  //   }
+  // }
+  async updateFileContent(
+    owner,
+    repo,
+    path,
+    branch,
+    content,
+    message,
+    sha = null
+  ) {
     try {
-      const { data } = await this.octokit.rest.repos.createOrUpdateFileContents({
+      const updateParams = {
         owner,
         repo,
         path,
         message,
-        content: Buffer.from(content).toString('base64'),
+        content: Buffer.from(content).toString("base64"),
         branch,
-        sha
-      });
+      };
 
-      logger.info(`File updated: ${path} on branch ${branch}`);
+      // Only include sha if provided (for existing files)
+      if (sha) {
+        updateParams.sha = sha;
+      }
+
+      const { data } = await this.octokit.rest.repos.createOrUpdateFileContents(
+        updateParams
+      );
+
+      logger.info(
+        `File ${sha ? "updated" : "created"}: ${path} on branch ${branch}`
+      );
       return data;
     } catch (error) {
-      logger.error(`Error updating file content for ${path}:`, error);
-      throw new Error(`Failed to update file: ${error.message}`);
+      logger.error(
+        `Error ${sha ? "updating" : "creating"} file content for ${path}:`,
+        error
+      );
+
+      // Provide more specific error messages
+      if (error.status === 404) {
+        throw new Error(
+          `Repository or branch not found: ${owner}/${repo}:${branch}`
+        );
+      } else if (error.status === 409) {
+        throw new Error(
+          `File ${path} has been modified. Please refresh and try again.`
+        );
+      } else if (error.status === 422) {
+        throw new Error(`Invalid file content or path: ${path}`);
+      }
+
+      throw new Error(
+        `Failed to ${sha ? "update" : "create"} file: ${error.message}`
+      );
     }
   }
-
   // Post review comment (for compatibility)
   async postReviewComment(owner, repo, pullNumber, comments) {
     try {
       logger.info(`Posting review comments for ${owner}/${repo}#${pullNumber}`);
 
-      const reviewBody = typeof comments === 'string' ? comments : this.formatReviewBody(comments);
+      const reviewBody =
+        typeof comments === "string"
+          ? comments
+          : this.formatReviewBody(comments);
 
       const { data: review } = await this.octokit.rest.pulls.createReview({
         owner,
         repo,
         pull_number: pullNumber,
-        event: 'COMMENT',
+        event: "COMMENT",
         body: reviewBody,
         comments: comments.inlineComments || [],
       });
@@ -890,32 +1145,35 @@ class GitHubService {
       logger.info(`Review posted successfully: ${review.id}`);
       return review;
     } catch (error) {
-      logger.error('Error posting review comment:', error);
+      logger.error("Error posting review comment:", error);
       throw new Error(`Failed to post review comment: ${error.message}`);
     }
   }
 
   // Format review body (legacy compatibility)
   formatReviewBody(analysis) {
-    if (typeof analysis === 'string') {
+    if (typeof analysis === "string") {
       return analysis;
     }
 
     // If it's the new structured format, use the enhanced formatter
     if (analysis.prInfo) {
-      return this.formatEnhancedStructuredComment(analysis, analysis.trackingId || 'unknown');
+      return this.formatEnhancedStructuredComment(
+        analysis,
+        analysis.trackingId || "unknown"
+      );
     }
 
     // Legacy format handling
     const { summary, issues, recommendations } = analysis;
 
     let body = `## 🤖 AI Code Review Summary\n\n`;
-    body += `**Overall Rating:** ${summary?.overallRating || 'UNKNOWN'}\n`;
+    body += `**Overall Rating:** ${summary?.overallRating || "UNKNOWN"}\n`;
     body += `**Total Issues:** ${summary?.totalIssues || 0}\n\n`;
 
     if (recommendations && recommendations.length > 0) {
       body += `### 💡 Recommendations\n`;
-      recommendations.forEach(rec => {
+      recommendations.forEach((rec) => {
         body += `- ${rec}\n`;
       });
     }
@@ -954,42 +1212,81 @@ class GitHubService {
   //   }
   // }
 
+  // async createCheckRun(owner, repo, checkRunData) {
+  //   try {
+  //     logger.info(`Creating check run: ${checkRunData.name} for ${owner}/${repo}`);
+
+  //     // Clean the output to remove empty DETAILS sections
+  //     if (checkRunData.output) {
+  //       checkRunData.output = this.cleanCheckRunOutput(checkRunData.output);
+  //     }
+
+  //     // Validate GitHub API limits before sending
+  //     this.validateCheckRunData(checkRunData);
+
+  //     const { data: checkRun } = await this.octokit.rest.checks.create({
+  //       owner,
+  //       repo,
+  //       ...checkRunData,
+  //     });
+
+  //     logger.info(`Check run created: ${checkRun.id}`);
+  //     return checkRun;
+  //   } catch (error) {
+  //     logger.error('Error creating check run:', error);
+  //     logger.error('Check run data that failed:', {
+  //       name: checkRunData.name,
+  //       status: checkRunData.status,
+  //       conclusion: checkRunData.conclusion,
+  //       summaryLength: checkRunData.output?.summary?.length,
+  //       textLength: checkRunData.output?.text?.length || 0,
+  //       actionsCount: checkRunData.actions?.length,
+  //       actions: checkRunData.actions?.map(a => ({ label: a.label, identifier: a.identifier }))
+  //     });
+  //     throw new Error(`Failed to create check run: ${error.message}`);
+  //   }
+  // }
+
   async createCheckRun(owner, repo, checkRunData) {
     try {
-      logger.info(`Creating check run: ${checkRunData.name} for ${owner}/${repo}`);
-  
+      logger.info(
+        `Creating check run: ${checkRunData.name} for ${owner}/${repo}`
+      );
+
       // Clean the output to remove empty DETAILS sections
       if (checkRunData.output) {
         checkRunData.output = this.cleanCheckRunOutput(checkRunData.output);
       }
-  
+
       // Validate GitHub API limits before sending
       this.validateCheckRunData(checkRunData);
-  
+
       const { data: checkRun } = await this.octokit.rest.checks.create({
         owner,
         repo,
         ...checkRunData,
       });
-  
+
       logger.info(`Check run created: ${checkRun.id}`);
       return checkRun;
     } catch (error) {
-      logger.error('Error creating check run:', error);
-      logger.error('Check run data that failed:', {
+      logger.error("Error creating check run:", error);
+      logger.error("Check run data that failed:", {
         name: checkRunData.name,
         status: checkRunData.status,
         conclusion: checkRunData.conclusion,
         summaryLength: checkRunData.output?.summary?.length,
         textLength: checkRunData.output?.text?.length || 0,
         actionsCount: checkRunData.actions?.length,
-        actions: checkRunData.actions?.map(a => ({ label: a.label, identifier: a.identifier }))
+        actions: checkRunData.actions?.map((a) => ({
+          label: a.label,
+          identifier: a.identifier,
+        })),
       });
       throw new Error(`Failed to create check run: ${error.message}`);
     }
   }
 
-  
   // Validate check run data against GitHub limits
   // validateCheckRunData(checkRunData) {
   //   const { name, output, actions } = checkRunData;
@@ -1039,28 +1336,83 @@ class GitHubService {
   //   });
   // }
 
+  // validateCheckRunData(checkRunData) {
+  //   const { name, output, actions } = checkRunData;
+
+  //   // Check name length (20 characters max)
+  //   if (name && name.length > 20) {
+  //     throw new Error(`Check run name too long: ${name.length} chars (max 20)`);
+  //   }
+
+  //   // Check output limits
+  //   if (output) {
+  //     if (output.title && output.title.length > 255) {
+  //       throw new Error(`Output title too long: ${output.title.length} chars (max 255)`);
+  //     }
+  //     if (output.summary && output.summary.length > 65535) {
+  //       throw new Error(`Output summary too long: ${output.summary.length} chars (max 65535)`);
+  //     }
+  //     // MODIFIED: Only validate text if it exists (since we're removing empty text fields)
+  //     if (output.text && output.text.length > 65535) {
+  //       throw new Error(`Output text too long: ${output.text.length} chars (max 65535)`);
+  //     }
+  //   }
+
+  //   // Check actions limits
+  //   if (actions) {
+  //     if (actions.length > 3) {
+  //       throw new Error(`Too many actions: ${actions.length} (max 3)`);
+  //     }
+  //     actions.forEach((action, index) => {
+  //       if (action.label && action.label.length > 20) {
+  //         throw new Error(`Action ${index} label too long: ${action.label.length} chars (max 20)`);
+  //       }
+  //       if (action.description && action.description.length > 40) {
+  //         throw new Error(`Action ${index} description too long: ${action.description.length} chars (max 40)`);
+  //       }
+  //       if (action.identifier && action.identifier.length > 20) {
+  //         throw new Error(`Action ${index} identifier too long: ${action.identifier.length} chars (max 20)`);
+  //       }
+  //     });
+  //   }
+
+  //   logger.info('Check run data validation passed', {
+  //     nameLength: name?.length,
+  //     titleLength: output?.title?.length,
+  //     summaryLength: output?.summary?.length,
+  //     textLength: output?.text?.length || 0, // Show 0 if no text field
+  //     actionsCount: actions?.length
+  //   });
+  // }
+
   validateCheckRunData(checkRunData) {
     const { name, output, actions } = checkRunData;
-  
+
     // Check name length (20 characters max)
     if (name && name.length > 20) {
       throw new Error(`Check run name too long: ${name.length} chars (max 20)`);
     }
-  
+
     // Check output limits
     if (output) {
       if (output.title && output.title.length > 255) {
-        throw new Error(`Output title too long: ${output.title.length} chars (max 255)`);
+        throw new Error(
+          `Output title too long: ${output.title.length} chars (max 255)`
+        );
       }
       if (output.summary && output.summary.length > 65535) {
-        throw new Error(`Output summary too long: ${output.summary.length} chars (max 65535)`);
+        throw new Error(
+          `Output summary too long: ${output.summary.length} chars (max 65535)`
+        );
       }
       // MODIFIED: Only validate text if it exists (since we're removing empty text fields)
       if (output.text && output.text.length > 65535) {
-        throw new Error(`Output text too long: ${output.text.length} chars (max 65535)`);
+        throw new Error(
+          `Output text too long: ${output.text.length} chars (max 65535)`
+        );
       }
     }
-  
+
     // Check actions limits
     if (actions) {
       if (actions.length > 3) {
@@ -1068,30 +1420,56 @@ class GitHubService {
       }
       actions.forEach((action, index) => {
         if (action.label && action.label.length > 20) {
-          throw new Error(`Action ${index} label too long: ${action.label.length} chars (max 20)`);
+          throw new Error(
+            `Action ${index} label too long: ${action.label.length} chars (max 20)`
+          );
         }
         if (action.description && action.description.length > 40) {
-          throw new Error(`Action ${index} description too long: ${action.description.length} chars (max 40)`);
+          throw new Error(
+            `Action ${index} description too long: ${action.description.length} chars (max 40)`
+          );
         }
         if (action.identifier && action.identifier.length > 20) {
-          throw new Error(`Action ${index} identifier too long: ${action.identifier.length} chars (max 20)`);
+          throw new Error(
+            `Action ${index} identifier too long: ${action.identifier.length} chars (max 20)`
+          );
         }
       });
     }
-  
-    logger.info('Check run data validation passed', {
+
+    logger.info("Check run data validation passed", {
       nameLength: name?.length,
       titleLength: output?.title?.length,
       summaryLength: output?.summary?.length,
       textLength: output?.text?.length || 0, // Show 0 if no text field
-      actionsCount: actions?.length
+      actionsCount: actions?.length,
     });
   }
 
-  
   // Update existing check run
   // async updateCheckRun(owner, repo, checkRunId, updateData) {
   //   try {
+  //     const { data: checkRun } = await this.octokit.rest.checks.update({
+  //       owner,
+  //       repo,
+  //       check_run_id: checkRunId,
+  //       ...updateData,
+  //     });
+
+  //     logger.info(`Check run updated: ${checkRunId} - Status: ${updateData.status || 'updated'}`);
+  //     return checkRun;
+  //   } catch (error) {
+  //     logger.error(`Error updating check run ${checkRunId}:`, error);
+  //     throw new Error(`Failed to update check run: ${error.message}`);
+  //   }
+  // }
+  // async updateCheckRun(owner, repo, checkRunId, updateData) {
+  //   try {
+  //     // Clean the output to remove empty DETAILS sections
+  //     if (updateData.output) {
+  //       updateData.output = this.cleanCheckRunOutput(updateData.output);
+  //     }
+
   //     const { data: checkRun } = await this.octokit.rest.checks.update({
   //       owner,
   //       repo,
@@ -1112,15 +1490,19 @@ class GitHubService {
       if (updateData.output) {
         updateData.output = this.cleanCheckRunOutput(updateData.output);
       }
-  
+
       const { data: checkRun } = await this.octokit.rest.checks.update({
         owner,
         repo,
         check_run_id: checkRunId,
         ...updateData,
       });
-  
-      logger.info(`Check run updated: ${checkRunId} - Status: ${updateData.status || 'updated'}`);
+
+      logger.info(
+        `Check run updated: ${checkRunId} - Status: ${
+          updateData.status || "updated"
+        }`
+      );
       return checkRun;
     } catch (error) {
       logger.error(`Error updating check run ${checkRunId}:`, error);
@@ -1141,7 +1523,7 @@ class GitHubService {
       logger.info(`Comment updated: ${commentId}`);
       return comment;
     } catch (error) {
-      logger.error('Error updating comment:', error);
+      logger.error("Error updating comment:", error);
       throw new Error(`Failed to update comment: ${error.message}`);
     }
   }
@@ -1165,12 +1547,12 @@ class GitHubService {
     return config.review.targetBranches.includes(branch);
   }
 
-
-
   // Debug method to analyze line mapping issues
   async debugLineMapping(owner, repo, pullNumber, filePath) {
     try {
-      logger.info(`Debugging line mapping for ${filePath} in PR #${pullNumber}`);
+      logger.info(
+        `Debugging line mapping for ${filePath} in PR #${pullNumber}`
+      );
 
       const { data: files } = await this.octokit.rest.pulls.listFiles({
         owner,
@@ -1178,7 +1560,7 @@ class GitHubService {
         pull_number: pullNumber,
       });
 
-      const targetFile = files.find(file => file.filename === filePath);
+      const targetFile = files.find((file) => file.filename === filePath);
       if (!targetFile) {
         logger.error(`File ${filePath} not found in PR #${pullNumber}`);
         return null;
@@ -1199,21 +1581,26 @@ class GitHubService {
         deletions: targetFile.deletions,
         changes: targetFile.changes,
         hasPatch: true,
-        commentableLines: Array.from(mapping.commentableLines).sort((a, b) => a - b),
+        commentableLines: Array.from(mapping.commentableLines).sort(
+          (a, b) => a - b
+        ),
         totalHunks: mapping.hunks.length,
-        hunks: mapping.hunks.map(hunk => ({
+        hunks: mapping.hunks.map((hunk) => ({
           oldStart: hunk.oldStart,
           newStart: hunk.newStart,
           lineCount: hunk.lines.length,
-          addedLines: hunk.lines.filter(l => l.type === 'added').map(l => l.newLine),
-          contextLines: hunk.lines.filter(l => l.type === 'context').map(l => l.newLine)
+          addedLines: hunk.lines
+            .filter((l) => l.type === "added")
+            .map((l) => l.newLine),
+          contextLines: hunk.lines
+            .filter((l) => l.type === "context")
+            .map((l) => l.newLine),
         })),
-        patchPreview: targetFile.patch.split('\n').slice(0, 10).join('\n')
+        patchPreview: targetFile.patch.split("\n").slice(0, 10).join("\n"),
       };
 
       logger.info(`Line mapping debug info for ${filePath}:`, debugInfo);
       return debugInfo;
-
     } catch (error) {
       logger.error(`Error debugging line mapping for ${filePath}:`, error);
       return { error: error.message };
@@ -1228,14 +1615,20 @@ class GitHubService {
       invalidFindings: 0,
       adjustableFindings: 0,
       unadjustableFindings: 0,
-      issues: []
+      issues: [],
     };
 
     for (let i = 0; i < findings.length; i++) {
       const finding = findings[i];
 
       try {
-        const isValid = await this.validateCommentableLine(owner, repo, pullNumber, finding.file, finding.line);
+        const isValid = await this.validateCommentableLine(
+          owner,
+          repo,
+          pullNumber,
+          finding.file,
+          finding.line
+        );
 
         if (isValid) {
           validationReport.validFindings++;
@@ -1243,7 +1636,13 @@ class GitHubService {
           validationReport.invalidFindings++;
 
           // Try to find an alternative
-          const adjustedLine = await this.findCommentableLine(owner, repo, pullNumber, finding.file, finding.line);
+          const adjustedLine = await this.findCommentableLine(
+            owner,
+            repo,
+            pullNumber,
+            finding.file,
+            finding.line
+          );
 
           if (adjustedLine) {
             validationReport.adjustableFindings++;
@@ -1252,8 +1651,8 @@ class GitHubService {
               file: finding.file,
               originalLine: finding.line,
               adjustedLine: adjustedLine,
-              type: 'adjustable',
-              message: `Line ${finding.line} not commentable, can adjust to line ${adjustedLine}`
+              type: "adjustable",
+              message: `Line ${finding.line} not commentable, can adjust to line ${adjustedLine}`,
             });
           } else {
             validationReport.unadjustableFindings++;
@@ -1261,8 +1660,8 @@ class GitHubService {
               index: i,
               file: finding.file,
               originalLine: finding.line,
-              type: 'unadjustable',
-              message: `Line ${finding.line} not commentable and no nearby alternative found`
+              type: "unadjustable",
+              message: `Line ${finding.line} not commentable and no nearby alternative found`,
             });
           }
         }
@@ -1272,8 +1671,8 @@ class GitHubService {
           index: i,
           file: finding.file,
           originalLine: finding.line,
-          type: 'error',
-          message: `Validation error: ${error.message}`
+          type: "error",
+          message: `Validation error: ${error.message}`,
         });
       }
     }
@@ -1283,9 +1682,9 @@ class GitHubService {
         total: validationReport.totalFindings,
         valid: validationReport.validFindings,
         adjustable: validationReport.adjustableFindings,
-        problematic: validationReport.unadjustableFindings
+        problematic: validationReport.unadjustableFindings,
       },
-      issueCount: validationReport.issues.length
+      issueCount: validationReport.issues.length,
     });
 
     return validationReport;
@@ -1294,7 +1693,12 @@ class GitHubService {
   // Add to ai.service.js for better error context in analysis
   enhanceAnalysisWithLineValidation(analysis, owner, repo, pullNumber) {
     // Add a validation promise that can be awaited later
-    analysis.lineValidation = this.validateFindings(analysis.detailedFindings, owner, repo, pullNumber);
+    analysis.lineValidation = this.validateFindings(
+      analysis.detailedFindings,
+      owner,
+      repo,
+      pullNumber
+    );
     return analysis;
   }
 
@@ -1309,37 +1713,49 @@ class GitHubService {
     for (const finding of findings) {
       if (!finding.file || !finding.line || finding.line <= 0) {
         issues.push({
-          file: finding.file || 'unknown',
+          file: finding.file || "unknown",
           line: finding.line || 0,
-          issue: 'Missing or invalid file/line information',
-          severity: 'warning'
+          issue: "Missing or invalid file/line information",
+          severity: "warning",
         });
         continue;
       }
 
       try {
-        const githubService = require('./github.service');
-        const isValid = await githubService.validateCommentableLine(owner, repo, pullNumber, finding.file, finding.line);
+        const githubService = require("./github.service");
+        const isValid = await githubService.validateCommentableLine(
+          owner,
+          repo,
+          pullNumber,
+          finding.file,
+          finding.line
+        );
 
         if (isValid) {
           validCount++;
         } else {
-          const adjustedLine = await githubService.findCommentableLine(owner, repo, pullNumber, finding.file, finding.line);
+          const adjustedLine = await githubService.findCommentableLine(
+            owner,
+            repo,
+            pullNumber,
+            finding.file,
+            finding.line
+          );
 
           if (adjustedLine) {
             issues.push({
               file: finding.file,
               line: finding.line,
               adjustedLine: adjustedLine,
-              issue: 'Line not in diff, can be adjusted',
-              severity: 'info'
+              issue: "Line not in diff, can be adjusted",
+              severity: "info",
             });
           } else {
             issues.push({
               file: finding.file,
               line: finding.line,
-              issue: 'Line not in PR changes and no nearby alternative',
-              severity: 'warning'
+              issue: "Line not in PR changes and no nearby alternative",
+              severity: "warning",
             });
           }
         }
@@ -1348,34 +1764,455 @@ class GitHubService {
           file: finding.file,
           line: finding.line,
           issue: `Validation error: ${error.message}`,
-          severity: 'error'
+          severity: "error",
         });
       }
     }
 
     return {
-      valid: issues.filter(i => i.severity === 'error').length === 0,
+      valid: issues.filter((i) => i.severity === "error").length === 0,
       validCount,
       totalCount: findings.length,
-      issues
+      issues,
     };
+  }
+
+  // cleanCheckRunOutput(output) {
+  //   if (!output) return output;
+
+  //   const cleanedOutput = {
+  //     title: output.title,
+  //     summary: output.summary
+  //   };
+
+  //   // Only include text if it has meaningful content (not empty or whitespace only)
+  //   if (output.text && output.text.trim() && output.text.trim().length > 0) {
+  //     cleanedOutput.text = output.text;
+  //   }
+  //   // REMOVED: Empty text field to prevent DETAILS section
+
+  //   return cleanedOutput;
+  // }
+
+  // ENHANCED: Get file content with PR context for better handling of new files
+  async getFileContentWithPRContext(owner, repo, path, ref, pullNumber = null) {
+    try {
+      // First, try the normal getFileContent method
+      const fileContent = await this.getFileContent(owner, repo, path, ref);
+
+      if (fileContent) {
+        return fileContent;
+      }
+
+      // If file not found and we have a PR number, check if it's a new file in the PR
+      if (pullNumber) {
+        const prFileInfo = await this.isFileInPRChanges(
+          owner,
+          repo,
+          pullNumber,
+          path
+        );
+
+        if (prFileInfo.exists && prFileInfo.status === "added") {
+          logger.info(`File ${path} is a new file added in PR #${pullNumber}`);
+
+          // For new files, we can't get the "before" content, but we can indicate it's new
+          return {
+            content: "", // Empty content for new files
+            sha: null, // No SHA for new files
+            size: 0,
+            branch: ref || "main",
+            isNewFile: true,
+            prStatus: prFileInfo.status,
+          };
+        }
+      }
+
+      return null;
+    } catch (error) {
+      logger.error(`Error in getFileContentWithPRContext for ${path}:`, error);
+      throw error;
+    }
+  }
+  // NEW: Helper method to check if a file exists in PR changes (for new files)
+  async isFileInPRChanges(owner, repo, pullNumber, filePath) {
+    try {
+      const { data: files } = await this.octokit.rest.pulls.listFiles({
+        owner,
+        repo,
+        pull_number: pullNumber,
+      });
+
+      const fileInPR = files.find((file) => file.filename === filePath);
+
+      if (fileInPR) {
+        logger.info(
+          `File ${filePath} found in PR changes with status: ${fileInPR.status}`
+        );
+        return {
+          exists: true,
+          status: fileInPR.status, // 'added', 'modified', 'removed'
+          additions: fileInPR.additions,
+          deletions: fileInPR.deletions,
+        };
+      }
+
+      return { exists: false };
+    } catch (error) {
+      logger.error(
+        `Error checking if file ${filePath} is in PR changes:`,
+        error
+      );
+      return { exists: false, error: error.message };
+    }
   }
 
   cleanCheckRunOutput(output) {
     if (!output) return output;
-    
+
     const cleanedOutput = {
       title: output.title,
-      summary: output.summary
+      summary: output.summary,
     };
-    
+
     // Only include text if it has meaningful content (not empty or whitespace only)
     if (output.text && output.text.trim() && output.text.trim().length > 0) {
-      cleanedOutput.text = output.text;
+      // Additional check: don't include text if it's just formatting or empty sections
+      const meaningfulContent = output.text
+        .trim()
+        .replace(/#{1,6}\s*\w+\s*/g, "") // Remove headers
+        .replace(/\*{1,2}\w+\*{1,2}/g, "") // Remove bold text markers
+        .replace(/[-*]\s*/g, "") // Remove list markers
+        .replace(/\s+/g, " ") // Normalize whitespace
+        .trim();
+
+      if (meaningfulContent && meaningfulContent.length > 10) {
+        cleanedOutput.text = output.text;
+      }
     }
-    // REMOVED: Empty text field to prevent DETAILS section
-    
+    // COMPLETELY REMOVED: Empty text field to prevent DETAILS section
+
     return cleanedOutput;
+  }
+
+  // ENHANCED: Get file content from PR source branch with fallback to target branch
+  async getFileContentFromPR(owner, repo, pullNumber, filePath) {
+    try {
+      logger.info(
+        `Getting file content for ${filePath} from PR #${pullNumber}`
+      );
+
+      // First, get PR information to know the branches
+      const { data: pr } = await this.octokit.rest.pulls.get({
+        owner,
+        repo,
+        pull_number: pullNumber,
+      });
+
+      const sourceBranch = pr.head.ref; // Branch with changes (where we want to commit fixes)
+      const targetBranch = pr.base.ref; // Target branch (usually main/master)
+
+      logger.info(
+        `PR branches - source: ${sourceBranch}, target: ${targetBranch}`
+      );
+
+      // Try to get file from source branch first (the PR branch)
+      let fileContent = await this.getFileContent(
+        owner,
+        repo,
+        filePath,
+        sourceBranch
+      );
+
+      if (fileContent) {
+        logger.info(`Found ${filePath} in PR source branch: ${sourceBranch}`);
+        return {
+          ...fileContent,
+          sourceBranch,
+          targetBranch,
+          pullNumber,
+        };
+      }
+
+      // If not in source branch, try target branch (for newly added files)
+      logger.info(
+        `File ${filePath} not found in source branch, trying target branch: ${targetBranch}`
+      );
+      fileContent = await this.getFileContent(
+        owner,
+        repo,
+        filePath,
+        targetBranch
+      );
+
+      if (fileContent) {
+        logger.info(`Found ${filePath} in PR target branch: ${targetBranch}`);
+        return {
+          ...fileContent,
+          sourceBranch,
+          targetBranch,
+          pullNumber,
+          foundInTarget: true, // Flag to indicate file was found in target, not source
+        };
+      }
+
+      // Check if it's a new file in the PR
+      const prFileInfo = await this.isFileInPRChanges(
+        owner,
+        repo,
+        pullNumber,
+        filePath
+      );
+
+      if (prFileInfo.exists && prFileInfo.status === "added") {
+        logger.info(`${filePath} is a new file added in PR #${pullNumber}`);
+
+        // For new files, get the content from the PR diff if possible
+        const newFileContent = await this.getNewFileContentFromPR(
+          owner,
+          repo,
+          pullNumber,
+          filePath
+        );
+
+        return {
+          content: newFileContent || "",
+          sha: null, // No SHA for new files
+          size: newFileContent?.length || 0,
+          branch: sourceBranch,
+          sourceBranch,
+          targetBranch,
+          pullNumber,
+          isNewFile: true,
+          prStatus: prFileInfo.status,
+        };
+      }
+
+      logger.error(
+        `File ${filePath} not found in either PR source (${sourceBranch}) or target (${targetBranch}) branch`
+      );
+      return null;
+    } catch (error) {
+      logger.error(
+        `Error getting file content from PR #${pullNumber} for ${filePath}:`,
+        error
+      );
+      throw error;
+    }
+  }
+
+  // NEW: Get content of a new file from PR changes
+  async getNewFileContentFromPR(owner, repo, pullNumber, filePath) {
+    try {
+      const { data: files } = await this.octokit.rest.pulls.listFiles({
+        owner,
+        repo,
+        pull_number: pullNumber,
+      });
+
+      const targetFile = files.find((file) => file.filename === filePath);
+
+      if (targetFile && targetFile.status === "added" && targetFile.patch) {
+        // Extract content from patch (this is a simplified approach)
+        const patchLines = targetFile.patch.split("\n");
+        const contentLines = patchLines
+          .filter((line) => line.startsWith("+") && !line.startsWith("+++"))
+          .map((line) => line.substring(1)); // Remove the '+' prefix
+
+        return contentLines.join("\n");
+      }
+
+      return null;
+    } catch (error) {
+      logger.error(`Error extracting new file content for ${filePath}:`, error);
+      return null;
+    }
+  }
+
+  // NEW: Helper method to check if a file exists in PR changes (for new files)
+  async isFileInPRChanges(owner, repo, pullNumber, filePath) {
+    try {
+      const { data: files } = await this.octokit.rest.pulls.listFiles({
+        owner,
+        repo,
+        pull_number: pullNumber,
+      });
+
+      const fileInPR = files.find((file) => file.filename === filePath);
+
+      if (fileInPR) {
+        logger.info(
+          `File ${filePath} found in PR changes with status: ${fileInPR.status}`
+        );
+        return {
+          exists: true,
+          status: fileInPR.status, // 'added', 'modified', 'removed'
+          additions: fileInPR.additions,
+          deletions: fileInPR.deletions,
+        };
+      }
+
+      return { exists: false };
+    } catch (error) {
+      logger.error(
+        `Error checking if file ${filePath} is in PR changes:`,
+        error
+      );
+      return { exists: false, error: error.message };
+    }
+  }
+
+  // ENHANCED: Commit fixes to PR source branch
+  async commitFixesToPRBranch(
+    owner,
+    repo,
+    pullNumber,
+    fixes,
+    commitMessage = "Apply AI-suggested code fixes"
+  ) {
+    try {
+      logger.info(`Committing ${fixes.length} fixes to PR #${pullNumber}`);
+
+      const results = {
+        successful: [],
+        failed: [],
+        skipped: [],
+      };
+
+      for (const fix of fixes) {
+        try {
+          // Get current file content from PR context
+          const fileInfo = await this.getFileContentFromPR(
+            owner,
+            repo,
+            pullNumber,
+            fix.file
+          );
+
+          if (!fileInfo) {
+            logger.warn(
+              `File ${fix.file} not found in repository. Skipping fix commit for non-existent file.`
+            );
+            results.skipped.push({
+              file: fix.file,
+              reason: "File not found in repository",
+              fix: fix,
+            });
+            continue;
+          }
+
+          // Apply the fix to the current content
+          const updatedContent = this.applyFixToContent(fileInfo.content, fix);
+
+          if (updatedContent === fileInfo.content) {
+            logger.info(
+              `No changes needed for ${fix.file} - fix may already be applied`
+            );
+            results.skipped.push({
+              file: fix.file,
+              reason: "No changes needed",
+              fix: fix,
+            });
+            continue;
+          }
+
+          // Commit the updated content to the PR source branch
+          const commitResult = await this.updateFileContent(
+            owner,
+            repo,
+            fix.file,
+            fileInfo.sourceBranch, // Commit to PR source branch
+            updatedContent,
+            `${commitMessage}\n\nFixed: ${fix.issue}\nSuggestion: ${fix.suggestion}`,
+            fileInfo.sha // Include SHA if file exists
+          );
+
+          logger.info(
+            `Successfully committed fix for ${fix.file} to branch ${fileInfo.sourceBranch}`
+          );
+          results.successful.push({
+            file: fix.file,
+            branch: fileInfo.sourceBranch,
+            commitSha: commitResult.commit.sha,
+            commitUrl: commitResult.commit.html_url,
+            fix: fix,
+          });
+
+          // Small delay to avoid rate limiting
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        } catch (error) {
+          logger.error(`Error committing fix for ${fix.file}:`, error);
+          results.failed.push({
+            file: fix.file,
+            error: error.message,
+            fix: fix,
+          });
+        }
+      }
+
+      logger.info(`Commit fixes completed for PR #${pullNumber}`, {
+        successful: results.successful.length,
+        failed: results.failed.length,
+        skipped: results.skipped.length,
+      });
+
+      return results;
+    } catch (error) {
+      logger.error(
+        `Error in commitFixesToPRBranch for PR #${pullNumber}:`,
+        error
+      );
+      throw error;
+    }
+  }
+
+  // NEW: Apply a fix suggestion to file content
+  applyFixToContent(currentContent, fix) {
+    try {
+      // If fix includes both current_code and suggested_fix, do a targeted replacement
+      if (fix.current_code && fix.suggested_fix) {
+        const updatedContent = currentContent.replace(
+          fix.current_code.trim(),
+          fix.suggested_fix.trim()
+        );
+
+        if (updatedContent !== currentContent) {
+          logger.info(`Applied targeted fix replacement in file ${fix.file}`);
+          return updatedContent;
+        }
+      }
+
+      // If we have line information, try to replace specific lines
+      if (fix.line && typeof fix.line === "number") {
+        const lines = currentContent.split("\n");
+
+        if (fix.line > 0 && fix.line <= lines.length) {
+          // If we have suggested_fix, replace the line
+          if (fix.suggested_fix) {
+            lines[fix.line - 1] = fix.suggested_fix.trim();
+            logger.info(
+              `Applied line-specific fix at line ${fix.line} in file ${fix.file}`
+            );
+            return lines.join("\n");
+          }
+        }
+      }
+
+      // Fallback: Add fix as a comment if we can't apply it directly
+      if (fix.suggested_fix) {
+        const fixComment = `\n// AI Fix Suggestion: ${fix.issue}\n// Suggestion: ${fix.suggestion}\n// ${fix.suggested_fix}\n`;
+        logger.warn(
+          `Could not apply fix directly, adding as comment in ${fix.file}`
+        );
+        return currentContent + fixComment;
+      }
+
+      logger.warn(`Could not determine how to apply fix for ${fix.file}`);
+      return currentContent;
+    } catch (error) {
+      logger.error(`Error applying fix to content for ${fix.file}:`, error);
+      return currentContent; // Return original content if fix fails
+    }
   }
 }
 
