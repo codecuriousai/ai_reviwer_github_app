@@ -99,30 +99,67 @@ class InteractiveCommentService {
   }
 
   // NEW: Post merge readiness status as check run update
+  // async updateCheckRunWithMergeStatus(owner, repo, checkRunId, mergeAssessment, trackingId) {
+  //   try {
+  //     logger.info(`Updating check run ${checkRunId} with merge readiness status: ${mergeAssessment.status}`);
+
+  //     const statusEmoji = this.getMergeStatusEmoji(mergeAssessment.status);
+  //     const conclusion = this.getCheckRunConclusion(mergeAssessment.status);
+
+  //     await githubService.updateCheckRun(owner, repo, checkRunId, {
+  //       conclusion: conclusion,
+  //       output: {
+  //         title: `${statusEmoji} Merge Readiness: ${mergeAssessment.status}`,
+  //         summary: this.formatMergeReadinessSummary(mergeAssessment),
+  //         text: this.formatMergeReadinessDetails(mergeAssessment, trackingId)
+  //       }
+  //     });
+
+  //     logger.info(`Check run updated with merge readiness status successfully`);
+  //     return true;
+
+  //   } catch (error) {
+  //     logger.error('Error updating check run with merge status:', error);
+  //     throw error;
+  //   }
+  // }
+
   async updateCheckRunWithMergeStatus(owner, repo, checkRunId, mergeAssessment, trackingId) {
     try {
       logger.info(`Updating check run ${checkRunId} with merge readiness status: ${mergeAssessment.status}`);
-
+  
       const statusEmoji = this.getMergeStatusEmoji(mergeAssessment.status);
       const conclusion = this.getCheckRunConclusion(mergeAssessment.status);
-
+  
+      // Create output without text field to prevent DETAILS section
+      const output = {
+        title: `${statusEmoji} Merge Readiness: ${mergeAssessment.status}`,
+        summary: this.formatMergeReadinessSummary(mergeAssessment)
+        // REMOVED: text field to prevent empty DETAILS section
+      };
+  
+      // Only add text if there are actually outstanding issues or meaningful details
+      const hasOutstandingIssues = mergeAssessment.outstanding_issues && mergeAssessment.outstanding_issues.length > 0;
+      const hasQualityAssessment = mergeAssessment.review_quality_assessment;
+      
+      if (hasOutstandingIssues || hasQualityAssessment) {
+        output.text = this.formatMergeReadinessDetails(mergeAssessment, trackingId);
+      }
+  
       await githubService.updateCheckRun(owner, repo, checkRunId, {
         conclusion: conclusion,
-        output: {
-          title: `${statusEmoji} Merge Readiness: ${mergeAssessment.status}`,
-          summary: this.formatMergeReadinessSummary(mergeAssessment),
-          text: this.formatMergeReadinessDetails(mergeAssessment, trackingId)
-        }
+        output: output
       });
-
+  
       logger.info(`Check run updated with merge readiness status successfully`);
       return true;
-
+  
     } catch (error) {
       logger.error('Error updating check run with merge status:', error);
       throw error;
     }
   }
+  
 
   // NEW: Format merge readiness summary for check run
   formatMergeReadinessSummary(mergeAssessment) {
@@ -134,6 +171,51 @@ class InteractiveCommentService {
   }
 
   // NEW: Format detailed merge readiness information
+  // formatMergeReadinessDetails(mergeAssessment, trackingId) {
+  //   let details = `## Merge Readiness Assessment\n\n`;
+    
+  //   details += `**Overall Score:** ${mergeAssessment.merge_readiness_score}/100\n`;
+  //   details += `**Decision:** ${mergeAssessment.status}\n`;
+  //   details += `**Confidence:** ${mergeAssessment.confidence}\n\n`;
+    
+  //   details += `### Assessment Reasoning\n`;
+  //   details += `${mergeAssessment.reason}\n\n`;
+    
+  //   details += `### Recommendation\n`;
+  //   details += `${mergeAssessment.recommendation}\n\n`;
+
+  //   // Outstanding issues
+  //   if (mergeAssessment.outstanding_issues && mergeAssessment.outstanding_issues.length > 0) {
+  //     details += `### Outstanding Issues (${mergeAssessment.outstanding_issues.length})\n`;
+  //     mergeAssessment.outstanding_issues.forEach((issue, index) => {
+  //       const issueEmoji = this.getSeverityEmoji(issue.severity);
+  //       details += `${index + 1}. ${issueEmoji} **${issue.type}** - ${issue.severity}\n`;
+  //       details += `   ${issue.description}\n`;
+  //       if (issue.file && issue.file !== 'system') {
+  //         details += `   📍 \`${issue.file}:${issue.line}\`\n`;
+  //       }
+  //       details += `   Status: ${issue.addressed ? '✅ Addressed' : '❌ Not Addressed'}\n\n`;
+  //     });
+  //   }
+
+  //   // Review quality assessment
+  //   if (mergeAssessment.review_quality_assessment) {
+  //     const qa = mergeAssessment.review_quality_assessment;
+  //     details += `### Review Quality Assessment\n`;
+  //     details += `- **Human Review Coverage:** ${qa.human_review_coverage}\n`;
+  //     details += `- **AI Analysis Coverage:** ${qa.ai_analysis_coverage}\n`;
+  //     details += `- **Critical Issues Addressed:** ${qa.critical_issues_addressed ? '✅' : '❌'}\n`;
+  //     details += `- **Security Issues Addressed:** ${qa.security_issues_addressed ? '✅' : '❌'}\n`;
+  //     details += `- **Unresolved Issues:** ${qa.total_unresolved_issues}\n\n`;
+  //   }
+
+  //   details += `---\n`;
+  //   details += `*Assessment completed at ${new Date().toISOString()}*\n`;
+  //   details += `*Analysis ID: \`${trackingId}\`*`;
+
+  //   return details;
+  // }
+
   formatMergeReadinessDetails(mergeAssessment, trackingId) {
     let details = `## Merge Readiness Assessment\n\n`;
     
@@ -146,7 +228,7 @@ class InteractiveCommentService {
     
     details += `### Recommendation\n`;
     details += `${mergeAssessment.recommendation}\n\n`;
-
+  
     // Outstanding issues
     if (mergeAssessment.outstanding_issues && mergeAssessment.outstanding_issues.length > 0) {
       details += `### Outstanding Issues (${mergeAssessment.outstanding_issues.length})\n`;
@@ -155,12 +237,12 @@ class InteractiveCommentService {
         details += `${index + 1}. ${issueEmoji} **${issue.type}** - ${issue.severity}\n`;
         details += `   ${issue.description}\n`;
         if (issue.file && issue.file !== 'system') {
-          details += `   📍 \`${issue.file}:${issue.line}\`\n`;
+          details += `   📁 \`${issue.file}:${issue.line}\`\n`;
         }
         details += `   Status: ${issue.addressed ? '✅ Addressed' : '❌ Not Addressed'}\n\n`;
       });
     }
-
+  
     // Review quality assessment
     if (mergeAssessment.review_quality_assessment) {
       const qa = mergeAssessment.review_quality_assessment;
@@ -171,14 +253,14 @@ class InteractiveCommentService {
       details += `- **Security Issues Addressed:** ${qa.security_issues_addressed ? '✅' : '❌'}\n`;
       details += `- **Unresolved Issues:** ${qa.total_unresolved_issues}\n\n`;
     }
-
+  
     details += `---\n`;
     details += `*Assessment completed at ${new Date().toISOString()}*\n`;
     details += `*Analysis ID: \`${trackingId}\`*`;
-
+  
     return details;
   }
-
+  
   // NEW: Get check run conclusion based on merge status
   getCheckRunConclusion(status) {
     switch (status) {

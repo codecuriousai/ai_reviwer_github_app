@@ -924,19 +924,54 @@ class GitHubService {
   }
 
   // Create check run for AI Review button
+  // async createCheckRun(owner, repo, checkRunData) {
+  //   try {
+  //     logger.info(`Creating check run: ${checkRunData.name} for ${owner}/${repo}`);
+
+  //     // Validate GitHub API limits before sending
+  //     this.validateCheckRunData(checkRunData);
+
+  //     const { data: checkRun } = await this.octokit.rest.checks.create({
+  //       owner,
+  //       repo,
+  //       ...checkRunData,
+  //     });
+
+  //     logger.info(`Check run created: ${checkRun.id}`);
+  //     return checkRun;
+  //   } catch (error) {
+  //     logger.error('Error creating check run:', error);
+  //     logger.error('Check run data that failed:', {
+  //       name: checkRunData.name,
+  //       status: checkRunData.status,
+  //       conclusion: checkRunData.conclusion,
+  //       summaryLength: checkRunData.output?.summary?.length,
+  //       textLength: checkRunData.output?.text?.length,
+  //       actionsCount: checkRunData.actions?.length,
+  //       actions: checkRunData.actions?.map(a => ({ label: a.label, identifier: a.identifier }))
+  //     });
+  //     throw new Error(`Failed to create check run: ${error.message}`);
+  //   }
+  // }
+
   async createCheckRun(owner, repo, checkRunData) {
     try {
       logger.info(`Creating check run: ${checkRunData.name} for ${owner}/${repo}`);
-
+  
+      // Clean the output to remove empty DETAILS sections
+      if (checkRunData.output) {
+        checkRunData.output = this.cleanCheckRunOutput(checkRunData.output);
+      }
+  
       // Validate GitHub API limits before sending
       this.validateCheckRunData(checkRunData);
-
+  
       const { data: checkRun } = await this.octokit.rest.checks.create({
         owner,
         repo,
         ...checkRunData,
       });
-
+  
       logger.info(`Check run created: ${checkRun.id}`);
       return checkRun;
     } catch (error) {
@@ -946,7 +981,7 @@ class GitHubService {
         status: checkRunData.status,
         conclusion: checkRunData.conclusion,
         summaryLength: checkRunData.output?.summary?.length,
-        textLength: checkRunData.output?.text?.length,
+        textLength: checkRunData.output?.text?.length || 0,
         actionsCount: checkRunData.actions?.length,
         actions: checkRunData.actions?.map(a => ({ label: a.label, identifier: a.identifier }))
       });
@@ -954,15 +989,64 @@ class GitHubService {
     }
   }
 
+  
   // Validate check run data against GitHub limits
+  // validateCheckRunData(checkRunData) {
+  //   const { name, output, actions } = checkRunData;
+
+  //   // Check name length (20 characters max)
+  //   if (name && name.length > 20) {
+  //     throw new Error(`Check run name too long: ${name.length} chars (max 20)`);
+  //   }
+
+  //   // Check output limits
+  //   if (output) {
+  //     if (output.title && output.title.length > 255) {
+  //       throw new Error(`Output title too long: ${output.title.length} chars (max 255)`);
+  //     }
+  //     if (output.summary && output.summary.length > 65535) {
+  //       throw new Error(`Output summary too long: ${output.summary.length} chars (max 65535)`);
+  //     }
+  //     if (output.text && output.text.length > 65535) {
+  //       throw new Error(`Output text too long: ${output.text.length} chars (max 65535)`);
+  //     }
+  //   }
+
+  //   // Check actions limits
+  //   if (actions) {
+  //     if (actions.length > 3) {
+  //       throw new Error(`Too many actions: ${actions.length} (max 3)`);
+  //     }
+  //     actions.forEach((action, index) => {
+  //       if (action.label && action.label.length > 20) {
+  //         throw new Error(`Action ${index} label too long: ${action.label.length} chars (max 20)`);
+  //       }
+  //       if (action.description && action.description.length > 40) {
+  //         throw new Error(`Action ${index} description too long: ${action.description.length} chars (max 40)`);
+  //       }
+  //       if (action.identifier && action.identifier.length > 20) {
+  //         throw new Error(`Action ${index} identifier too long: ${action.identifier.length} chars (max 20)`);
+  //       }
+  //     });
+  //   }
+
+  //   logger.info('Check run data validation passed', {
+  //     nameLength: name?.length,
+  //     titleLength: output?.title?.length,
+  //     summaryLength: output?.summary?.length,
+  //     textLength: output?.text?.length,
+  //     actionsCount: actions?.length
+  //   });
+  // }
+
   validateCheckRunData(checkRunData) {
     const { name, output, actions } = checkRunData;
-
+  
     // Check name length (20 characters max)
     if (name && name.length > 20) {
       throw new Error(`Check run name too long: ${name.length} chars (max 20)`);
     }
-
+  
     // Check output limits
     if (output) {
       if (output.title && output.title.length > 255) {
@@ -971,11 +1055,12 @@ class GitHubService {
       if (output.summary && output.summary.length > 65535) {
         throw new Error(`Output summary too long: ${output.summary.length} chars (max 65535)`);
       }
+      // MODIFIED: Only validate text if it exists (since we're removing empty text fields)
       if (output.text && output.text.length > 65535) {
         throw new Error(`Output text too long: ${output.text.length} chars (max 65535)`);
       }
     }
-
+  
     // Check actions limits
     if (actions) {
       if (actions.length > 3) {
@@ -993,26 +1078,48 @@ class GitHubService {
         }
       });
     }
-
+  
     logger.info('Check run data validation passed', {
       nameLength: name?.length,
       titleLength: output?.title?.length,
       summaryLength: output?.summary?.length,
-      textLength: output?.text?.length,
+      textLength: output?.text?.length || 0, // Show 0 if no text field
       actionsCount: actions?.length
     });
   }
 
+  
   // Update existing check run
+  // async updateCheckRun(owner, repo, checkRunId, updateData) {
+  //   try {
+  //     const { data: checkRun } = await this.octokit.rest.checks.update({
+  //       owner,
+  //       repo,
+  //       check_run_id: checkRunId,
+  //       ...updateData,
+  //     });
+
+  //     logger.info(`Check run updated: ${checkRunId} - Status: ${updateData.status || 'updated'}`);
+  //     return checkRun;
+  //   } catch (error) {
+  //     logger.error(`Error updating check run ${checkRunId}:`, error);
+  //     throw new Error(`Failed to update check run: ${error.message}`);
+  //   }
+  // }
   async updateCheckRun(owner, repo, checkRunId, updateData) {
     try {
+      // Clean the output to remove empty DETAILS sections
+      if (updateData.output) {
+        updateData.output = this.cleanCheckRunOutput(updateData.output);
+      }
+  
       const { data: checkRun } = await this.octokit.rest.checks.update({
         owner,
         repo,
         check_run_id: checkRunId,
         ...updateData,
       });
-
+  
       logger.info(`Check run updated: ${checkRunId} - Status: ${updateData.status || 'updated'}`);
       return checkRun;
     } catch (error) {
@@ -1252,6 +1359,23 @@ class GitHubService {
       totalCount: findings.length,
       issues
     };
+  }
+
+  cleanCheckRunOutput(output) {
+    if (!output) return output;
+    
+    const cleanedOutput = {
+      title: output.title,
+      summary: output.summary
+    };
+    
+    // Only include text if it has meaningful content (not empty or whitespace only)
+    if (output.text && output.text.trim() && output.text.trim().length > 0) {
+      cleanedOutput.text = output.text;
+    }
+    // REMOVED: Empty text field to prevent DETAILS section
+    
+    return cleanedOutput;
   }
 }
 
