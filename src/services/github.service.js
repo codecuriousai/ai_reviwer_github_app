@@ -6,7 +6,7 @@ const fs = require("fs");
 const path = require("path");
 const config = require("../config/config");
 const logger = require("../utils/logger");
-
+const aiService = require('./ai.service');
 // Import interactive comment service to avoid loading issues
 let interactiveCommentService;
 try {
