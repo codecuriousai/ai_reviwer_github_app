@@ -1,4 +1,4 @@
-// src/prompts/enhanced-prompts.js - Enhanced prompts for code fix suggestions and merge readiness
+// src/prompts/enhanced-prompts.js - Enhanced prompts with comprehensive comment resolution logic
 
 const enhancedPrompts = {
   // Prompt for generating specific code fix suggestions with snippets
@@ -171,11 +171,14 @@ CURRENT FILE CONTENT CONTEXT:`;
     return prompt;
   },
 
-  // Build merge readiness prompt with all context
+  // ENHANCED: buildMergeReadinessPrompt with comprehensive comment resolution logic
   buildMergeReadinessPrompt: (prData, aiFindings, reviewComments, currentStatus) => {
     let prompt = enhancedPrompts.mergeReadinessPrompt;
     
     const pr = prData.pr || prData || {};
+    const totalIssues = aiFindings ? aiFindings.length : 0;
+    const criticalIssues = aiFindings ? aiFindings.filter(f => f.severity === 'CRITICAL' || f.severity === 'BLOCKER').length : 0;
+    const securityIssues = aiFindings ? aiFindings.filter(f => f.category === 'VULNERABILITY' || f.category === 'SECURITY_HOTSPOT').length : 0;
     
     prompt += `\n\nPULL REQUEST INFORMATION:
 - PR #${pr.number}: ${pr.title}
@@ -187,25 +190,120 @@ CURRENT FILE CONTENT CONTEXT:`;
 
 AI ANALYSIS FINDINGS:`;
 
-    if (aiFindings && aiFindings.length > 0) {
-      prompt += `\nTotal Issues Found by AI: ${aiFindings.length}`;
+    // Enhanced handling for zero findings scenario
+    if (totalIssues === 0) {
+      prompt += `\nTotal Issues Found by AI: 0
+- NO SECURITY VULNERABILITIES DETECTED
+- NO CRITICAL OR BLOCKING ISSUES FOUND
+- NO CODE QUALITY ISSUES IDENTIFIED
+- All automated checks passed successfully
+
+ANALYSIS RESULT: Clean code with no issues detected by automated review.`;
+    } else {
+      prompt += `\nTotal Issues Found by AI: ${totalIssues}
+- Critical/Blocker Issues: ${criticalIssues}
+- Security Issues: ${securityIssues}
+- Other Issues: ${totalIssues - criticalIssues - securityIssues}
+
+DETAILED FINDINGS:`;
       aiFindings.forEach((finding, index) => {
         const posted = finding.posted ? 'POSTED' : 'NOT POSTED';
         prompt += `\n${index + 1}. [${finding.severity}] ${finding.file}:${finding.line} - ${finding.issue} (${posted})`;
       });
-    } else {
-      prompt += `\nNo AI findings available`;
     }
 
-    prompt += `\n\nHUMAN REVIEW COMMENTS:`;
+    // ENHANCED: Comment resolution analysis
+    prompt += `\n\nHUMAN REVIEW COMMENTS ANALYSIS:`;
+    
     if (reviewComments && reviewComments.length > 0) {
       prompt += `\nTotal Review Comments: ${reviewComments.length}`;
+      
+      // Analyze comment types and resolution status
+      const requestingChanges = reviewComments.filter(comment => {
+        const body = comment.body.toLowerCase();
+        return body.includes('request changes') ||
+               body.includes('needs fix') ||
+               body.includes('must fix') ||
+               body.includes('blocking') ||
+               body.includes('please change') ||
+               body.includes('should fix') ||
+               body.includes('required:') ||
+               (body.includes('not') && (body.includes('approve') || body.includes('ready')));
+      });
+      
+      const approvals = reviewComments.filter(comment => {
+        const body = comment.body.toLowerCase();
+        return body.includes('approve') ||
+               body.includes('lgtm') ||
+               body.includes('looks good') ||
+               body.includes('ship it') ||
+               body.includes('ready to merge') ||
+               body.includes('👍') ||
+               body.includes(':+1:');
+      });
+      
+      const questionsOrSuggestions = reviewComments.filter(comment => {
+        const body = comment.body.toLowerCase();
+        return body.includes('?') ||
+               body.includes('consider') ||
+               body.includes('suggest') ||
+               body.includes('might want to') ||
+               body.includes('could') ||
+               body.includes('optional:');
+      });
+      
+      // Check for resolution indicators
+      const resolutionIndicators = reviewComments.filter(comment => {
+        const body = comment.body.toLowerCase();
+        return body.includes('resolved') ||
+               body.includes('fixed') ||
+               body.includes('addressed') ||
+               body.includes('done') ||
+               body.includes('completed') ||
+               body.includes('thank you') ||
+               body.includes('thanks for fixing') ||
+               body.includes('updated');
+      });
+      
+      prompt += `\n\nCOMMENT ANALYSIS:
+- Change Requests: ${requestingChanges.length}
+- Approvals: ${approvals.length}
+- Questions/Suggestions: ${questionsOrSuggestions.length}
+- Resolution Indicators: ${resolutionIndicators.length}`;
+
+      // Determine comment resolution status
+      let commentStatus;
+      if (requestingChanges.length > 0 && resolutionIndicators.length === 0) {
+        commentStatus = "UNRESOLVED_BLOCKING_COMMENTS";
+        prompt += `\n\nCOMMENT STATUS: UNRESOLVED - There are ${requestingChanges.length} change requests with no resolution indicators.`;
+      } else if (requestingChanges.length > 0 && resolutionIndicators.length > 0) {
+        commentStatus = "PARTIALLY_RESOLVED_COMMENTS";
+        prompt += `\n\nCOMMENT STATUS: PARTIALLY RESOLVED - ${requestingChanges.length} change requests, ${resolutionIndicators.length} resolution indicators.`;
+      } else if (approvals.length > 0 || (questionsOrSuggestions.length > 0 && resolutionIndicators.length > 0)) {
+        commentStatus = "RESOLVED_COMMENTS";
+        prompt += `\n\nCOMMENT STATUS: RESOLVED - Comments appear to be addressed or approved.`;
+      } else {
+        commentStatus = "NEUTRAL_COMMENTS";
+        prompt += `\n\nCOMMENT STATUS: NEUTRAL - General discussion without blocking concerns.`;
+      }
+
+      // List specific comments for context
+      prompt += `\n\nCOMMENT DETAILS:`;
       reviewComments.forEach((comment, index) => {
         const location = comment.path && comment.line ? ` on ${comment.path}:${comment.line}` : '';
-        prompt += `\n${index + 1}. ${comment.user}${location}: ${comment.body}`;
+        const timestamp = comment.createdAt ? ` (${new Date(comment.createdAt).toLocaleDateString()})` : '';
+        prompt += `\n${index + 1}. ${comment.user}${location}${timestamp}: ${comment.body.substring(0, 150)}${comment.body.length > 150 ? '...' : ''}`;
       });
+
     } else {
-      prompt += `\nNo human review comments available`;
+      prompt += `\nTotal Review Comments: 0
+    
+COMMENT STATUS: NO_COMMENTS - This may indicate:
+- Simple/straightforward changes that don't require extensive review
+- Empty file changes or minor modifications  
+- Documentation updates or configuration changes
+- Automated changes (e.g., dependency updates)
+- Author is trusted contributor with clean track record`;
     }
 
     if (currentStatus) {
@@ -215,12 +313,88 @@ AI ANALYSIS FINDINGS:`;
 - Review Decision: ${currentStatus.review_decision || 'unknown'}`;
     }
 
-    prompt += `\n\nBased on this information, determine if this PR is ready for merge. Consider:
-1. Are all critical security issues resolved?
-2. Are all blocker/critical issues addressed?
-3. Has there been adequate human review?
-4. Are there any unaddressed concerns in comments?
-5. Overall code quality and risk assessment`;
+    // Enhanced decision criteria with comment resolution logic
+    prompt += `\n\nMERGE READINESS DECISION CRITERIA:
+
+**READY_FOR_MERGE** when:
+- Zero AI findings AND (no comments OR comments resolved/approved)
+- Only minor/info issues (≤3) with no security vulnerabilities AND no unresolved blocking comments
+- All critical/blocker issues resolved AND all change requests addressed
+- No unaddressed security concerns
+
+**NOT_READY_FOR_MERGE** when:
+- Critical or blocker issues remain unaddressed
+- Security vulnerabilities are present  
+- Unresolved blocking change requests from reviewers
+- Major bugs that could impact functionality
+
+**REVIEW_REQUIRED** when:
+- Mixed signals: some issues resolved, others unclear
+- Complex changes with insufficient human review
+- Conflicting reviewer feedback that needs resolution
+
+CURRENT SCENARIO ASSESSMENT:`;
+
+    // Scenario-specific guidance based on AI findings and comment status
+    if (totalIssues === 0) {
+      if (!reviewComments || reviewComments.length === 0) {
+        prompt += `
+SCENARIO: CLEAN PR WITH NO COMMENTS
+- No AI issues detected
+- No reviewer concerns raised
+- Typical for: empty files, documentation, simple config changes
+- RECOMMENDATION: READY_FOR_MERGE (high confidence)`;
+      } else {
+        // Has comments but no AI issues
+        const hasUnresolvedBlockingComments = reviewComments.some(comment => {
+          const body = comment.body.toLowerCase();
+          return (body.includes('request changes') ||
+                  body.includes('must fix') ||
+                  body.includes('blocking')) &&
+                 !reviewComments.some(laterComment => {
+                   const laterBody = laterComment.body.toLowerCase();
+                   return (laterBody.includes('resolved') ||
+                           laterBody.includes('fixed') ||
+                           laterBody.includes('addressed')) &&
+                          new Date(laterComment.createdAt) > new Date(comment.createdAt);
+                 });
+        });
+        
+        if (hasUnresolvedBlockingComments) {
+          prompt += `
+SCENARIO: CLEAN CODE BUT UNRESOLVED REVIEWER CONCERNS  
+- No AI issues but reviewers have unaddressed change requests
+- RECOMMENDATION: NOT_READY_FOR_MERGE (respect reviewer feedback)`;
+        } else {
+          prompt += `
+SCENARIO: CLEAN CODE WITH RESOLVED/NEUTRAL COMMENTS
+- No AI issues and reviewer comments appear resolved or non-blocking
+- RECOMMENDATION: READY_FOR_MERGE (moderate to high confidence)`;
+        }
+      }
+    } else if (criticalIssues === 0 && securityIssues === 0) {
+      prompt += `
+SCENARIO: MINOR ISSUES ONLY
+- ${totalIssues} minor/info issues, no critical/security concerns
+- Comment resolution status affects final decision
+- RECOMMENDATION: Consider READY_FOR_MERGE if comments resolved`;
+    } else {
+      prompt += `
+SCENARIO: SIGNIFICANT ISSUES PRESENT  
+- ${criticalIssues} critical/blocker issues, ${securityIssues} security issues
+- Requires careful assessment regardless of comment status
+- RECOMMENDATION: Likely NOT_READY_FOR_MERGE`;
+    }
+
+    prompt += `\n\nFINAL DECISION GUIDANCE:
+1. Empty files or documentation with no issues → READY_FOR_MERGE
+2. Clean code (zero findings) with no blocking comments → READY_FOR_MERGE  
+3. Clean code with unresolved change requests → NOT_READY_FOR_MERGE
+4. Minor issues only with resolved comments → READY_FOR_MERGE
+5. Critical/security issues present → NOT_READY_FOR_MERGE
+6. When in doubt about comment resolution → REVIEW_REQUIRED
+
+Make your decision based on the complete picture of code quality AND review feedback.`;
 
     return prompt;
   }
