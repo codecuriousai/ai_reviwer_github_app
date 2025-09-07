@@ -1,3 +1,5 @@
+// src/prompts/prompts.js - SOLUTION-FOCUSED: Prevent endless iteration cycles
+
 const prompts = {
   // Completely rewritten prompt to focus on FINAL, COMPLETE solutions
   codeReviewPrompt: `You are a senior software architect conducting a FINAL code review. Your goal is to identify ONLY significant issues that would prevent production deployment and provide COMPLETE, ready-to-ship solutions.
@@ -173,9 +175,18 @@ CRITICAL INSTRUCTION:
 2. Check if the code accomplishes its intended purpose
 3. Look for genuine bugs, security holes, or broken logic ONLY
 4. If code is working correctly with proper error handling, report 0 issues
-5. Provide complete solutions for any genuine issues found
-6. Use exact line numbers from commentable lines
-7. Respond with JSON only, no markdown
+5. For any genuine issues found:
+   - Use EXACT filename from the file_changes array
+   - Use EXACT newLineNumber from commentable lines only
+   - Provide complete solutions
+6. Respond with JSON only, no markdown
+7. NEVER use "unknown-file-0" or made-up filenames
+8. NEVER guess line numbers
+
+DEBUGGING HELP: If you're reporting an issue, double-check:
+- Is the filename exactly as shown in the file_changes data above?
+- Is the line number from a commentable line shown above?
+- If not, don't report the issue
 
 QUALITY GATE: Before submitting, verify each issue you report is a genuine problem that would cause production failures, not just a coding preference.`;
 
