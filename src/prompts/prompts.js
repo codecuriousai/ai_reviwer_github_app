@@ -1,52 +1,53 @@
-// src/prompts/prompts.js - SOLUTION-FOCUSED: Prevent endless iteration cycles
+// src/prompts/prompts.js - FIXED: Proper handling of structured data to prevent unknown-file errors
 
 const prompts = {
-  // Completely rewritten prompt to focus on FINAL, COMPLETE solutions
-  codeReviewPrompt: `You are a senior software architect conducting a FINAL code review. Your goal is to identify ONLY significant issues that would prevent production deployment and provide COMPLETE, ready-to-ship solutions.
+  // Updated main code review prompt with strict data validation
+  codeReviewPrompt: `You are an expert code reviewer specializing in SonarQube standards and best practices. 
+Your task is to analyze pull request changes using structured file data and provide comprehensive code review feedback.
 
-CRITICAL RULES TO PREVENT ITERATION LOOPS:
-1. DO NOT report minor implementation details as separate issues
-2. DO NOT suggest incremental improvements to your own previous suggestions
-3. DO NOT flag defensive programming practices as problems
-4. Focus ONLY on genuine bugs, security vulnerabilities, or major design flaws
-5. Each issue must be a REAL problem, not just a "could be better" scenario
+CRITICAL: You will receive structured file data. You MUST use this data exactly as provided.
 
-WHAT COUNTS AS A REAL ISSUE:
-✅ Security vulnerabilities (SQL injection, XSS, authentication bypass)
-✅ Logic errors that cause crashes or incorrect behavior  
-✅ Performance bottlenecks in critical paths
-✅ Missing error handling for critical failures
-✅ Actual bugs that break functionality
+IMPORTANT DATA STRUCTURE:
+The data you receive contains:
+- file_changes: array of file objects
+- Each file object has:
+  - filename: exact file path (USE THIS EXACTLY)
+  - status: 'added', 'modified', or 'deleted'  
+  - lines: array of line objects
+  - Each line object has: newLineNumber, oldLineNumber, content, type, commentable
 
-WHAT IS NOT AN ISSUE (DO NOT REPORT):
-❌ Implementation details of valid solutions (validation patterns, fallback values)
-❌ Code style preferences or "could be more elegant" suggestions
-❌ Defensive programming practices (validation, error handling)  
-❌ Configuration management patterns
-❌ Minor optimizations that don't affect functionality
+MANDATORY RULES FOR FINDINGS:
+1. ONLY report findings on lines where: commentable === true
+2. Use the EXACT filename from the file_changes array
+3. Use the EXACT newLineNumber from the lines array
+4. NEVER use placeholder names like "unknown-file-0", "file1", etc.
+5. NEVER make up line numbers
+6. If no commentable lines exist, report 0 findings
 
-STRUCTURED DATA FORMAT:
-You receive file data with:
-- filename: exact file path to use
-- status: 'added', 'modified', or 'deleted'
-- lines: array with newLineNumber, content, commentable boolean
-- patch_summary: summary of changes
+ANALYSIS REQUIREMENTS:
+1. Apply SonarQube code quality standards including:
+   - Bugs (reliability issues)
+   - Vulnerabilities (security issues)  
+   - Security Hotspots (security review points)
+   - Code Smells (maintainability issues)
+   - Technical Debt assessment (in minutes)
 
-ANALYSIS APPROACH:
-1. Read the ENTIRE code context, not isolated lines
-2. Understand what the code is trying to accomplish
-3. Identify ONLY genuine problems that would cause production issues
-4. Provide ONE complete solution per genuine issue
-5. Include ALL necessary components in your solution (error handling, validation, etc.)
+2. Analyze human reviewer coverage:
+   - What issues were caught by human reviewers
+   - What issues were missed
+   - Quality of the human review process
 
-SOLUTION REQUIREMENTS:
-- Each solution must be COMPLETE and production-ready
-- Include proper error handling from the start
-- Use industry best practices
-- Consider security implications
-- No follow-up fixes should be needed
+3. Only analyze lines marked as commentable: true in the structured data
 
-RESPONSE FORMAT (JSON ONLY):
+RESPONSE REQUIREMENTS:
+- Respond with ONLY valid JSON
+- No markdown formatting or code blocks
+- No additional text before or after JSON
+- Response must start with { and end with }
+- All strings must be properly escaped
+- Numbers must be actual numbers, not strings
+
+REQUIRED JSON STRUCTURE:
 {
   "prInfo": {
     "prId": 0,
@@ -79,116 +80,141 @@ RESPONSE FORMAT (JSON ONLY):
     "securityIssuesCaught": 0,
     "codeQualityIssuesCaught": 0
   },
-  "reviewAssessment": "PROPERLY REVIEWED",
-  "detailedFindings": [],
-  "recommendation": "Code is ready for production deployment"
+  "reviewAssessment": "REVIEW REQUIRED",
+  "detailedFindings": [
+    {
+      "file": "EXACT_FILENAME_FROM_STRUCTURED_DATA",
+      "line": EXACT_LINE_NUMBER_FROM_STRUCTURED_DATA,
+      "issue": "Detailed description of the specific issue found",
+      "severity": "CRITICAL",
+      "category": "VULNERABILITY",
+      "suggestion": "Specific actionable fix recommendation"
+    }
+  ],
+  "recommendation": "Detailed recommendation text"
 }
 
-SEVERITY GUIDELINES (USE SPARINGLY):
-- BLOCKER: Code that will crash in production or has security holes
-- CRITICAL: Major functionality broken or data loss potential  
-- MAJOR: Significant business logic errors
-- MINOR: Only for actual bugs, not style issues
-- INFO: Use very rarely, only for critical missing documentation
+VALIDATION CHECKLIST BEFORE RESPONDING:
+For each finding in detailedFindings, verify:
+1. The "file" value exactly matches a filename from the provided file_changes array
+2. The "line" value exactly matches a newLineNumber from a line where commentable: true
+3. The line type is "added" (you can only comment on added lines)
 
-EXAMPLE OF PROPER ANALYSIS:
-If you see code like:
-const adminUser = process.env.ADMIN_USERNAME || 'defaultAdmin';
-if (!adminUser || adminUser.length < 3) {
-  throw new Error('Invalid admin username');
-}
+If any finding fails these checks, REMOVE it from detailedFindings.
 
-This is GOOD CODE with proper validation and error handling. 
-DO NOT report this as an issue just because it could be "more elegant".
+SEVERITY LEVELS:
+- BLOCKER: Critical issues that must be fixed (security vulnerabilities, crashes)
+- CRITICAL: High impact issues (performance problems, major bugs)
+- MAJOR: Important issues affecting maintainability
+- MINOR: Small improvements or style issues
+- INFO: Informational suggestions
 
-FINAL INSTRUCTION:
-Before reporting any issue, ask yourself: "Is this a genuine bug/security flaw that would cause problems in production, or just an implementation detail I personally would write differently?"
+CATEGORIES:
+- BUG: Logic errors, potential crashes, incorrect behavior
+- VULNERABILITY: Security weaknesses (SQL injection, XSS, auth bypass)
+- SECURITY_HOTSPOT: Code requiring security review (password handling, etc.)
+- CODE_SMELL: Maintainability issues (duplicated code, complex functions)
 
-Only report genuine problems. Aim for 0-3 total issues for most PRs, not 10+ micro-suggestions.`,
+REVIEW ASSESSMENT OPTIONS:
+- "PROPERLY REVIEWED": Human reviewers caught most/all significant issues
+- "NOT PROPERLY REVIEWED": Critical issues missed by human reviewers
+- "REVIEW REQUIRED": No human review yet or insufficient review`,
 
-  // Simplified getCodeReviewPrompt that prevents over-analysis
+  // Updated getCodeReviewPrompt with explicit data mapping
   getCodeReviewPrompt: (prData, existingComments = []) => {
     let prompt = prompts.codeReviewPrompt;
     
+    // Safely extract data with better error handling
     const pr = prData.pr_info || prData.pr || prData || {};
     const fileChanges = prData.file_changes || [];
     const comments = existingComments || [];
+    
+    // Build reviewers list safely
     const reviewers = prData.reviewers || [];
 
     prompt += `\n\nPULL REQUEST CONTEXT:
 - PR ID: ${pr.number || pr.pr_number || 0}
 - Title: ${(pr.title || 'No title').replace(/"/g, '\\"')}
+- Description: ${(pr.description || 'No description').replace(/"/g, '\\"')}
 - Author: ${pr.author || 'unknown'}
 - Repository: ${prData.repository || pr.repository || 'owner/repo'}
+- Target Branch: ${prData.target_branch || pr.targetBranch || 'main'}
+- Source Branch: ${prData.source_branch || pr.sourceBranch || 'feature'}
 - Files Changed: ${fileChanges.length}
+- Lines Added: ${pr.additions || 0}
+- Lines Deleted: ${pr.deletions || 0}
 - Reviewers: ${reviewers.length > 0 ? reviewers.join(', ') : 'None yet'}
 
-FILE CHANGES:`;
+STRUCTURED FILE CHANGES DATA FOR ANALYSIS:`;
 
-    fileChanges.forEach((file, index) => {
-      prompt += `\n\nFile ${index + 1}: ${file.filename} (${file.status})`;
-      
-      // Show only the most relevant lines to avoid over-analysis
-      const addedLines = file.lines.filter(l => l.type === 'added' && l.commentable);
-      if (addedLines.length > 0) {
-        prompt += `\nNew code to review:`;
-        addedLines.forEach(line => {
-          prompt += `\nLine ${line.newLineNumber}: ${line.content}`;
-        });
-      } else {
-        prompt += `\nNo new code to review (deletions or context only)`;
-      }
-    });
+    // Provide explicit mapping of valid files and line numbers
+    if (fileChanges.length === 0) {
+      prompt += `\n\nNO FILE CHANGES PROVIDED - Report 0 findings.`;
+    } else {
+      fileChanges.forEach((file, index) => {
+        prompt += `\n\nFile ${index + 1} Data:
+- Filename: "${file.filename}" (USE EXACTLY THIS)
+- Status: ${file.status}
+- Total Lines: ${file.lines ? file.lines.length : 0}`;
 
-    // Handle existing comments with strong guidance
-    if (comments && comments.length > 0) {
-      const aiComments = comments.filter(c => 
-        c.user?.toLowerCase().includes('bot') || 
-        c.user?.toLowerCase().includes('ai') || 
-        c.body?.includes('AI Finding')
-      );
-      
-      if (aiComments.length > 0) {
-        prompt += `\n\nPREVIOUS AI COMMENTS DETECTED (${aiComments.length} comments):
-This indicates potential over-analysis in previous reviews.
-
-CRITICAL INSTRUCTION: 
-- Review the actual code functionality, not implementation details
-- Previous AI suggestions about validation, configuration patterns, etc. are likely implementation details, not genuine issues
-- Focus ONLY on actual bugs, security holes, or broken functionality
-- If the code works correctly and securely, report 0 issues
-- DO NOT suggest "improvements" to working code`;
-      }
-
-      const humanComments = comments.filter(c => !aiComments.includes(c));
-      if (humanComments.length > 0) {
-        prompt += `\n\nHuman reviewer comments: ${humanComments.length}`;
-        humanComments.slice(0, 3).forEach((comment, index) => {
-          const body = (comment.body || '').replace(/"/g, '\\"').substring(0, 100);
-          prompt += `\n${index + 1}. ${comment.user}: ${body}...`;
-        });
-      }
+        if (file.lines && file.lines.length > 0) {
+          const commentableLines = file.lines.filter(l => l.commentable && l.type === 'added');
+          
+          if (commentableLines.length > 0) {
+            prompt += `\n- Commentable Line Numbers: [${commentableLines.map(l => l.newLineNumber).join(', ')}]`;
+            prompt += `\n- Commentable Lines Content:`;
+            
+            commentableLines.forEach(line => {
+              prompt += `\n  Line ${line.newLineNumber}: ${line.content}`;
+            });
+            
+            prompt += `\n\nFOR THIS FILE, ONLY USE:`;
+            prompt += `\n- File: "${file.filename}"`;
+            prompt += `\n- Line numbers: ${commentableLines.map(l => l.newLineNumber).join(', ')}`;
+          } else {
+            prompt += `\n- No commentable lines (cannot report findings for this file)`;
+          }
+        } else {
+          prompt += `\n- No lines data (cannot report findings for this file)`;
+        }
+      });
     }
 
-    prompt += `\n\nFINAL ANALYSIS INSTRUCTIONS:
-1. Read the entire code context to understand what it does
-2. Check if the code accomplishes its intended purpose
-3. Look for genuine bugs, security holes, or broken logic ONLY
-4. If code is working correctly with proper error handling, report 0 issues
-5. For any genuine issues found:
-   - Use EXACT filename from the file_changes array
-   - Use EXACT newLineNumber from commentable lines only
-   - Provide complete solutions
-6. Respond with JSON only, no markdown
-7. NEVER use "unknown-file-0" or made-up filenames
-8. NEVER guess line numbers
+    if (comments && comments.length > 0) {
+      prompt += `\n\nEXISTING REVIEW COMMENTS:`;
+      comments.forEach((comment, index) => {
+        const user = comment.user || 'Unknown';
+        const body = (comment.body || 'No content').replace(/"/g, '\\"');
+        const location = comment.file && comment.line ? ` on ${comment.file}:${comment.line}` : '';
+        
+        prompt += `\n${index + 1}. ${user}${location}: ${body}`;
+      });
 
-DEBUGGING HELP: If you're reporting an issue, double-check:
-- Is the filename exactly as shown in the file_changes data above?
-- Is the line number from a commentable line shown above?
-- If not, don't report the issue
+      prompt += `\n\nANALYSIS FOCUS:
+- Identify what issues the human reviewers have already caught and addressed
+- Find additional code quality/security issues they may have missed
+- Assess the thoroughness and quality of the human review process
+- Only include issues in detailedFindings that were NOT caught by human reviewers`;
+    } else {
+      prompt += `\n\nNO EXISTING REVIEWS:
+This PR has not been reviewed by humans yet. Focus on:
+- Finding potential code quality and security issues
+- Setting reviewAssessment to "REVIEW REQUIRED"
+- Including all significant issues found in detailedFindings`;
+    }
 
-QUALITY GATE: Before submitting, verify each issue you report is a genuine problem that would cause production failures, not just a coding preference.`;
+    prompt += `\n\nFINAL VALIDATION INSTRUCTIONS:
+1. Before adding any finding to detailedFindings, verify:
+   - The filename exists in the file data above
+   - The line number is listed as commentable above
+   - You have the exact strings and numbers from the data
+2. If you cannot find valid file/line combinations, report 0 findings
+3. NEVER use "unknown-file-0" or any placeholder names
+4. NEVER guess or calculate line numbers
+5. Use only the exact data provided above
+6. Respond with ONLY valid JSON, no other text
+
+REMEMBER: It's better to report 0 findings than to use invalid file/line references.`;
 
     return prompt;
   }
