@@ -689,7 +689,8 @@ class CheckRunButtonService {
     const severityEmoji = this.getSeverityEmoji(finding.severity);
 
     let comment = `${severityEmoji} **AI Finding**\n\n`;
-    comment += `**Issue:** ${finding.issue}\n\n`;
+    comment += `**Issue:** ${finding.issue}\n`;
+    comment += `**Technical Debt:** ${finding.technicalDebtMinutes || 0} minutes\n\n`;
     comment += `**Suggestion:**\n${finding.suggestion}\n\n`;
 
     // Add suggested code fix inline

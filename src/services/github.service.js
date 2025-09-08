@@ -902,6 +902,7 @@ class GitHubService {
             finding.file || "General"
           }**\n`;
           comment += `   └─ **Issue:** ${finding.issue}\n`;
+          comment += `   └─ **Technical Debt:** ${finding.technicalDebtMinutes || 0} minutes\n`;
           comment += `   └─ **Suggestion:** ${finding.suggestion}\n\n`;
         });
       }
