@@ -36,7 +36,8 @@ class AIService {
           'COLLABORATOR',          // Repository collaborators
           'CONTRIBUTOR',           // External contributors
           'OWNER',                 // Repository owners
-          'MEMBER'                 // Organization members
+          'MEMBER',                 // Organization members,
+          'BOT'                   // All bot accounts
         ]
       },
 
@@ -48,8 +49,7 @@ class AIService {
           'RELEASE_COMMENT',       // Release comments
           'GIST_COMMENT'          // Gist comments
         ],
-        authorTypes: [
-          'BOT',                   // All bot accounts
+        authorTypes: [          
           'GITHUB_ACTIONS',        // GitHub Actions bot
           'DEPENDABOT',            // Dependabot
           'RENOVATE',              // Renovate bot
