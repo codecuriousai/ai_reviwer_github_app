@@ -70,6 +70,7 @@ const config = {
     privateKey: privateKey, // Use the safely loaded key
     webhookSecret: process.env.GITHUB_WEBHOOK_SECRET,
     installationId: process.env.GITHUB_INSTALLATION_ID,
+    token: process.env.GITHUB_TOKEN,
   },
   ai: {
     provider: process.env.AI_PROVIDER || 'openai',
