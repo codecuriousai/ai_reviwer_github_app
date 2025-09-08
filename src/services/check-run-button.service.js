@@ -90,14 +90,18 @@ class CheckRunButtonService {
     const maxButtons = 3;
 
     if (postableFindings.length > 0) {
-      actions.push({
-        label: `Post All Comments`,
-        description: `Post all ${postableFindings.length} findings`,
-        identifier: "post-all",
-      });
+      // Only show "Post All Comments" button if not completed
+      const allCommentsPosted = buttonStates["post-all"] === "completed";
+      
+      if (!allCommentsPosted) {
+        actions.push({
+          label: `Post All Comments`,
+          description: `Post all ${postableFindings.length} findings`,
+          identifier: "post-all",
+        });
+      }
 
       // Only show commit button if all comments have been posted
-      const allCommentsPosted = buttonStates["post-all"] === "completed";
       if (allCommentsPosted) {
         actions.push({
           label: `Commit Fixes`,
@@ -988,6 +992,10 @@ class CheckRunButtonService {
       const postableFindings = checkRunData.postableFindings || [];
       const newActions = this.generateCheckRunActions(postableFindings, buttonStates);
       
+      // Update the check run data with new button states
+      checkRunData.buttonStates = buttonStates;
+      this.activeCheckRuns.set(checkRunId, checkRunData);
+      
       await githubService.updateCheckRun(owner, repo, checkRunId, {
         output: {
           title: "AI Code Review Completed - Comments Posted",
@@ -996,7 +1004,10 @@ class CheckRunButtonService {
         actions: newActions,
       });
       
-      logger.info(`Updated check run ${checkRunId} with new actions after comments posted`);
+      logger.info(`Updated check run ${checkRunId} with new actions after comments posted`, {
+        newActionsCount: newActions.length,
+        buttonStates: buttonStates
+      });
     } catch (error) {
       logger.error('Error updating check run with new actions:', error);
     }
