@@ -1701,9 +1701,10 @@ determineMergeReadinessFromGraphQL(resolvedStatus, prData) {
   }
 
   // Validate review assessment
+  validateReviewAssessment(analysis) {
     const validAssessments = [
       "PROPERLY REVIEWED",
-      "NOT PROPERLY REVIEWED",
+      "NOT PROPERLY REVIEWED", 
       "REVIEW REQUIRED",
     ];
     if (!validAssessments.includes(analysis.reviewAssessment)) {
