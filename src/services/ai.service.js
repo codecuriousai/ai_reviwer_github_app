@@ -160,60 +160,60 @@ class AIService {
   }
 
   // CORRECTED: Assess merge readiness with proper bot comment handling
-  async assessMergeReadiness(prData, aiFindings, reviewComments, currentStatus) {
-    try {
-      logger.info(`Assessing merge readiness for PR #${prData.pr?.number} - Using GraphQL API`, {
-        totalComments: reviewComments?.length || 0,
-      });
+ async assessMergeReadiness(prData, aiFindings, reviewComments, currentStatus) {
+  try {
+    logger.info(`Assessing merge readiness for PR #${prData.pr?.number} - Using GraphQL API`, {
+      totalComments: reviewComments?.length || 0,
+    });
 
-      // Extract owner, repo, and PR number
-      const repository = prData.pr?.repository || '';
-      const [owner, repo] = repository.split('/');
-      const pullNumber = prData.pr?.number;
+    // Extract owner, repo, and PR number
+    const repository = prData.pr?.repository || '';
+    const [owner, repo] = repository.split('/');
+    const pullNumber = prData.pr?.number;
 
-      if (!owner || !repo || !pullNumber) {
-        throw new Error(`Invalid PR data: owner=${owner}, repo=${repo}, pullNumber=${pullNumber}`);
-      }
-
-      // STEP 1: Use GraphQL to get actual conversation resolution status
-      const reviewThreads = await this.getReviewThreadsViaGraphQL(owner, repo, pullNumber);
-
-      logger.info(`Fetched ${reviewThreads.length} review threads via GraphQL`, {
-        owner,
-        repo,
-        pullNumber
-      });
-
-      // STEP 2: Analyze actual resolved status using GraphQL data
-      const resolvedStatus = this.analyzeGraphQLReviewThreads(reviewThreads);
-
-      logger.info(`GraphQL resolved conversation analysis`, resolvedStatus);
-
-      // STEP 3: Determine merge readiness based on ACTUAL resolution status
-      return this.determineMergeReadinessFromGraphQL(resolvedStatus, prData);
-
-    } catch (error) {
-      logger.error("Critical error assessing merge readiness:", error);
-      return this.createErrorMergeAssessment(`Critical Error: ${error.message}`);
+    if (!owner || !repo || !pullNumber) {
+      throw new Error(`Invalid PR data: owner=${owner}, repo=${repo}, pullNumber=${pullNumber}`);
     }
+
+    // STEP 1: Use GraphQL to get actual conversation resolution status
+    const reviewThreads = await this.getReviewThreadsViaGraphQL(owner, repo, pullNumber);
+
+    logger.info(`Fetched ${reviewThreads.length} review threads via GraphQL`, {
+      owner,
+      repo,
+      pullNumber
+    });
+
+    // STEP 2: Analyze actual resolved status using GraphQL data
+    const resolvedStatus = this.analyzeGraphQLReviewThreads(reviewThreads);
+
+    logger.info(`GraphQL resolved conversation analysis`, resolvedStatus);
+
+    // STEP 3: Determine merge readiness based on ACTUAL resolution status
+    return this.determineMergeReadinessFromGraphQL(resolvedStatus, prData);
+
+  } catch (error) {
+    logger.error("Critical error assessing merge readiness:", error);
+    return this.createErrorMergeAssessment(`Critical Error: ${error.message}`);
   }
+}
 
   // NEW METHOD: Get review threads using GraphQL API
-  async getReviewThreadsViaGraphQL(owner, repo, pullNumber) {
-    try {
-      const githubToken = process.env.GITHUB_TOKEN || config.github?.token;
-
-      if (!githubToken) {
-        throw new Error('GITHUB_TOKEN not found in environment variables or config');
-      }
-
-      const graphqlWithAuth = graphql.defaults({
-        headers: {
-          authorization: `token ${githubToken}`,
-        },
-      });
-
-      const query = `
+ async getReviewThreadsViaGraphQL(owner, repo, pullNumber) {
+   try {
+     const githubToken = process.env.GITHUB_TOKEN || config.github?.token;
+     
+     if (!githubToken) {
+       throw new Error('GITHUB_TOKEN not found in environment variables or config');
+     }
+ 
+     const graphqlWithAuth = graphql.defaults({
+       headers: {
+         authorization: `token ${githubToken}`,
+       },
+     });
+ 
+     const query = `
        query($owner: String!, $repo: String!, $pullNumber: Int!) {
          repository(owner: $owner, name: $repo) {
            pullRequest(number: $pullNumber) {
@@ -236,7 +236,6 @@ class AIService {
                      path
                      line
                      originalLine
-                     diffSide
                    }
                  }
                }
@@ -245,199 +244,200 @@ class AIService {
          }
        }
      `;
+ 
+     logger.info('Executing GraphQL query for review threads', {
+       owner,
+       repo,
+       pullNumber
+     });
+ 
+     const result = await graphqlWithAuth(query, {
+       owner,
+       repo,
+       pullNumber: parseInt(pullNumber)
+     });
+ 
+     if (!result?.repository?.pullRequest?.reviewThreads?.nodes) {
+       logger.warn('No review threads found in GraphQL response');
+       return [];
+     }
+ 
+     const threads = result.repository.pullRequest.reviewThreads.nodes;
+     
+     logger.info(`GraphQL query successful: found ${threads.length} review threads`);
+     
+     // Log thread details for debugging
+     threads.forEach((thread, index) => {
+       logger.debug(`GraphQL Thread #${index + 1}:`, {
+         id: thread.id,
+         isResolved: thread.isResolved,
+         resolvedBy: thread.resolvedBy?.login,
+         commentsCount: thread.comments.nodes.length,
+         firstComment: {
+           author: thread.comments.nodes[0]?.author?.login,
+           path: thread.comments.nodes[0]?.path,
+           line: thread.comments.nodes[0]?.line,
+           bodyPreview: thread.comments.nodes[0]?.body?.substring(0, 100) + "..."
+         }
+       });
+     });
+ 
+     return threads;
+ 
+   } catch (error) {
+     logger.error('GraphQL API error:', error);
+     
+     if (error.message?.includes('401')) {
+       throw new Error('GitHub token authentication failed. Check GITHUB_TOKEN.');
+     } else if (error.message?.includes('404')) {
+       throw new Error(`PR not found: ${owner}/${repo}#${pullNumber}`);
+     } else {
+       throw new Error(`GraphQL API error: ${error.message}`);
+     }
+   }
+ }
+ 
 
-      logger.info('Executing GraphQL query for review threads', {
-        owner,
-        repo,
-        pullNumber
-      });
-
-      const result = await graphqlWithAuth(query, {
-        owner,
-        repo,
-        pullNumber: parseInt(pullNumber)
-      });
-
-      if (!result?.repository?.pullRequest?.reviewThreads?.nodes) {
-        logger.warn('No review threads found in GraphQL response');
-        return [];
-      }
-
-      const threads = result.repository.pullRequest.reviewThreads.nodes;
-
-      logger.info(`GraphQL query successful: found ${threads.length} review threads`);
-
-      // Log thread details for debugging
-      threads.forEach((thread, index) => {
-        logger.debug(`GraphQL Thread #${index + 1}:`, {
-          id: thread.id,
-          isResolved: thread.isResolved,
-          resolvedBy: thread.resolvedBy?.login,
-          commentsCount: thread.comments.nodes.length,
-          firstComment: {
-            author: thread.comments.nodes[0]?.author?.login,
-            path: thread.comments.nodes[0]?.path,
-            line: thread.comments.nodes[0]?.line,
-            bodyPreview: thread.comments.nodes[0]?.body?.substring(0, 100) + "..."
-          }
-        });
-      });
-
-      return threads;
-
-    } catch (error) {
-      logger.error('GraphQL API error:', error);
-
-      if (error.message?.includes('401')) {
-        throw new Error('GitHub token authentication failed. Check GITHUB_TOKEN.');
-      } else if (error.message?.includes('404')) {
-        throw new Error(`PR not found: ${owner}/${repo}#${pullNumber}`);
-      } else {
-        throw new Error(`GraphQL API error: ${error.message}`);
-      }
-    }
+// NEW METHOD: Analyze GraphQL review threads for resolution status
+analyzeGraphQLReviewThreads(reviewThreads) {
+  if (reviewThreads.length === 0) {
+    logger.info('No review threads found - PR ready for merge');
+    return {
+      totalConversations: 0,
+      resolvedConversations: 0,
+      unresolvedCount: 0,
+      unresolvedConversations: [],
+      allResolved: true,
+      resolutionPercentage: 100
+    };
   }
 
-  // NEW METHOD: Analyze GraphQL review threads for resolution status
-  analyzeGraphQLReviewThreads(reviewThreads) {
-    if (reviewThreads.length === 0) {
-      logger.info('No review threads found - PR ready for merge');
-      return {
-        totalConversations: 0,
-        resolvedConversations: 0,
-        unresolvedCount: 0,
-        unresolvedConversations: [],
-        allResolved: true,
-        resolutionPercentage: 100
-      };
-    }
+  let totalConversations = reviewThreads.length;
+  let resolvedConversations = 0;
+  let unresolvedConversations = [];
 
-    let totalConversations = reviewThreads.length;
-    let resolvedConversations = 0;
-    let unresolvedConversations = [];
-
-    reviewThreads.forEach((thread, index) => {
-      logger.debug(`GraphQL Thread analysis #${index + 1}:`, {
-        id: thread.id,
-        isResolved: thread.isResolved,
-        resolvedBy: thread.resolvedBy?.login,
-        commentsCount: thread.comments.nodes.length
-      });
-
-      if (thread.isResolved) {
-        resolvedConversations++;
-        logger.debug(`✅ Thread ${thread.id} is RESOLVED by ${thread.resolvedBy?.login}`);
-      } else {
-        logger.debug(`❌ Thread ${thread.id} is UNRESOLVED`);
-
-        const firstComment = thread.comments.nodes[0];
-        unresolvedConversations.push({
-          threadId: thread.id,
-          isResolved: false,
-          commentsCount: thread.comments.nodes.length,
-          firstComment: {
-            author: firstComment?.author?.login,
-            body: firstComment?.body,
-            path: firstComment?.path,
-            line: firstComment?.line,
-            createdAt: firstComment?.createdAt
-          }
-        });
-      }
+  reviewThreads.forEach((thread, index) => {
+    logger.debug(`GraphQL Thread analysis #${index + 1}:`, {
+      id: thread.id,
+      isResolved: thread.isResolved,
+      resolvedBy: thread.resolvedBy?.login,
+      commentsCount: thread.comments.nodes.length
     });
 
-    const result = {
-      totalConversations,
-      resolvedConversations,
-      unresolvedCount: unresolvedConversations.length,
-      unresolvedConversations,
-      allResolved: unresolvedConversations.length === 0,
-      resolutionPercentage: totalConversations > 0 ?
-        Math.round((resolvedConversations / totalConversations) * 100) : 100
-    };
-
-    logger.info('GraphQL Review thread resolution summary:', result);
-    return result;
-  }
-
-  // NEW METHOD: Determine merge readiness based on GraphQL data
-  determineMergeReadinessFromGraphQL(resolvedStatus, prData) {
-    const { allResolved, unresolvedConversations, totalConversations, resolutionPercentage } = resolvedStatus;
-
-    if (allResolved) {
-      if (totalConversations === 0) {
-        logger.info(`✅ READY FOR MERGE - No review conversations found`);
-        return {
-          status: "READY_FOR_MERGE",
-          reason: "No reviewer conversations require resolution.",
-          recommendation: "This PR is ready for merge. No review conversations require resolution.",
-          outstanding_issues: [],
-          conversation_analysis: {
-            total_conversations: totalConversations,
-            resolved_conversations: resolvedStatus.resolvedConversations,
-            unresolved_conversations: 0,
-            resolution_percentage: resolutionPercentage,
-            assessment_method: 'graphql_api'
-          },
-          merge_readiness_score: 100,
-          confidence: "high",
-          error: false,
-        };
-      } else {
-        logger.info(`✅ READY FOR MERGE - All ${totalConversations} conversations resolved`);
-        return {
-          status: "READY_FOR_MERGE",
-          reason: `All ${totalConversations} reviewer conversations have been resolved using GitHub's 'Resolve conversation' button.`,
-          recommendation: "This PR is ready for merge. All reviewer feedback has been properly resolved.",
-          outstanding_issues: [],
-          conversation_analysis: {
-            total_conversations: totalConversations,
-            resolved_conversations: resolvedStatus.resolvedConversations,
-            unresolved_conversations: 0,
-            resolution_percentage: resolutionPercentage,
-            assessment_method: 'graphql_api'
-          },
-          merge_readiness_score: 100,
-          confidence: "high",
-          error: false,
-        };
-      }
+    if (thread.isResolved) {
+      resolvedConversations++;
+      logger.debug(`✅ Thread ${thread.id} is RESOLVED by ${thread.resolvedBy?.login}`);
+    } else {
+      logger.debug(`❌ Thread ${thread.id} is UNRESOLVED`);
+      
+      const firstComment = thread.comments.nodes[0];
+      unresolvedConversations.push({
+        threadId: thread.id,
+        isResolved: false,
+        commentsCount: thread.comments.nodes.length,
+        firstComment: {
+          author: firstComment?.author?.login,
+          body: firstComment?.body,
+          path: firstComment?.path,
+          line: firstComment?.line,
+          createdAt: firstComment?.createdAt
+        }
+      });
     }
+  });
 
-    // SCENARIO 2: Unresolved conversations exist - NOT READY
-    const totalUnresolved = unresolvedConversations.length;
-    logger.info(`❌ NOT READY - ${totalUnresolved} conversations require resolution`);
+  const result = {
+    totalConversations,
+    resolvedConversations,
+    unresolvedCount: unresolvedConversations.length,
+    unresolvedConversations,
+    allResolved: unresolvedConversations.length === 0,
+    resolutionPercentage: totalConversations > 0 ? 
+      Math.round((resolvedConversations / totalConversations) * 100) : 100
+  };
 
-    return {
-      status: "NOT_READY_FOR_MERGE",
-      reason: `${totalUnresolved} reviewer conversations require resolution. Click 'Resolve conversation' for each after addressing the feedback.`,
-      recommendation: `Address the feedback in ${totalUnresolved} conversation(s) and click 'Resolve conversation' for each thread.`,
-      outstanding_issues: unresolvedConversations.map(conv => ({
-        type: "UNRESOLVED_CONVERSATION",
-        severity: "MAJOR",
-        description: `Review conversation requires GitHub resolution`,
-        thread_id: conv.threadId,
-        comments_count: conv.commentsCount,
-        author: conv.firstComment?.author,
-        file: conv.firstComment?.path,
-        line: conv.firstComment?.line,
-        body_preview: conv.firstComment?.body?.substring(0, 200) + "...",
-        created_at: conv.firstComment?.createdAt,
-        resolution_required: true,
-        instructions: "Click 'Resolve conversation' button after addressing this feedback"
-      })),
-      conversation_analysis: {
-        total_conversations: totalConversations,
-        resolved_conversations: resolvedStatus.resolvedConversations,
-        unresolved_conversations: unresolvedConversations.length,
-        resolution_percentage: resolutionPercentage,
-        assessment_method: 'graphql_api'
-      },
-      merge_readiness_score: Math.max(0, resolutionPercentage - 50),
-      confidence: "high",
-      error: false,
-    };
+  logger.info('GraphQL Review thread resolution summary:', result);
+  return result;
+}
+
+// NEW METHOD: Determine merge readiness based on GraphQL data
+determineMergeReadinessFromGraphQL(resolvedStatus, prData) {
+  const { allResolved, unresolvedConversations, totalConversations, resolutionPercentage } = resolvedStatus;
+
+  if (allResolved) {
+    if (totalConversations === 0) {
+      logger.info(`✅ READY FOR MERGE - No review conversations found`);
+      return {
+        status: "READY_FOR_MERGE",
+        reason: "No reviewer conversations require resolution.",
+        recommendation: "This PR is ready for merge. No review conversations require resolution.",
+        outstanding_issues: [],
+        conversation_analysis: {
+          total_conversations: totalConversations,
+          resolved_conversations: resolvedStatus.resolvedConversations,
+          unresolved_conversations: 0,
+          resolution_percentage: resolutionPercentage,
+          assessment_method: 'graphql_api'
+        },
+        merge_readiness_score: 100,
+        confidence: "high",
+        error: false,
+      };
+    } else {
+      logger.info(`✅ READY FOR MERGE - All ${totalConversations} conversations resolved`);
+      return {
+        status: "READY_FOR_MERGE",
+        reason: `All ${totalConversations} reviewer conversations have been resolved using GitHub's 'Resolve conversation' button.`,
+        recommendation: "This PR is ready for merge. All reviewer feedback has been properly resolved.",
+        outstanding_issues: [],
+        conversation_analysis: {
+          total_conversations: totalConversations,
+          resolved_conversations: resolvedStatus.resolvedConversations,
+          unresolved_conversations: 0,
+          resolution_percentage: resolutionPercentage,
+          assessment_method: 'graphql_api'
+        },
+        merge_readiness_score: 100,
+        confidence: "high",
+        error: false,
+      };
+    }
   }
+
+  // SCENARIO 2: Unresolved conversations exist - NOT READY
+  const totalUnresolved = unresolvedConversations.length;
+  logger.info(`❌ NOT READY - ${totalUnresolved} conversations require resolution`);
+
+  return {
+    status: "NOT_READY_FOR_MERGE",
+    reason: `${totalUnresolved} reviewer conversations require resolution. Click 'Resolve conversation' for each after addressing the feedback.`,
+    recommendation: `Address the feedback in ${totalUnresolved} conversation(s) and click 'Resolve conversation' for each thread.`,
+    outstanding_issues: unresolvedConversations.map(conv => ({
+      type: "UNRESOLVED_CONVERSATION", 
+      severity: "MAJOR",
+      description: `Review conversation requires GitHub resolution`,
+      thread_id: conv.threadId,
+      comments_count: conv.commentsCount,
+      author: conv.firstComment?.author,
+      file: conv.firstComment?.path,
+      line: conv.firstComment?.line,
+      body_preview: conv.firstComment?.body?.substring(0, 200) + "...",
+      created_at: conv.firstComment?.createdAt,
+      resolution_required: true,
+      instructions: "Click 'Resolve conversation' button after addressing this feedback"
+    })),
+    conversation_analysis: {
+      total_conversations: totalConversations,
+      resolved_conversations: resolvedStatus.resolvedConversations,
+      unresolved_conversations: unresolvedConversations.length,
+      resolution_percentage: resolutionPercentage,
+      assessment_method: 'graphql_api'
+    },
+    merge_readiness_score: Math.max(0, resolutionPercentage - 50),
+    confidence: "high", 
+    error: false,
+  };
+}
 
 
   // NEW METHOD: Filter comments to only include those that have "Resolve conversation" capability
@@ -2662,7 +2662,6 @@ async getDetailedReviewThreads(owner, repo, pullNumber) {
                     path
                     line
                     originalLine
-                    diffSide
                     outdated
                     state
                   }
