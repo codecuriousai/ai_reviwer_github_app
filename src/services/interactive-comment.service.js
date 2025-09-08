@@ -57,7 +57,8 @@ class InteractiveCommentService {
     // Original issue information
     comment += `## 🔍 Issue Identified\n`;
     comment += `**Issue:** ${finding.issue}\n`;
-    comment += `**Severity:** ${finding.severity} | **Category:** ${finding.category}\n\n`;
+    comment += `**Severity:** ${finding.severity} | **Category:** ${finding.category}\n`;
+    comment += `**Technical Debt:** ${finding.technicalDebtMinutes || 0} minutes\n\n`;
     
     // Fix suggestion section
     if (fixSuggestion && !fixSuggestion.error) {

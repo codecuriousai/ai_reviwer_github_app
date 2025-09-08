@@ -1597,6 +1597,7 @@ determineMergeReadinessFromGraphQL(resolvedStatus, prData) {
           severity: this.normalizeSeverity(finding.severity),
           category: this.normalizeCategory(finding.category),
           suggestion: String(finding.suggestion || "No suggestion provided"),
+          technicalDebtMinutes: Number(finding.technicalDebtMinutes || 0),
         };
       }
     );
@@ -1606,6 +1607,18 @@ determineMergeReadinessFromGraphQL(resolvedStatus, prData) {
       Number(analysis.automatedAnalysis.totalIssues) || 0;
     analysis.automatedAnalysis.technicalDebtMinutes =
       Number(analysis.automatedAnalysis.technicalDebtMinutes) || 0;
+
+    // Validate technical debt consistency
+    const individualTechnicalDebt = analysis.detailedFindings.reduce(
+      (sum, finding) => sum + (finding.technicalDebtMinutes || 0),
+      0
+    );
+    
+    // If individual technical debt doesn't match total, adjust the total to match individual findings
+    if (individualTechnicalDebt > 0 && individualTechnicalDebt !== analysis.automatedAnalysis.technicalDebtMinutes) {
+      logger.info(`Adjusting total technical debt from ${analysis.automatedAnalysis.technicalDebtMinutes} to ${individualTechnicalDebt} to match individual findings`);
+      analysis.automatedAnalysis.technicalDebtMinutes = individualTechnicalDebt;
+    }
 
     // Validate review assessment
     const validAssessments = [

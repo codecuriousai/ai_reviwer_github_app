@@ -25,12 +25,22 @@ ANALYSIS REQUIREMENTS:
    - Code Smells (maintainability issues)
    - Technical Debt assessment (in minutes)
 
-2. Analyze human reviewer coverage:
+2. For EACH individual finding in detailedFindings:
+   - Calculate technical debt in minutes based on severity and complexity
+   - Technical debt guidelines:
+     * BLOCKER: 15-30 minutes (critical fixes)
+     * CRITICAL: 10-20 minutes (high impact issues)
+     * MAJOR: 5-15 minutes (important improvements)
+     * MINOR: 2-8 minutes (small fixes)
+     * INFO: 1-5 minutes (minor improvements)
+   - Ensure the SUM of all individual technicalDebtMinutes equals the total technicalDebtMinutes
+
+3. Analyze human reviewer coverage:
    - What issues were caught by human reviewers
    - What issues were missed
    - Quality of the human review process
 
-3. Only analyze lines marked as commentable: true in the structured data
+4. Only analyze lines marked as commentable: true in the structured data
 
 CRITICAL RESPONSE REQUIREMENTS:
 - Respond with ONLY valid JSON
@@ -82,7 +92,8 @@ REQUIRED JSON STRUCTURE - EXACT FORMAT REQUIRED:
       "issue": "Detailed description of the specific issue found",
       "severity": "CRITICAL",
       "category": "VULNERABILITY",
-      "suggestion": "Specific actionable fix recommendation"
+      "suggestion": "Specific actionable fix recommendation",
+      "technicalDebtMinutes": 5
     }
   ],
   "recommendation": "Detailed recommendation text"
