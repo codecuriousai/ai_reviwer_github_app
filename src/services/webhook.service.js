@@ -445,21 +445,24 @@ class WebhookService {
 
       analysis.trackingId = trackingId;
 
+      // Filter out previously suggested fixes to prevent duplicates
+      const filteredAnalysis = await aiService.filterPreviouslySuggestedFixes(owner, repo, analysis);
+
       logger.info(`AI analysis completed in ${analysisTime}ms`, {
         trackingId,
         pullNumber,
-        issuesFound: analysis.automatedAnalysis.totalIssues,
-        assessment: analysis.reviewAssessment,
+        issuesFound: filteredAnalysis.automatedAnalysis.totalIssues,
+        assessment: filteredAnalysis.reviewAssessment,
       });
 
       // NEW: Check if AI analysis failed before proceeding
-      if (analysis.detailedFindings.some(f => f.file === 'AI_PARSING_ERROR' || f.file === 'AI_SERVICE_ERROR')) {
-        await this.completeWithRetryButton(owner, repo, pullNumber, initialCheckRun, analysis, prData);
+      if (filteredAnalysis.detailedFindings.some(f => f.file === 'AI_PARSING_ERROR' || f.file === 'AI_SERVICE_ERROR')) {
+        await this.completeWithRetryButton(owner, repo, pullNumber, initialCheckRun, filteredAnalysis, prData);
         return;
       }
 
       // If successful, post comment and create interactive check run
-      await this.completeWithButtonsCheckRun(owner, repo, pullNumber, initialCheckRun, analysis, headSha);
+      await this.completeWithButtonsCheckRun(owner, repo, pullNumber, initialCheckRun, filteredAnalysis, headSha);
 
     } catch (error) {
       logger.error(`Error in AI review for PR #${pullNumber}:`, error, { trackingId });

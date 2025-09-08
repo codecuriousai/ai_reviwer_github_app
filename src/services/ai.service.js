@@ -5,6 +5,7 @@ const { GoogleGenerativeAI } = require("@google/generative-ai");
 const config = require("../config/config");
 const logger = require("../utils/logger");
 const { getCodeReviewPrompt } = require("../prompts/prompts");
+const fixHistoryService = require("./fix-history.service");
 
 // Add this at the top of ai.service.js
 const { graphql } = require("@octokit/graphql");
@@ -1619,8 +1620,87 @@ determineMergeReadinessFromGraphQL(resolvedStatus, prData) {
       logger.info(`Adjusting total technical debt from ${analysis.automatedAnalysis.technicalDebtMinutes} to ${individualTechnicalDebt} to match individual findings`);
       analysis.automatedAnalysis.technicalDebtMinutes = individualTechnicalDebt;
     }
+  }
 
-    // Validate review assessment
+  // Filter out previously suggested fixes to prevent duplicates
+  async filterPreviouslySuggestedFixes(owner, repo, analysis) {
+    try {
+      const originalCount = analysis.detailedFindings.length;
+      const newFindings = fixHistoryService.filterNewFindings(owner, repo, analysis.detailedFindings);
+      
+      // Update the analysis with filtered findings
+      analysis.detailedFindings = newFindings;
+      
+      // Recalculate totals based on filtered findings
+      analysis.automatedAnalysis.totalIssues = newFindings.length;
+      
+      // Recalculate severity breakdown
+      const severityBreakdown = {
+        blocker: 0,
+        critical: 0,
+        major: 0,
+        minor: 0,
+        info: 0
+      };
+      
+      newFindings.forEach(finding => {
+        const severity = finding.severity?.toUpperCase();
+        if (severityBreakdown.hasOwnProperty(severity)) {
+          severityBreakdown[severity]++;
+        }
+      });
+      
+      analysis.automatedAnalysis.severityBreakdown = severityBreakdown;
+      
+      // Recalculate categories
+      const categories = {
+        bugs: 0,
+        vulnerabilities: 0,
+        securityHotspots: 0,
+        codeSmells: 0
+      };
+      
+      newFindings.forEach(finding => {
+        const category = finding.category?.toUpperCase();
+        switch (category) {
+          case 'BUG':
+            categories.bugs++;
+            break;
+          case 'VULNERABILITY':
+            categories.vulnerabilities++;
+            break;
+          case 'SECURITY_HOTSPOT':
+            categories.securityHotspots++;
+            break;
+          case 'CODE_SMELL':
+            categories.codeSmells++;
+            break;
+        }
+      });
+      
+      analysis.automatedAnalysis.categories = categories;
+      
+      // Recalculate technical debt
+      const newTechnicalDebt = newFindings.reduce(
+        (sum, finding) => sum + (finding.technicalDebtMinutes || 0),
+        0
+      );
+      analysis.automatedAnalysis.technicalDebtMinutes = newTechnicalDebt;
+      
+      logger.info(`Filtered previously suggested fixes: ${originalCount} -> ${newFindings.length} findings`, {
+        owner,
+        repo,
+        skipped: originalCount - newFindings.length
+      });
+      
+      return analysis;
+    } catch (error) {
+      logger.error('Error filtering previously suggested fixes:', error);
+      return analysis; // Return original analysis if filtering fails
+    }
+  }
+
+  // Validate review assessment
     const validAssessments = [
       "PROPERLY REVIEWED",
       "NOT PROPERLY REVIEWED",

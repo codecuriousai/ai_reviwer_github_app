@@ -36,7 +36,7 @@ class CheckRunButtonService {
           summary: this.generateInteractiveSummary(analysis, postableFindings),
           // REMOVED: text field to prevent Details section from appearing
         },
-        actions: this.generateCheckRunActions(postableFindings),
+        actions: this.generateCheckRunActions(postableFindings, {}),
       };
 
       const checkRun = await githubService.createCheckRun(
@@ -85,7 +85,7 @@ class CheckRunButtonService {
   }
 
   // Generate actions (buttons) for the check run - ENHANCED with new buttons
-  generateCheckRunActions(postableFindings) {
+  generateCheckRunActions(postableFindings, buttonStates = {}) {
     const actions = [];
     const maxButtons = 3;
 
@@ -96,11 +96,15 @@ class CheckRunButtonService {
         identifier: "post-all",
       });
 
-      actions.push({
-        label: `Commit Fixes`,
-        description: `Apply all fixes to branch`,
-        identifier: "commit-fixes",
-      });
+      // Only show commit button if all comments have been posted
+      const allCommentsPosted = buttonStates["post-all"] === "completed";
+      if (allCommentsPosted) {
+        actions.push({
+          label: `Commit Fixes`,
+          description: `Apply all fixes to branch`,
+          identifier: "commit-fixes",
+        });
+      }
     }
 
     actions.push({
@@ -204,6 +208,16 @@ class CheckRunButtonService {
           }
         });
         buttonStates["post-all"] = "completed";
+        
+        // Update check run to show commit button now that comments are posted
+        await this.updateCheckRunWithNewActions(
+          owner,
+          repo,
+          checkRunId,
+          checkRunData,
+          buttonStates
+        );
+        
         await this.updateCheckRunCompleted(
           repository,
           checkRunId,
@@ -965,6 +979,26 @@ class CheckRunButtonService {
 
     if (cleaned > 0) {
       logger.info(`Cleaned ${cleaned} old check run entries`);
+    }
+  }
+
+  // Update check run with new actions after comments are posted
+  async updateCheckRunWithNewActions(owner, repo, checkRunId, checkRunData, buttonStates) {
+    try {
+      const postableFindings = checkRunData.postableFindings || [];
+      const newActions = this.generateCheckRunActions(postableFindings, buttonStates);
+      
+      await githubService.updateCheckRun(owner, repo, checkRunId, {
+        output: {
+          title: "AI Code Review Completed - Comments Posted",
+          summary: this.generateInteractiveSummary(checkRunData.analysis, postableFindings),
+        },
+        actions: newActions,
+      });
+      
+      logger.info(`Updated check run ${checkRunId} with new actions after comments posted`);
+    } catch (error) {
+      logger.error('Error updating check run with new actions:', error);
     }
   }
 }

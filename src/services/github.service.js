@@ -7,6 +7,7 @@ const path = require("path");
 const config = require("../config/config");
 const logger = require("../utils/logger");
 const aiService = require('./ai.service');
+const fixHistoryService = require('./fix-history.service');
 // Import interactive comment service to avoid loading issues
 let interactiveCommentService;
 try {
@@ -2364,6 +2365,10 @@ class GitHubService {
         skipped: []
       };
       
+      // Collect all file changes for single commit
+      const fileChanges = new Map(); // file -> { content, sha, path }
+      
+      // Process all fixes and collect changes
       for (let i = 0; i < fixes.length; i++) {
         const fix = fixes[i];
         logger.info(`Processing fix ${i + 1}/${fixes.length} for ${fix.file}:${fix.line}`);
@@ -2415,8 +2420,13 @@ class GitHubService {
             
             if (fallbackUpdatedContent && fallbackUpdatedContent !== fileInfo.content) {
               logger.info(`Fallback fix applied successfully for ${fix.file}`);
-              const commitResult = await this.commitSingleFile(owner, repo, fix, fileInfo, fallbackUpdatedContent, commitMessage);
-              results.successful.push(commitResult);
+              // Store the updated content for single commit
+              fileChanges.set(fix.file, {
+                content: fallbackUpdatedContent,
+                sha: fileInfo.sha,
+                path: fix.file,
+                fixes: [...(fileChanges.get(fix.file)?.fixes || []), fix]
+              });
             } else {
               results.skipped.push({
                 file: fix.file,
@@ -2432,9 +2442,13 @@ class GitHubService {
             updatedLength: updatedContent.length
           });
           
-          // Step 4: Commit the file
-          const commitResult = await this.commitSingleFile(owner, repo, fix, fileInfo, updatedContent, commitMessage);
-          results.successful.push(commitResult);
+          // Store the updated content for single commit
+          fileChanges.set(fix.file, {
+            content: updatedContent,
+            sha: fileInfo.sha,
+            path: fix.file,
+            fixes: [...(fileChanges.get(fix.file)?.fixes || []), fix]
+          });
           
           // Small delay to avoid rate limiting
           await new Promise(resolve => setTimeout(resolve, 200));
@@ -2449,10 +2463,33 @@ class GitHubService {
         }
       }
       
+      // Step 4: Commit all changes in a single commit
+      if (fileChanges.size > 0) {
+        try {
+          const commitResult = await this.commitMultipleFiles(owner, repo, fileChanges, commitMessage, pullNumber);
+          results.successful.push(commitResult);
+          
+          // Mark fixes as committed in history
+          for (const [file, fileData] of fileChanges.entries()) {
+            for (const fix of fileData.fixes) {
+              await fixHistoryService.markAsCommitted(owner, repo, fix.file, fix.line, fix.issue, commitResult.commitSha);
+            }
+          }
+          
+        } catch (error) {
+          logger.error(`Error committing multiple files:`, error);
+          results.failed.push({
+            error: error.message,
+            details: 'Failed to commit all changes in single commit'
+          });
+        }
+      }
+      
       logger.info(`commitFixesToPRBranch completed`, {
         successful: results.successful.length,
         failed: results.failed.length,
-        skipped: results.skipped.length
+        skipped: results.skipped.length,
+        filesChanged: fileChanges.size
       });
       
       return results;
@@ -2463,6 +2500,74 @@ class GitHubService {
     }
   }
   
+  // NEW: Helper method to commit multiple files in a single commit
+  async commitMultipleFiles(owner, repo, fileChanges, commitMessage, pullNumber) {
+    try {
+      // Get the source branch from PR
+      const pr = await this.octokit.rest.pulls.get({
+        owner,
+        repo,
+        pull_number: pullNumber
+      });
+      
+      const sourceBranch = pr.data.head.ref;
+      
+      // Prepare the commit message with details
+      const detailedCommitMessage = [
+        commitMessage,
+        '',
+        `Files changed: ${fileChanges.size}`,
+        `Fixes applied: ${Array.from(fileChanges.values()).reduce((sum, file) => sum + file.fixes.length, 0)}`,
+        '',
+        'Applied via AI Code Reviewer'
+      ].join('\n');
+      
+      // Create tree with all file changes
+      const tree = [];
+      for (const [file, fileData] of fileChanges.entries()) {
+        tree.push({
+          path: file,
+          mode: '100644',
+          type: 'blob',
+          content: fileData.content
+        });
+      }
+      
+      // Create the commit
+      const commit = await this.octokit.rest.git.createCommit({
+        owner,
+        repo,
+        message: detailedCommitMessage,
+        tree: tree,
+        parents: [pr.data.head.sha]
+      });
+      
+      // Update the branch reference
+      await this.octokit.rest.git.updateRef({
+        owner,
+        repo,
+        ref: `heads/${sourceBranch}`,
+        sha: commit.data.sha
+      });
+      
+      logger.info(`Successfully committed ${fileChanges.size} files in single commit`, {
+        commitSha: commit.data.sha,
+        filesChanged: fileChanges.size
+      });
+      
+      return {
+        commitSha: commit.data.sha,
+        commitUrl: commit.data.html_url,
+        filesChanged: fileChanges.size,
+        totalFixes: Array.from(fileChanges.values()).reduce((sum, file) => sum + file.fixes.length, 0)
+      };
+      
+    } catch (error) {
+      logger.error('Error committing multiple files:', error);
+      throw error;
+    }
+  }
+
   // NEW: Helper method to commit a single file
   async commitSingleFile(owner, repo, fix, fileInfo, updatedContent, commitMessage) {
     const detailedCommitMessage = [
