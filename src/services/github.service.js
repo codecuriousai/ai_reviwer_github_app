@@ -513,48 +513,153 @@ class GitHubService {
   }
 
   // Get pull request review comments
-  async getPullRequestComments(owner, repo, pullNumber) {
-    try {
-      const [reviewComments, issueComments] = await Promise.all([
-        this.octokit.rest.pulls.listReviewComments({
-          owner,
-          repo,
-          pull_number: pullNumber,
-        }),
-        this.octokit.rest.issues.listComments({
-          owner,
-          repo,
-          issue_number: pullNumber,
-        }),
-      ]);
+ async getPullRequestComments(owner, repo, pullNumber) {
+  try {
+    // Fetch all types of comments including PR reviews
+    const [reviewComments, issueComments, reviews] = await Promise.all([
+      this.octokit.rest.pulls.listReviewComments({
+        owner,
+        repo,
+        pull_number: pullNumber,
+      }),
+      this.octokit.rest.issues.listComments({
+        owner,
+        repo,
+        issue_number: pullNumber,
+      }),
+      this.octokit.rest.pulls.listReviews({
+        owner,
+        repo,
+        pull_number: pullNumber,
+      })
+    ]);
 
-      const allComments = [
-        ...reviewComments.data.map((comment) => ({
-          id: comment.id,
-          body: comment.body,
-          user: comment.user.login,
-          createdAt: comment.created_at,
-          path: comment.path,
-          line: comment.line,
-          type: "review",
-        })),
-        ...issueComments.data.map((comment) => ({
-          id: comment.id,
-          body: comment.body,
-          user: comment.user.login,
-          createdAt: comment.created_at,
-          type: "issue",
-        })),
-      ];
+    const allComments = [
+      // Review comments (line-specific)
+      ...reviewComments.data.map((comment) => ({
+        id: comment.id,
+        user: {
+          login: comment.user?.login,
+          type: comment.user?.type || 'User'
+        },
+        body: comment.body || '',
+        created_at: comment.created_at,
+        updated_at: comment.updated_at,
+        createdAt: comment.created_at, // Keep your existing field for backward compatibility
+        
+        // Review comment specific fields - CRITICAL for merge readiness
+        path: comment.path,
+        line: comment.line,
+        original_line: comment.original_line,
+        diff_hunk: comment.diff_hunk,
+        pull_request_review_id: comment.pull_request_review_id,
+        in_reply_to_id: comment.in_reply_to_id,
+        
+        // GitHub resolution status - MOST IMPORTANT for merge readiness
+        resolved: comment.resolved || false,
+        conversation_resolved: comment.conversation_resolved || false,
+        
+        // Author association for bot filtering
+        author_association: comment.author_association || 'NONE',
+        
+        // Additional GitHub fields
+        url: comment.url,
+        html_url: comment.html_url,
+        pull_request_url: comment.pull_request_url,
+        
+        // Your existing fields
+        user: comment.user?.login, // Keep for backward compatibility
+        type: "review",
+      })),
 
-      return allComments.sort(
-        (a, b) => new Date(a.createdAt) - new Date(b.createdAt)
-      );
-    } catch (error) {
-      logger.error("Error fetching PR comments:", error);
-      throw new Error(`Failed to fetch PR comments: ${error.message}`);
-    }
+      // Issue comments (general PR comments)
+      ...issueComments.data.map((comment) => ({
+        id: comment.id,
+        user: {
+          login: comment.user?.login,
+          type: comment.user?.type || 'User'
+        },
+        body: comment.body || '',
+        created_at: comment.created_at,
+        updated_at: comment.updated_at,
+        createdAt: comment.created_at, // Keep your existing field
+        
+        // No line-specific fields for issue comments
+        path: null,
+        line: null,
+        original_line: null,
+        diff_hunk: null,
+        pull_request_review_id: null,
+        in_reply_to_id: null,
+        
+        // Issue comments don't have resolved status in GitHub API
+        resolved: false,
+        conversation_resolved: false,
+        
+        // Author association for bot filtering
+        author_association: comment.author_association || 'NONE',
+        
+        // Additional GitHub fields
+        url: comment.url,
+        html_url: comment.html_url,
+        issue_url: comment.issue_url,
+        
+        // Your existing fields
+        user: comment.user?.login, // Keep for backward compatibility
+        type: "issue",
+      })),
+
+      // PR Reviews (APPROVED, CHANGES_REQUESTED, etc.)
+      ...reviews.data
+        .filter(review => review.body && review.body.trim()) // Only reviews with content
+        .map((review) => ({
+          id: review.id,
+          user: {
+            login: review.user?.login,
+            type: review.user?.type || 'User'
+          },
+          body: review.body || '',
+          created_at: review.submitted_at || review.created_at,
+          updated_at: review.submitted_at || review.updated_at,
+          createdAt: review.submitted_at || review.created_at, // Keep your existing field
+          
+          // No line-specific fields for review submissions
+          path: null,
+          line: null,
+          original_line: null,
+          diff_hunk: null,
+          pull_request_review_id: review.id,
+          in_reply_to_id: null,
+          
+          // Reviews don't have individual resolved status
+          resolved: false,
+          conversation_resolved: false,
+          
+          // Author association
+          author_association: review.author_association || 'NONE',
+          
+          // Review-specific fields
+          state: review.state, // APPROVED, CHANGES_REQUESTED, COMMENTED
+          
+          // Additional GitHub fields
+          url: review.html_url,
+          html_url: review.html_url,
+          
+          // Your existing fields
+          user: review.user?.login, // Keep for backward compatibility
+          type: "review_submission",
+        }))
+    ];
+
+    // Sort by creation time (keep your existing sorting)
+    return allComments.sort(
+      (a, b) => new Date(a.createdAt) - new Date(b.createdAt)
+    );
+  } catch (error) {
+    logger.error("Error fetching PR comments:", error);
+    throw new Error(`Failed to fetch PR comments: ${error.message}`);
   }
+}
 
   // NEW: Post multiple comments in a single review
   async postReviewComments(owner, repo, pullNumber, headSha, comments) {

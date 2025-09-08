@@ -21,6 +21,49 @@ class AIService {
   constructor() {
     this.provider = config.ai.provider;
     this.initializeProviders();
+
+    // Comment filtering configuration - easily modifiable
+    this.commentFilterConfig = {
+      // Comments to include in merge readiness assessment
+      include: {
+        commentTypes: [
+          'REVIEW_COMMENT',        // Line-specific review comments
+          'PULL_REQUEST_COMMENT',  // General PR comments
+          'ISSUE_COMMENT'          // Issue comments (if linked to PR)
+        ],
+        authorTypes: [
+          'HUMAN',                 // Human authors
+          'COLLABORATOR',          // Repository collaborators
+          'CONTRIBUTOR',           // External contributors
+          'OWNER',                 // Repository owners
+          'MEMBER'                 // Organization members
+        ]
+      },
+
+      // Comments to exclude from merge readiness assessment
+      exclude: {
+        commentTypes: [
+          'COMMIT_COMMENT',        // Comments on specific commits
+          'DISCUSSION_COMMENT',    // GitHub Discussions comments
+          'RELEASE_COMMENT',       // Release comments
+          'GIST_COMMENT'          // Gist comments
+        ],
+        authorTypes: [
+          'BOT',                   // All bot accounts
+          'GITHUB_ACTIONS',        // GitHub Actions bot
+          'DEPENDABOT',            // Dependabot
+          'RENOVATE'               // Renovate bot
+        ],
+        specificBots: [
+          'github-actions[bot]',
+          'dependabot[bot]',
+          'renovate[bot]',
+          'codecov[bot]',
+          'sonarcloud[bot]',
+          'security-bot[bot]'
+        ]
+      }
+    };
   }
 
   // Initialize AI providers
@@ -105,315 +148,397 @@ class AIService {
   }
 
   // NEW: Generate specific code fix suggestions for a finding
-   async assessMergeReadiness(
-    prData,
-    aiFindings,
-    reviewComments,
-    currentStatus
-  ) {
+  async assessMergeReadiness(prData, aiFindings, reviewComments, currentStatus) {
     try {
       logger.info(`Assessing merge readiness for PR #${prData.pr?.number}`, {
-        aiFindings: aiFindings?.length || 0,
-        reviewComments: reviewComments?.length || 0,
+        totalComments: reviewComments?.length || 0,
       });
 
-      // Analyze AI findings
-      const totalAiIssues = aiFindings?.length || 0;
-      const criticalIssues =
-        aiFindings?.filter(
-          (f) => f.severity === "CRITICAL" || f.severity === "BLOCKER"
-        ).length || 0;
-      const securityIssues =
-        aiFindings?.filter(
-          (f) =>
-            f.category === "VULNERABILITY" || f.category === "SECURITY_HOTSPOT"
-        ).length || 0;
+      // Filter comments based on configuration
+      const filteredComments = this.filterRelevantComments(reviewComments || []);
 
-      // ENHANCED: Analyze comment resolution status
-      const commentAnalysis = this.analyzeCommentResolution(
-        reviewComments || []
-      );
+      logger.info(`Filtered comments for assessment`, {
+        originalCount: reviewComments?.length || 0,
+        filteredCount: filteredComments.length
+      });
 
-      logger.info("Comment analysis result:", commentAnalysis);
+      // Check resolved status of filtered comments
+      const resolvedStatus = this.checkResolvedConversations(filteredComments);
 
-      // SCENARIO 1: Clean PR with no comments
-      if (totalAiIssues === 0 && commentAnalysis.status === "NO_COMMENTS") {
-        logger.info(`Clean PR with no comments - ready for merge`);
-        return {
-          status: "READY_FOR_MERGE",
-          reason:
-            "No issues detected by automated analysis and no reviewer concerns raised. This appears to be a clean, straightforward change.",
-          recommendation:
-            "This PR is ready for merge. All automated checks passed with no issues identified.",
-          outstanding_issues: [],
-          review_quality_assessment: {
-            human_review_coverage: "MINIMAL_BUT_ACCEPTABLE",
-            ai_analysis_coverage: "COMPLETE",
-            critical_issues_addressed: true,
-            security_issues_addressed: true,
-            total_unresolved_issues: 0,
-          },
-          merge_readiness_score: 85,
-          confidence: "high",
-          error: false,
-        };
-      }
+      logger.info(`Resolved conversation analysis`, resolvedStatus);
 
-      // SCENARIO 2: Clean PR with resolved/neutral comments
-      if (
-        totalAiIssues === 0 &&
-        (commentAnalysis.status === "RESOLVED_COMMENTS" ||
-          commentAnalysis.status === "NEUTRAL_COMMENTS")
-      ) {
-        logger.info(`Clean PR with resolved comments - ready for merge`);
-        return {
-          status: "READY_FOR_MERGE",
-          reason: `No issues detected by automated analysis and reviewer comments appear to be ${
-            commentAnalysis.status === "RESOLVED_COMMENTS"
-              ? "resolved"
-              : "non-blocking"
-          }.`,
-          recommendation:
-            "This PR is ready for merge. Code quality is good and reviewer feedback has been addressed.",
-          outstanding_issues: [],
-          review_quality_assessment: {
-            human_review_coverage: "ADEQUATE",
-            ai_analysis_coverage: "COMPLETE",
-            critical_issues_addressed: true,
-            security_issues_addressed: true,
-            total_unresolved_issues: 0,
-          },
-          merge_readiness_score: 90,
-          confidence: "high",
-          error: false,
-        };
-      }
+      // Determine merge readiness based on resolved status only
+      return this.determineMergeReadinessFromResolved(resolvedStatus, prData);
 
-      // SCENARIO 3: Clean PR but with unresolved blocking comments
-      if (
-        totalAiIssues === 0 &&
-        commentAnalysis.status === "UNRESOLVED_BLOCKING_COMMENTS"
-      ) {
-        logger.info(
-          `Clean code but unresolved reviewer concerns - not ready for merge`
-        );
-        return {
-          status: "NOT_READY_FOR_MERGE",
-          reason:
-            "While automated analysis found no issues, reviewers have raised concerns that appear unresolved.",
-          recommendation:
-            "Address the reviewer feedback before proceeding with merge. Focus on resolving change requests.",
-          outstanding_issues: commentAnalysis.unresolvedComments.map(
-            (comment) => ({
-              type: "REVIEW_FEEDBACK",
-              severity: "MAJOR",
-              description: `Unresolved reviewer comment: ${comment.body.substring(
-                0,
-                100
-              )}...`,
-              file: comment.path || "general",
-              line: comment.line || 0,
-              addressed: false,
-            })
-          ),
-          review_quality_assessment: {
-            human_review_coverage: "GOOD",
-            ai_analysis_coverage: "COMPLETE",
-            critical_issues_addressed: true,
-            security_issues_addressed: true,
-            total_unresolved_issues: commentAnalysis.unresolvedComments.length,
-          },
-          merge_readiness_score: 40,
-          confidence: "high",
-          error: false,
-        };
-      }
-
-      // SCENARIO 4: Minor issues only with good comment resolution
-      if (
-        criticalIssues === 0 &&
-        securityIssues === 0 &&
-        totalAiIssues <= 3 &&
-        (commentAnalysis.status === "NO_COMMENTS" ||
-          commentAnalysis.status === "RESOLVED_COMMENTS" ||
-          commentAnalysis.status === "NEUTRAL_COMMENTS")
-      ) {
-        const minorIssues =
-          aiFindings?.filter(
-            (f) => f.severity === "MINOR" || f.severity === "INFO"
-          ) || [];
-
-        logger.info(
-          `Only minor issues with good comment resolution - ready for merge`
-        );
-        return {
-          status: "READY_FOR_MERGE",
-          reason: `Only ${
-            minorIssues.length
-          } minor/informational issues found with no security vulnerabilities or critical issues. ${
-            commentAnalysis.commentCount > 0
-              ? "Reviewer feedback appears addressed."
-              : "No reviewer concerns raised."
-          }`,
-          recommendation:
-            "This PR is ready for merge. The identified issues are minor and do not block the merge process.",
-          outstanding_issues: minorIssues.map((issue) => ({
-            type: "MINOR",
-            severity: issue.severity,
-            description: `${issue.file}:${issue.line} - ${issue.issue}`,
-            file: issue.file,
-            line: issue.line,
-            addressed: false,
-          })),
-          review_quality_assessment: {
-            human_review_coverage:
-              commentAnalysis.commentCount > 0
-                ? "ADEQUATE"
-                : "MINIMAL_BUT_ACCEPTABLE",
-            ai_analysis_coverage: "COMPLETE",
-            critical_issues_addressed: true,
-            security_issues_addressed: true,
-            total_unresolved_issues: minorIssues.length,
-          },
-          merge_readiness_score: commentAnalysis.commentCount > 0 ? 75 : 70,
-          confidence: "high",
-          error: false,
-        };
-      }
-
-      // SCENARIO 5: Minor issues but unresolved blocking comments
-      if (
-        criticalIssues === 0 &&
-        securityIssues === 0 &&
-        commentAnalysis.status === "UNRESOLVED_BLOCKING_COMMENTS"
-      ) {
-        logger.info(`Minor issues with unresolved comments - review required`);
-        return {
-          status: "REVIEW_REQUIRED",
-          reason:
-            "Code has minor issues and reviewers have raised unresolved concerns that need attention.",
-          recommendation:
-            "Address both the minor code issues and reviewer feedback before merge.",
-          outstanding_issues: [
-            ...aiFindings.map((issue) => ({
-              type: "CODE_QUALITY",
-              severity: issue.severity,
-              description: `${issue.file}:${issue.line} - ${issue.issue}`,
-              file: issue.file,
-              line: issue.line,
-              addressed: false,
-            })),
-            ...commentAnalysis.unresolvedComments.map((comment) => ({
-              type: "REVIEW_FEEDBACK",
-              severity: "MAJOR",
-              description: `Unresolved reviewer comment: ${comment.body.substring(
-                0,
-                100
-              )}...`,
-              file: comment.path || "general",
-              line: comment.line || 0,
-              addressed: false,
-            })),
-          ],
-          review_quality_assessment: {
-            human_review_coverage: "GOOD",
-            ai_analysis_coverage: "COMPLETE",
-            critical_issues_addressed: false,
-            security_issues_addressed: true,
-            total_unresolved_issues:
-              totalAiIssues + commentAnalysis.unresolvedComments.length,
-          },
-          merge_readiness_score: 45,
-          confidence: "medium",
-          error: false,
-        };
-      }
-
-      // For cases with significant issues, proceed with enhanced AI assessment
-      const prompt = buildMergeReadinessPrompt(
-        prData,
-        aiFindings,
-        reviewComments,
-        currentStatus
-      );
-
-      let rawResponse;
-      try {
-        rawResponse = await retryWithBackoff(async () => {
-          if (this.provider === "openai") {
-            return await this.analyzeWithOpenAI(prompt);
-          } else if (this.provider === "gemini") {
-            return await this.analyzeWithGemini(prompt);
-          } else {
-            throw new Error(`Unsupported AI provider: ${this.provider}`);
-          }
-        });
-      } catch (aiError) {
-        logger.error("AI provider error for merge readiness:", aiError);
-        return this.createErrorMergeAssessment(
-          `AI Provider Error: ${aiError.message}`
-        );
-      }
-
-      // Parse the merge readiness response
-      let mergeAssessment;
-      try {
-        mergeAssessment = this.parseMergeReadinessResponse(rawResponse);
-      } catch (parseError) {
-        logger.error("Merge readiness parsing error:", parseError);
-        return this.createErrorMergeAssessment(
-          `Parsing Error: ${parseError.message}`
-        );
-      }
-
-      // POST-PROCESSING: Apply comment resolution logic to AI decision
-      if (
-        commentAnalysis.status === "UNRESOLVED_BLOCKING_COMMENTS" &&
-        mergeAssessment.status === "READY_FOR_MERGE"
-      ) {
-        logger.warn(
-          "Overriding AI decision due to unresolved blocking comments"
-        );
-        mergeAssessment.status = "NOT_READY_FOR_MERGE";
-        mergeAssessment.reason =
-          "Overridden: Unresolved blocking reviewer comments require attention before merge.";
-        mergeAssessment.merge_readiness_score = Math.min(
-          mergeAssessment.merge_readiness_score || 50,
-          45
-        );
-      }
-
-      // Override AI being too conservative for truly clean PRs
-      if (
-        mergeAssessment.status === "NOT_READY_FOR_MERGE" &&
-        totalAiIssues === 0 &&
-        (commentAnalysis.status === "NO_COMMENTS" ||
-          commentAnalysis.status === "RESOLVED_COMMENTS")
-      ) {
-        logger.warn(
-          "AI incorrectly marked clean PR as not ready - overriding to READY_FOR_MERGE"
-        );
-        mergeAssessment.status = "READY_FOR_MERGE";
-        mergeAssessment.reason =
-          "Override: No issues found and no unresolved reviewer concerns.";
-        mergeAssessment.recommendation =
-          "This PR passed all checks with no issues identified.";
-        mergeAssessment.merge_readiness_score = Math.max(
-          mergeAssessment.merge_readiness_score || 0,
-          85
-        );
-      }
-
-      logger.info(
-        `Merge readiness assessment completed: ${mergeAssessment.status}`
-      );
-      return mergeAssessment;
     } catch (error) {
       logger.error("Critical error assessing merge readiness:", error);
-      return this.createErrorMergeAssessment(
-        `Critical Error: ${error.message}`
-      );
+      return this.createErrorMergeAssessment(`Critical Error: ${error.message}`);
     }
+  }
+
+   // Filter comments based on configuration
+  filterRelevantComments(comments) {
+    return comments.filter(comment => {
+      // Check if comment type should be included
+      const commentType = this.determineCommentType(comment);
+      if (!this.commentFilterConfig.include.commentTypes.includes(commentType)) {
+        logger.debug(`Excluding comment by type: ${commentType}`, { commentId: comment.id });
+        return false;
+      }
+
+      // Check if comment type should be excluded
+      if (this.commentFilterConfig.exclude.commentTypes.includes(commentType)) {
+        logger.debug(`Excluding comment by excluded type: ${commentType}`, { commentId: comment.id });
+        return false;
+      }
+
+      // Check author type
+      const authorType = this.determineAuthorType(comment);
+      
+      // Exclude specific bots
+      const authorLogin = comment.user?.login?.toLowerCase() || '';
+      if (this.commentFilterConfig.exclude.specificBots.some(bot => 
+        authorLogin.includes(bot.toLowerCase().replace('[bot]', '')))) {
+        logger.debug(`Excluding comment from specific bot: ${authorLogin}`, { commentId: comment.id });
+        return false;
+      }
+
+      // Exclude bot author types
+      if (this.commentFilterConfig.exclude.authorTypes.includes(authorType)) {
+        logger.debug(`Excluding comment from bot author: ${authorType}`, { 
+          commentId: comment.id, 
+          author: authorLogin 
+        });
+        return false;
+      }
+
+      // Include only allowed author types
+      if (!this.commentFilterConfig.include.authorTypes.includes(authorType)) {
+        logger.debug(`Excluding comment - author type not in include list: ${authorType}`, { 
+          commentId: comment.id 
+        });
+        return false;
+      }
+
+      return true;
+    });
+  }
+
+  // Determine comment type from comment object
+  determineCommentType(comment) {
+    // Check for review comments (line-specific)
+    if (comment.path && comment.line && comment.pull_request_review_id) {
+      return 'REVIEW_COMMENT';
+    }
+    
+    // Check for pull request comments
+    if (comment.pull_request_url || comment.issue_url?.includes('/pull/')) {
+      return 'PULL_REQUEST_COMMENT';
+    }
+    
+    // Check for issue comments
+    if (comment.issue_url && !comment.issue_url.includes('/pull/')) {
+      return 'ISSUE_COMMENT';
+    }
+    
+    // Check for commit comments
+    if (comment.commit_id || comment.url?.includes('/commit/')) {
+      return 'COMMIT_COMMENT';
+    }
+    
+    // Default fallback
+    return 'PULL_REQUEST_COMMENT';
+  }
+
+  // Determine author type from comment object
+  determineAuthorType(comment) {
+    const user = comment.user || {};
+    const userType = user.type?.toUpperCase() || 'USER';
+    const login = user.login?.toLowerCase() || '';
+    
+    // Check if it's a bot
+    if (userType === 'BOT' || login.includes('[bot]') || login.includes('bot')) {
+      return 'BOT';
+    }
+    
+    // Check for specific bot patterns
+    if (login.includes('github-actions') || login.includes('dependabot') || login.includes('renovate')) {
+      return 'BOT';
+    }
+    
+    // Check association level (if available)
+    const association = comment.author_association?.toUpperCase() || 'NONE';
+    
+    switch (association) {
+      case 'OWNER':
+        return 'OWNER';
+      case 'MEMBER':
+        return 'MEMBER';
+      case 'COLLABORATOR':
+        return 'COLLABORATOR';
+      case 'CONTRIBUTOR':
+        return 'CONTRIBUTOR';
+      default:
+        return 'HUMAN';
+    }
+  }
+
+  // Check resolved conversations status
+  checkResolvedConversations(filteredComments) {
+    const conversationThreads = this.groupCommentsIntoConversations(filteredComments);
+    
+    let totalConversations = 0;
+    let resolvedConversations = 0;
+    let unresolvedConversations = [];
+    let pendingConversations = [];
+
+    Object.entries(conversationThreads).forEach(([threadId, comments]) => {
+      totalConversations++;
+      
+      const threadStatus = this.analyzeConversationThread(comments);
+      
+      if (threadStatus.isResolved) {
+        resolvedConversations++;
+      } else if (threadStatus.isPending) {
+        pendingConversations.push({
+          threadId,
+          comments: comments.length,
+          lastComment: comments[comments.length - 1],
+          status: 'pending'
+        });
+      } else {
+        unresolvedConversations.push({
+          threadId,
+          comments: comments.length,
+          lastComment: comments[comments.length - 1],
+          status: 'unresolved',
+          requiresAction: threadStatus.requiresAction
+        });
+      }
+    });
+
+    return {
+      totalConversations,
+      resolvedConversations,
+      unresolvedCount: unresolvedConversations.length,
+      pendingCount: pendingConversations.length,
+      unresolvedConversations,
+      pendingConversations,
+      allResolved: unresolvedConversations.length === 0 && pendingConversations.length === 0,
+      resolutionPercentage: totalConversations > 0 ? 
+        Math.round((resolvedConversations / totalConversations) * 100) : 100
+    };
+  }
+
+  // Group comments into conversation threads
+  groupCommentsIntoConversations(comments) {
+    const threads = {};
+    
+    comments.forEach(comment => {
+      // Create thread ID based on file path and line number for review comments
+      // or use comment ID for standalone comments
+      let threadId;
+      
+      if (comment.path && comment.line) {
+        threadId = `${comment.path}:${comment.line}`;
+      } else if (comment.in_reply_to_id) {
+        threadId = `reply_to_${comment.in_reply_to_id}`;
+      } else {
+        threadId = `standalone_${comment.id}`;
+      }
+      
+      if (!threads[threadId]) {
+        threads[threadId] = [];
+      }
+      
+      threads[threadId].push(comment);
+    });
+    
+    // Sort comments in each thread by creation date
+    Object.keys(threads).forEach(threadId => {
+      threads[threadId].sort((a, b) => 
+        new Date(a.created_at) - new Date(b.created_at)
+      );
+    });
+    
+    return threads;
+  }
+
+  // Analyze individual conversation thread
+  analyzeConversationThread(comments) {
+    if (comments.length === 0) {
+      return { isResolved: true, isPending: false, requiresAction: false };
+    }
+
+    // Look for explicit resolution indicators
+    const hasResolutionKeywords = comments.some(comment => {
+      const body = comment.body?.toLowerCase() || '';
+      return (
+        body.includes('resolved') ||
+        body.includes('fixed') ||
+        body.includes('addressed') ||
+        body.includes('done') ||
+        body.includes('completed') ||
+        body.includes('merged') ||
+        body.includes('closed')
+      );
+    });
+
+    // Check for change requests
+    const hasChangeRequest = comments.some(comment => {
+      const body = comment.body?.toLowerCase() || '';
+      return (
+        body.includes('please fix') ||
+        body.includes('needs fix') ||
+        body.includes('must change') ||
+        body.includes('required:') ||
+        body.includes('blocking') ||
+        comment.state === 'CHANGES_REQUESTED'
+      );
+    });
+
+    // Check for approval or positive feedback
+    const hasApproval = comments.some(comment => {
+      const body = comment.body?.toLowerCase() || '';
+      return (
+        body.includes('approve') ||
+        body.includes('lgtm') ||
+        body.includes('looks good') ||
+        body.includes('👍') ||
+        body.includes(':+1:') ||
+        comment.state === 'APPROVED'
+      );
+    });
+
+    // Check GitHub's resolved conversation status if available
+    const isGitHubResolved = comments.some(comment => 
+      comment.resolved === true || comment.conversation_resolved === true
+    );
+
+    // Determine status
+    if (isGitHubResolved || hasResolutionKeywords || hasApproval) {
+      return { isResolved: true, isPending: false, requiresAction: false };
+    }
+
+    if (hasChangeRequest) {
+      return { isResolved: false, isPending: false, requiresAction: true };
+    }
+
+    // Questions or suggestions without clear resolution
+    const lastComment = comments[comments.length - 1];
+    const isQuestion = lastComment.body?.includes('?') || false;
+    
+    if (isQuestion) {
+      return { isResolved: false, isPending: true, requiresAction: false };
+    }
+
+    // Default: unresolved if no clear indicators
+    return { isResolved: false, isPending: false, requiresAction: true };
+  }
+
+  // Determine merge readiness based on resolved status
+  determineMergeReadinessFromResolved(resolvedStatus, prData) {
+    const { allResolved, unresolvedConversations, pendingConversations, 
+            totalConversations, resolutionPercentage } = resolvedStatus;
+
+    // SCENARIO 1: All conversations resolved or no conversations
+    if (allResolved) {
+      logger.info(`All conversations resolved - ready for merge`);
+      return {
+        status: "READY_FOR_MERGE",
+        reason: totalConversations === 0 
+          ? "No reviewer conversations to resolve."
+          : `All ${totalConversations} reviewer conversations have been resolved.`,
+        recommendation: "This PR is ready for merge. All reviewer feedback has been addressed.",
+        outstanding_issues: [],
+        conversation_analysis: {
+          total_conversations: totalConversations,
+          resolved_conversations: resolvedStatus.resolvedConversations,
+          unresolved_conversations: 0,
+          resolution_percentage: resolutionPercentage
+        },
+        merge_readiness_score: 95,
+        confidence: "high",
+        error: false,
+      };
+    }
+
+    // SCENARIO 2: Only pending conversations (questions/suggestions)
+    if (unresolvedConversations.length === 0 && pendingConversations.length > 0) {
+      logger.info(`Only pending conversations - conditionally ready`);
+      return {
+        status: "READY_FOR_MERGE",
+        reason: `${pendingConversations.length} conversations are pending but don't block merge. These appear to be questions or suggestions rather than required changes.`,
+        recommendation: "This PR can be merged. Consider addressing pending questions in follow-up discussions.",
+        outstanding_issues: pendingConversations.map(conv => ({
+          type: "PENDING_DISCUSSION",
+          severity: "INFO",
+          description: `Pending conversation in ${conv.threadId}`,
+          requires_action: false
+        })),
+        conversation_analysis: {
+          total_conversations: totalConversations,
+          resolved_conversations: resolvedStatus.resolvedConversations,
+          pending_conversations: pendingConversations.length,
+          resolution_percentage: resolutionPercentage
+        },
+        merge_readiness_score: 80,
+        confidence: "medium",
+        error: false,
+      };
+    }
+
+    // SCENARIO 3: Unresolved conversations that require action
+    logger.info(`Unresolved conversations found - not ready for merge`);
+    return {
+      status: "NOT_READY_FOR_MERGE",
+      reason: `${unresolvedConversations.length} conversations require resolution before merge.`,
+      recommendation: "Address all unresolved reviewer feedback before proceeding with merge. Use GitHub's 'Resolve conversation' feature after addressing each concern.",
+      outstanding_issues: unresolvedConversations.map(conv => ({
+        type: "UNRESOLVED_CONVERSATION",
+        severity: conv.requiresAction ? "MAJOR" : "MINOR",
+        description: `Unresolved conversation in ${conv.threadId} (${conv.comments} comments)`,
+        last_comment: conv.lastComment.body?.substring(0, 100) + "...",
+        requires_action: conv.requiresAction,
+        file: conv.threadId.includes(':') ? conv.threadId.split(':')[0] : null,
+        line: conv.threadId.includes(':') ? conv.threadId.split(':')[1] : null
+      })),
+      conversation_analysis: {
+        total_conversations: totalConversations,
+        resolved_conversations: resolvedStatus.resolvedConversations,
+        unresolved_conversations: unresolvedConversations.length,
+        pending_conversations: pendingConversations.length,
+        resolution_percentage: resolutionPercentage
+      },
+      merge_readiness_score: Math.max(10, resolutionPercentage - 20),
+      confidence: "high",
+      error: false,
+    };
+  }
+
+  // Updated method to easily modify filter configuration
+  updateCommentFilterConfig(newConfig) {
+    // Deep merge new configuration with existing
+    if (newConfig.include) {
+      this.commentFilterConfig.include = {
+        ...this.commentFilterConfig.include,
+        ...newConfig.include
+      };
+    }
+    
+    if (newConfig.exclude) {
+      this.commentFilterConfig.exclude = {
+        ...this.commentFilterConfig.exclude,
+        ...newConfig.exclude
+      };
+    }
+    
+    logger.info('Comment filter configuration updated', this.commentFilterConfig);
+  }
+
+  // Method to get current filter configuration
+  getCommentFilterConfig() {
+    return JSON.parse(JSON.stringify(this.commentFilterConfig));
   }
 
   // NEW: Helper method to analyze comment resolution status
@@ -1345,21 +1470,16 @@ class AIService {
     if (mergeAssessment.review_quality_assessment) {
       details += `### Review Quality Assessment\n`;
       const qa = mergeAssessment.review_quality_assessment;
-      details += `- Human Review Coverage: ${
-        qa.human_review_coverage || "Unknown"
-      }\n`;
-      details += `- AI Analysis Coverage: ${
-        qa.ai_analysis_coverage || "Complete"
-      }\n`;
-      details += `- Critical Issues Addressed: ${
-        qa.critical_issues_addressed ? "Yes" : "No"
-      }\n`;
-      details += `- Security Issues Addressed: ${
-        qa.security_issues_addressed ? "Yes" : "No"
-      }\n`;
-      details += `- Total Unresolved Issues: ${
-        qa.total_unresolved_issues || 0
-      }\n\n`;
+      details += `- Human Review Coverage: ${qa.human_review_coverage || "Unknown"
+        }\n`;
+      details += `- AI Analysis Coverage: ${qa.ai_analysis_coverage || "Complete"
+        }\n`;
+      details += `- Critical Issues Addressed: ${qa.critical_issues_addressed ? "Yes" : "No"
+        }\n`;
+      details += `- Security Issues Addressed: ${qa.security_issues_addressed ? "Yes" : "No"
+        }\n`;
+      details += `- Total Unresolved Issues: ${qa.total_unresolved_issues || 0
+        }\n\n`;
     }
 
     return details;
@@ -1411,23 +1531,23 @@ class AIService {
     }
     return analysis;
   }
-  
+
   async generateDetailedCodeFix(enhancedContext) {
     try {
       const { file, issue, pr } = enhancedContext;
-      
+
       logger.info(`Generating detailed code fix for ${file.name}:${file.line}`);
-      
+
       // Extract the problematic code around the line
       const lines = file.content.split('\n');
       const lineIndex = file.line - 1;
       const contextLines = 3; // Get 3 lines before and after
-      
+
       const startLine = Math.max(0, lineIndex - contextLines);
       const endLine = Math.min(lines.length - 1, lineIndex + contextLines);
       const contextCode = lines.slice(startLine, endLine + 1).join('\n');
       const problematicLine = lines[lineIndex] || '';
-      
+
       // Create a more detailed prompt for the AI
       const detailedPrompt = `You are a security-focused code reviewer. Your task is to provide EXACT code replacements for security vulnerabilities and code issues.
   
@@ -1476,14 +1596,14 @@ class AIService {
   }
   
   Provide ONLY the JSON response, no additional text.`;
-  
+
       // Use your existing callAI method instead of callAIService
       const aiResponse = await this.callAI(detailedPrompt, "json_object");
-      
+
       if (!aiResponse) {
         throw new Error('AI service returned empty response');
       }
-      
+
       // Parse the AI response
       let fixData;
       try {
@@ -1492,12 +1612,12 @@ class AIService {
         fixData = JSON.parse(cleanResponse);
       } catch (parseError) {
         logger.error('Failed to parse AI response as JSON:', parseError);
-        
+
         // Fallback: try to extract code from the response
         const currentCodeMatch = aiResponse.match(/["']current_code["']\s*:\s*["']([^"']*?)["']/s);
         const suggestedFixMatch = aiResponse.match(/["']suggested_fix["']\s*:\s*["']([^"']*?)["']/s);
         const explanationMatch = aiResponse.match(/["']explanation["']\s*:\s*["']([^"']*?)["']/s);
-        
+
         if (currentCodeMatch && suggestedFixMatch) {
           fixData = {
             current_code: currentCodeMatch[1].replace(/\\n/g, '\n').replace(/\\"/g, '"'),
@@ -1509,16 +1629,16 @@ class AIService {
           throw new Error(`Could not parse AI response: ${parseError.message}`);
         }
       }
-      
+
       // Validate the response
       if (!fixData.current_code || !fixData.suggested_fix) {
         throw new Error('AI response missing required fields: current_code or suggested_fix');
       }
-      
+
       // Clean up the code strings
       fixData.current_code = fixData.current_code.replace(/\\n/g, '\n').replace(/\\t/g, '\t');
       fixData.suggested_fix = fixData.suggested_fix.replace(/\\n/g, '\n').replace(/\\t/g, '\t');
-      
+
       logger.info(`Detailed code fix generated successfully`, {
         hasCurrentCode: !!fixData.current_code,
         hasSuggestedFix: !!fixData.suggested_fix,
@@ -1526,7 +1646,7 @@ class AIService {
         currentCodeLength: fixData.current_code.length,
         suggestedFixLength: fixData.suggested_fix.length
       });
-      
+
       return {
         current_code: fixData.current_code,
         suggested_fix: fixData.suggested_fix,
@@ -1536,7 +1656,7 @@ class AIService {
         category: issue.category,
         severity: issue.severity
       };
-      
+
     } catch (error) {
       logger.error('Error generating detailed code fix:', error);
       return {
@@ -1547,22 +1667,22 @@ class AIService {
       };
     }
   }
-  
+
   // FALLBACK: If you don't have the above method, enhance the existing generateCodeFixSuggestion method
   async generateCodeFixSuggestion(finding, fileContent, prData) {
     try {
       logger.info(`Generating code fix suggestion for ${finding.file}:${finding.line}`);
-      
+
       // Extract context around the problematic line
       const lines = fileContent.split('\n');
       const lineIndex = finding.line - 1;
       const contextLines = 5;
-      
+
       const startLine = Math.max(0, lineIndex - contextLines);
       const endLine = Math.min(lines.length - 1, lineIndex + contextLines);
       const contextCode = lines.slice(startLine, endLine + 1).join('\n');
       const problematicLine = lines[lineIndex] || '';
-      
+
       const prompt = `You are a security-focused code reviewer. Provide EXACT code replacements for this issue.
   
   File: ${finding.file}
@@ -1587,14 +1707,14 @@ class AIService {
   For SQL injection, provide parameterized queries.
   For XSS, use textContent or proper escaping.
   Maintain original code structure and style.`;
-  
+
       // Use your existing callAI method
       const response = await this.callAI(prompt, "json_object");
-      
+
       if (!response) {
         throw new Error('AI service returned empty response');
       }
-      
+
       // Parse JSON response
       let fixData;
       try {
@@ -1602,11 +1722,11 @@ class AIService {
         fixData = JSON.parse(cleanResponse);
       } catch (parseError) {
         // Fallback parsing
-        const currentMatch = response.match(/["']current_code["']\s*:\s*["']([^"']*?)["']/s) || 
-                            response.match(/current_code["']\s*:\s*["']([^"']*?)["']/s);
-        const fixMatch = response.match(/["']suggested_fix["']\s*:\s*["']([^"']*?)["']/s) || 
-                        response.match(/suggested_fix["']\s*:\s*["']([^"']*?)["']/s);
-        
+        const currentMatch = response.match(/["']current_code["']\s*:\s*["']([^"']*?)["']/s) ||
+          response.match(/current_code["']\s*:\s*["']([^"']*?)["']/s);
+        const fixMatch = response.match(/["']suggested_fix["']\s*:\s*["']([^"']*?)["']/s) ||
+          response.match(/suggested_fix["']\s*:\s*["']([^"']*?)["']/s);
+
         if (currentMatch && fixMatch) {
           fixData = {
             current_code: currentMatch[1].replace(/\\n/g, '\n'),
@@ -1617,7 +1737,7 @@ class AIService {
           throw parseError;
         }
       }
-      
+
       return {
         current_code: fixData.current_code?.replace(/\\n/g, '\n') || null,
         suggested_fix: fixData.suggested_fix?.replace(/\\n/g, '\n') || finding.suggestion,
@@ -1625,7 +1745,7 @@ class AIService {
         confidence: 'High',
         estimated_effort: 'Low'
       };
-      
+
     } catch (error) {
       logger.error('Error generating code fix suggestion:', error);
       return {
