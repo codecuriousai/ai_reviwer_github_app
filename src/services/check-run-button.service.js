@@ -93,6 +93,12 @@ class CheckRunButtonService {
       // Only show "Post All Comments" button if not completed
       const allCommentsPosted = buttonStates["post-all"] === "completed";
       
+      logger.info(`Generating check run actions`, {
+        postableFindingsCount: postableFindings.length,
+        allCommentsPosted,
+        buttonStates: buttonStates
+      });
+      
       if (!allCommentsPosted) {
         actions.push({
           label: `Post All Comments`,
@@ -115,6 +121,10 @@ class CheckRunButtonService {
       label: `Check Merge Ready`,
       description: `Assess if PR is ready to merge`,
       identifier: "check-merge",
+    });
+
+    logger.info(`Generated ${actions.length} actions`, {
+      actions: actions.map(a => a.identifier)
     });
 
     return actions.slice(0, maxButtons);
@@ -213,14 +223,9 @@ class CheckRunButtonService {
         });
         buttonStates["post-all"] = "completed";
         
-        // Update check run to show commit button now that comments are posted
-        await this.updateCheckRunWithNewActions(
-          owner,
-          repo,
-          checkRunId,
-          checkRunData,
-          buttonStates
-        );
+        // Update the check run data with new button states
+        checkRunData.buttonStates = buttonStates;
+        this.activeCheckRuns.set(checkRunId, checkRunData);
         
         await this.updateCheckRunCompleted(
           repository,
@@ -844,7 +849,7 @@ class CheckRunButtonService {
     checkRunData,
     actionId
   ) {
-    const { analysis, postableFindings, trackingId } = checkRunData;
+    const { analysis, postableFindings, trackingId, buttonStates } = checkRunData;
 
     let completionMessage;
     if (actionId === "post-all") {
@@ -859,7 +864,8 @@ class CheckRunButtonService {
       completionMessage = `Comment posted for ${finding.file}:${finding.line}.`;
     }
 
-    const persistentActions = this.generateCheckRunActions(postableFindings);
+    // Use current button states to generate correct actions
+    const persistentActions = this.generateCheckRunActions(postableFindings, buttonStates || {});
 
     await githubService.updateCheckRun(
       repository.owner.login,
