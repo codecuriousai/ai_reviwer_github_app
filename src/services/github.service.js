@@ -2365,10 +2365,7 @@ class GitHubService {
         skipped: []
       };
       
-      // Collect all file changes for single commit
-      const fileChanges = new Map(); // file -> { content, sha, path }
-      
-      // Process all fixes and collect changes
+      // Process all fixes individually
       for (let i = 0; i < fixes.length; i++) {
         const fix = fixes[i];
         logger.info(`Processing fix ${i + 1}/${fixes.length} for ${fix.file}:${fix.line}`);
@@ -2420,13 +2417,11 @@ class GitHubService {
             
             if (fallbackUpdatedContent && fallbackUpdatedContent !== fileInfo.content) {
               logger.info(`Fallback fix applied successfully for ${fix.file}`);
-              // Store the updated content for single commit
-              fileChanges.set(fix.file, {
-                content: fallbackUpdatedContent,
-                sha: fileInfo.sha,
-                path: fix.file,
-                fixes: [...(fileChanges.get(fix.file)?.fixes || []), fix]
-              });
+              const commitResult = await this.commitSingleFile(owner, repo, fix, fileInfo, fallbackUpdatedContent, commitMessage);
+              results.successful.push(commitResult);
+              
+              // Mark fix as committed in history
+              await fixHistoryService.markAsCommitted(owner, repo, fix.file, fix.line, fix.issue, commitResult.commitSha);
             } else {
               results.skipped.push({
                 file: fix.file,
@@ -2442,13 +2437,12 @@ class GitHubService {
             updatedLength: updatedContent.length
           });
           
-          // Store the updated content for single commit
-          fileChanges.set(fix.file, {
-            content: updatedContent,
-            sha: fileInfo.sha,
-            path: fix.file,
-            fixes: [...(fileChanges.get(fix.file)?.fixes || []), fix]
-          });
+          // Step 4: Commit the fix using new PR-focused method
+          const commitResult = await this.commitSingleFile(owner, repo, fix, fileInfo, updatedContent, commitMessage);
+          results.successful.push(commitResult);
+          
+          // Mark fix as committed in history
+          await fixHistoryService.markAsCommitted(owner, repo, fix.file, fix.line, fix.issue, commitResult.commitSha);
           
           // Small delay to avoid rate limiting
           await new Promise(resolve => setTimeout(resolve, 200));
@@ -2463,33 +2457,11 @@ class GitHubService {
         }
       }
       
-      // Step 4: Commit all changes in a single commit
-      if (fileChanges.size > 0) {
-        try {
-          const commitResult = await this.commitMultipleFiles(owner, repo, fileChanges, commitMessage, pullNumber);
-          results.successful.push(commitResult);
-          
-          // Mark fixes as committed in history
-          for (const [file, fileData] of fileChanges.entries()) {
-            for (const fix of fileData.fixes) {
-              await fixHistoryService.markAsCommitted(owner, repo, fix.file, fix.line, fix.issue, commitResult.commitSha);
-            }
-          }
-          
-        } catch (error) {
-          logger.error(`Error committing multiple files:`, error);
-          results.failed.push({
-            error: error.message,
-            details: 'Failed to commit all changes in single commit'
-          });
-        }
-      }
       
       logger.info(`commitFixesToPRBranch completed`, {
         successful: results.successful.length,
         failed: results.failed.length,
-        skipped: results.skipped.length,
-        filesChanged: fileChanges.size
+        skipped: results.skipped.length
       });
       
       return results;

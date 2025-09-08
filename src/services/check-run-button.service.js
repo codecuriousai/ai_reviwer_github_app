@@ -243,6 +243,11 @@ class CheckRunButtonService {
           checkRunData
         );
         buttonStates["commit-fixes"] = "completed";
+        
+        // Update the check run data with new button states
+        checkRunData.buttonStates = buttonStates;
+        this.activeCheckRuns.set(checkRunId, checkRunData);
+        
         await this.updateCheckRunCompleted(
           repository,
           checkRunId,
@@ -269,6 +274,13 @@ class CheckRunButtonService {
             mergeAnalysis.recommendation || "See details below"
           }`;
 
+        // Update button states
+        buttonStates["check-merge"] = "completed";
+        
+        // Update the check run data with new button states
+        checkRunData.buttonStates = buttonStates;
+        this.activeCheckRuns.set(checkRunId, checkRunData);
+
         // Create simple status without details to prevent Details section
         await githubService.updateCheckRun(owner, repo, checkRunId, {
           status: "completed",
@@ -278,10 +290,8 @@ class CheckRunButtonService {
             summary: enhancedSummary,
             // REMOVED: text field to prevent Details section
           },
-          actions: this.generateCheckRunActions(postableFindings),
+          actions: this.generateCheckRunActions(postableFindings, buttonStates),
         });
-
-        buttonStates["check-merge"] = "completed";
         logger.info(
           `Merge readiness analysis completed. Status: ${statusText}`
         );
