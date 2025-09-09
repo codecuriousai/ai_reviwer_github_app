@@ -438,7 +438,7 @@ handleButtonAction()
 - **Calls**: None
 
 ### `commitFixesToPRBranch(owner, repo, pullNumber, fixes, commitMessage)`
-- **Purpose**: Automatically applies AI-suggested fixes to the pull request branch
+- **Purpose**: Automatically applies AI-suggested fixes to the pull request branch in a single commit
 - **Input Data**: 
   - `owner` (string): Repository owner
   - `repo` (string): Repository name
@@ -446,9 +446,32 @@ handleButtonAction()
   - `fixes` (array): List of fixes to apply
   - `commitMessage` (string): Message for the commit
 - **Output Data**: 
-  - `commitResults` (object): Results of applying fixes
+  - `commitResults` (object): Results of applying fixes with detailed error information
 - **Called By**: `checkRunButtonService.commitFixesToPRBranch()`
-- **Calls**: Multiple GitHub API functions
+- **Calls**: `commitMultipleFiles()`, `getFileContentFromPR()`, `applyAdvancedFixToContent()`
+- **Key Features**:
+  - **Single Commit**: All fixes across multiple files are committed together
+  - **Batch Processing**: Collects all file changes before committing
+  - **Error Handling**: Detailed error reporting with file and line information
+  - **Fallback Mechanism**: Alternative commit approach if batch commit fails
+
+### `commitMultipleFiles(owner, repo, fileChanges, commitMessage, pullNumber)`
+- **Purpose**: Creates a single commit with multiple file changes using GitHub's Git API
+- **Input Data**: 
+  - `owner` (string): Repository owner
+  - `repo` (string): Repository name
+  - `fileChanges` (Map): Map of file paths to file data with content and fixes
+  - `commitMessage` (string): Commit message
+  - `pullNumber` (number): PR number
+- **Output Data**: 
+  - `commitResult` (object): Commit information with SHA, URL, and statistics
+- **Called By**: `commitFixesToPRBranch()`
+- **Calls**: `createBlob()`, `createTree()`, `createCommit()`, `updateRef()`
+- **Key Features**:
+  - **Blob Creation**: Creates blobs for all file contents first
+  - **Tree Creation**: Creates tree object with blob references
+  - **Single Commit**: Uses tree SHA to create single commit
+  - **Detailed Messages**: Includes summary of all applied fixes
 
 ### `validateCommentableLine(owner, repo, pullNumber, filePath, lineNumber)`
 - **Purpose**: Checks if a specific line in a file can receive inline comments

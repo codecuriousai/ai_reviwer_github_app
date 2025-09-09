@@ -741,16 +741,50 @@ error ← error ←  completed
 **Main Function**: `githubService.commitFixesToPRBranch(owner, repo, pullNumber, fixes, commitMessage)`
 
 **Process**:
-1. Gets current branch reference
-2. Fetches file contents to modify
-3. Applies fixes to file contents
-4. Creates new commit with changes
-5. Updates branch reference
+1. **Batch Collection**: Collects all fixes and groups them by file
+2. **Content Processing**: Applies all fixes to each file's content
+3. **Blob Creation**: Creates GitHub blobs for all modified files
+4. **Tree Creation**: Creates a single tree object with all file changes
+5. **Single Commit**: Creates one commit containing all changes
+6. **Branch Update**: Updates the PR branch with the new commit
+
+**Key Features**:
+- **Single Commit**: All fixes across multiple files are committed together
+- **Detailed Error Reporting**: Shows exactly which file and line failed
+- **Fallback Mechanism**: Alternative approach if batch commit fails
+- **Comprehensive Logging**: Detailed logs for debugging
 
 **Safety Measures**:
 - Validates fixes before applying
-- Creates descriptive commit messages
-- Handles merge conflicts
+- Creates descriptive commit messages with fix summaries
+- Handles merge conflicts and API errors
+- Provides detailed error information for failed fixes
+
+### Q48.1: How does the single commit functionality work?
+**A:** The single commit functionality ensures all AI-suggested fixes are committed together:
+
+**Before (Multiple Commits)**:
+- Each file was committed separately
+- Created multiple commits in GitHub history
+- Made it harder to track related changes
+
+**After (Single Commit)**:
+- All fixes across all files are committed together
+- Creates one commit containing all changes
+- Easier to review and track related fixes
+
+**Technical Implementation**:
+1. **File Collection**: Groups fixes by file and applies them together
+2. **Blob Creation**: Creates GitHub blobs for all modified files
+3. **Tree Creation**: Creates a single tree object with all changes
+4. **Single Commit**: Uses the tree SHA to create one commit
+5. **Error Handling**: Detailed error reporting for any failures
+
+**Benefits**:
+- Cleaner commit history
+- Easier to review changes
+- Better tracking of related fixes
+- Reduced commit noise
 
 ---
 
