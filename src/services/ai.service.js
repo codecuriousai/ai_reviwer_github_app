@@ -1628,6 +1628,69 @@ determineMergeReadinessFromGraphQL(resolvedStatus, prData) {
     analysis.automatedAnalysis.technicalDebtMinutes =
       Number(analysis.automatedAnalysis.technicalDebtMinutes) || 0;
 
+    // Recalculate severity breakdown from detailed findings
+    const severityBreakdown = {
+      blocker: 0,
+      critical: 0,
+      major: 0,
+      minor: 0,
+      info: 0
+    };
+    
+    analysis.detailedFindings.forEach(finding => {
+      const severity = finding.severity?.toUpperCase();
+      switch (severity) {
+        case 'BLOCKER':
+          severityBreakdown.blocker++;
+          break;
+        case 'CRITICAL':
+          severityBreakdown.critical++;
+          break;
+        case 'MAJOR':
+          severityBreakdown.major++;
+          break;
+        case 'MINOR':
+          severityBreakdown.minor++;
+          break;
+        case 'INFO':
+          severityBreakdown.info++;
+          break;
+      }
+    });
+    
+    analysis.automatedAnalysis.severityBreakdown = severityBreakdown;
+    
+    // Recalculate categories from detailed findings
+    const categories = {
+      bugs: 0,
+      vulnerabilities: 0,
+      securityHotspots: 0,
+      codeSmells: 0
+    };
+    
+    analysis.detailedFindings.forEach(finding => {
+      const category = finding.category?.toUpperCase();
+      switch (category) {
+        case 'BUG':
+          categories.bugs++;
+          break;
+        case 'VULNERABILITY':
+          categories.vulnerabilities++;
+          break;
+        case 'SECURITY_HOTSPOT':
+          categories.securityHotspots++;
+          break;
+        case 'CODE_SMELL':
+          categories.codeSmells++;
+          break;
+      }
+    });
+    
+    analysis.automatedAnalysis.categories = categories;
+    
+    // Update total issues count
+    analysis.automatedAnalysis.totalIssues = analysis.detailedFindings.length;
+    
     // Validate technical debt consistency
     const individualTechnicalDebt = analysis.detailedFindings.reduce(
       (sum, finding) => sum + (finding.technicalDebtMinutes || 0),
@@ -1664,8 +1727,22 @@ determineMergeReadinessFromGraphQL(resolvedStatus, prData) {
       
       newFindings.forEach(finding => {
         const severity = finding.severity?.toUpperCase();
-        if (severityBreakdown.hasOwnProperty(severity)) {
-          severityBreakdown[severity]++;
+        switch (severity) {
+          case 'BLOCKER':
+            severityBreakdown.blocker++;
+            break;
+          case 'CRITICAL':
+            severityBreakdown.critical++;
+            break;
+          case 'MAJOR':
+            severityBreakdown.major++;
+            break;
+          case 'MINOR':
+            severityBreakdown.minor++;
+            break;
+          case 'INFO':
+            severityBreakdown.info++;
+            break;
         }
       });
       
