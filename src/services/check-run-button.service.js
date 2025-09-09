@@ -1075,7 +1075,7 @@ class CheckRunButtonService {
       logger.info(`Starting merge readiness analysis for PR #${pullNumber} (without analysis data)`);
 
       // Get the PR data to perform merge readiness check
-      const prData = await githubService.getPRData(owner, repo, pullNumber);
+      const prData = await githubService.getPullRequestData(owner, repo, pullNumber);
       if (!prData) {
         throw new Error('Could not fetch PR data');
       }
