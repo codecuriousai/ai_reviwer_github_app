@@ -77,21 +77,21 @@ const config = {
     openai: {
       apiKey: process.env.OPENAI_API_KEY,
       model: process.env.OPENAI_MODEL || 'gpt-4-turbo-preview',
-      maxTokens: parseInt(process.env.OPENAI_MAX_TOKENS) || 4000,
-      temperature: parseFloat(process.env.OPENAI_TEMPERATURE) || 0.1,
+      maxTokens: parseInt(process.env.OPENAI_MAX_TOKENS) || 6000, // Increased from 4000 to 6000
+      temperature: parseFloat(process.env.OPENAI_TEMPERATURE) || 0.2, // Increased from 0.1 to 0.2 for more thorough analysis
     },
     gemini: {
       apiKey: process.env.GEMINI_API_KEY,
       model: process.env.GEMINI_MODEL || 'gemini-pro',
-      maxTokens: parseInt(process.env.GEMINI_MAX_TOKENS) || 4000,
-      temperature: parseFloat(process.env.GEMINI_TEMPERATURE) || 0.1,
+      maxTokens: parseInt(process.env.GEMINI_MAX_TOKENS) || 6000, // Increased from 4000 to 6000
+      temperature: parseFloat(process.env.GEMINI_TEMPERATURE) || 0.2, // Increased from 0.1 to 0.2 for more thorough analysis
     },
   },
   review: {
     targetBranches: (process.env.TARGET_BRANCHES || 'main,master,develop').split(','),
-    excludeFiles: (process.env.EXCLUDE_FILES || '*.md,*.txt,*.json,package-lock.json,yarn.lock,*.log').split(','),
-    maxFilesToAnalyze: parseInt(process.env.MAX_FILES_ANALYZE) || 15,
-    maxFileSizeBytes: parseInt(process.env.MAX_FILE_SIZE) || 80000, // Reduced for faster processing
+    excludeFiles: (process.env.EXCLUDE_FILES || '*.md,*.txt,*.json,package-lock.json,yarn.lock,*.log,*.min.js,*.min.css,*.yml,*.yaml,*.xml,*.csv,*.sql,*.sh,*.bat,*.ps1,*.dockerfile,Dockerfile,*.gitignore,*.gitattributes,*.editorconfig,*.prettierrc,*.eslintrc,*.babelrc,*.env*,*.config.js,*.config.ts,webpack.config.*,rollup.config.*,vite.config.*,jest.config.*,tsconfig.*,angular.json,package.json').split(','), // Focus on coding files only
+    maxFilesToAnalyze: parseInt(process.env.MAX_FILES_ANALYZE) || 25, // Increased from 15 to 25
+    maxFileSizeBytes: parseInt(process.env.MAX_FILE_SIZE) || 120000, // Increased from 80KB to 120KB
     maxConcurrentReviews: parseInt(process.env.MAX_CONCURRENT_REVIEWS) || 3,
     singleCommentMode: process.env.SINGLE_COMMENT_MODE !== 'false', // Default to true
     reAnalysisDelay: parseInt(process.env.REANALYSIS_DELAY) || 120000, // 2 minutes

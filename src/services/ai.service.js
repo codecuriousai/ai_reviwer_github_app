@@ -102,14 +102,23 @@ class AIService {
     }
   }
 
-  // Main function to analyze pull request
+  // Enhanced main function to analyze pull request with comprehensive issue detection
   async analyzePullRequest(prData, existingComments = []) {
     try {
-      logger.info(`Starting AI analysis for PR #${prData.pr.number}`);
+      logger.info(`Starting enhanced AI analysis for PR #${prData.pr.number}`);
 
       // Prepare data for analysis
       const analysisData = this.prepareAnalysisData(prData, existingComments);
       const prompt = getCodeReviewPrompt(analysisData, existingComments);
+
+      // Log analysis context for debugging
+      logger.info(`Analysis context:`, {
+        filesToAnalyze: analysisData.file_changes.length,
+        totalLines: analysisData.file_changes.reduce((sum, file) => sum + file.lines.length, 0),
+        commentableLines: analysisData.file_changes.reduce((sum, file) => 
+          sum + file.lines.filter(line => line.commentable).length, 0),
+        existingComments: existingComments.length
+      });
 
       // Perform analysis with retry logic
       let rawResponse;
@@ -148,9 +157,14 @@ class AIService {
         existingComments
       );
 
-      logger.info(
-        `AI analysis completed. Found ${enhancedAnalysis.automatedAnalysis.totalIssues} issues`
-      );
+      // Log analysis results for debugging
+      logger.info(`Enhanced AI analysis completed:`, {
+        totalIssues: enhancedAnalysis.automatedAnalysis.totalIssues,
+        severityBreakdown: enhancedAnalysis.automatedAnalysis.severityBreakdown,
+        categories: enhancedAnalysis.automatedAnalysis.categories,
+        detailedFindingsCount: enhancedAnalysis.detailedFindings.length
+      });
+
       return enhancedAnalysis;
     } catch (error) {
       logger.error("Critical error in AI analysis:", error);
@@ -1931,7 +1945,7 @@ determineMergeReadinessFromGraphQL(resolvedStatus, prData) {
     return structuredFiles;
   }
 
-  // Parse file patch into structured lines
+  // Enhanced file patch parsing with commented line filtering
   parseFileLines(patch, filename) {
     const lines = patch.split("\n");
     const structuredLines = [];
@@ -1949,7 +1963,10 @@ determineMergeReadinessFromGraphQL(resolvedStatus, prData) {
       }
 
       const lineType = line.charAt(0);
-      const content = line.slice(1);
+      const content = line.substring(1);
+
+      // Check if line is a comment (skip commented lines)
+      const isCommentedLine = this.isCommentedLine(content, filename);
 
       if (lineType === "-") {
         oldLineNum++;
@@ -1967,22 +1984,99 @@ determineMergeReadinessFromGraphQL(resolvedStatus, prData) {
           oldLineNumber: null,
           newLineNumber: newLineNum,
           content: content,
-          commentable: true,
+          commentable: !isCommentedLine, // Only commentable if not a comment
         });
       } else if (lineType === " ") {
         oldLineNum++;
         newLineNum++;
+        // Enhanced: Mark context lines as commentable for broader analysis (but skip comments)
         structuredLines.push({
           type: "context",
           oldLineNumber: oldLineNum,
           newLineNumber: newLineNum,
           content: content,
-          commentable: false,
+          commentable: !isCommentedLine, // Only commentable if not a comment
         });
       }
     }
 
     return structuredLines;
+  }
+
+  // Helper method to detect commented lines
+  isCommentedLine(content, filename) {
+    if (!content || content.trim() === '') {
+      return false;
+    }
+
+    const trimmedContent = content.trim();
+    const extension = filename.split('.').pop().toLowerCase();
+
+    // Language-specific comment patterns
+    switch (extension) {
+      case 'js':
+      case 'jsx':
+      case 'ts':
+      case 'tsx':
+      case 'java':
+      case 'cpp':
+      case 'c':
+      case 'cs':
+      case 'php':
+      case 'go':
+      case 'rs':
+      case 'swift':
+      case 'kt':
+      case 'scala':
+      case 'dart':
+        // Single line comments: // or # (for some languages)
+        return trimmedContent.startsWith('//') || 
+               trimmedContent.startsWith('#') ||
+               trimmedContent.startsWith('*') ||
+               trimmedContent.startsWith('/*') ||
+               trimmedContent.startsWith('*/');
+      
+      case 'py':
+      case 'rb':
+      case 'sh':
+      case 'yaml':
+      case 'yml':
+        // Python, Ruby, Shell, YAML comments
+        return trimmedContent.startsWith('#');
+      
+      case 'html':
+      case 'xml':
+        // HTML/XML comments
+        return trimmedContent.startsWith('<!--') || 
+               trimmedContent.startsWith('-->') ||
+               trimmedContent.startsWith('*');
+      
+      case 'css':
+      case 'scss':
+      case 'sass':
+      case 'less':
+        // CSS comments
+        return trimmedContent.startsWith('/*') || 
+               trimmedContent.startsWith('*') ||
+               trimmedContent.startsWith('*/');
+      
+      case 'vue':
+        // Vue files can have multiple comment types
+        return trimmedContent.startsWith('//') || 
+               trimmedContent.startsWith('<!--') ||
+               trimmedContent.startsWith('*') ||
+               trimmedContent.startsWith('/*') ||
+               trimmedContent.startsWith('*/');
+      
+      default:
+        // Default: check for common comment patterns
+        return trimmedContent.startsWith('//') || 
+               trimmedContent.startsWith('#') ||
+               trimmedContent.startsWith('<!--') ||
+               trimmedContent.startsWith('/*') ||
+               trimmedContent.startsWith('*') ||
+               trimmedContent.startsWith('*/');
+    }
   }
 
   // Format existing comments

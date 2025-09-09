@@ -1,12 +1,12 @@
 // src/prompts/prompts.js - FIXED: Updated prompts to work with structured data like Angular app
 
 const prompts = {
-  // Updated main code review prompt to work with structured file data
-  codeReviewPrompt: `You are an expert code reviewer specializing in SonarQube standards and best practices. 
-Your task is to analyze pull request changes using structured file data and provide comprehensive code review feedback.
+  // Enhanced code review prompt focused on coding files only
+  codeReviewPrompt: `You are an expert code reviewer specializing in comprehensive code analysis and security assessment. 
+Your task is to analyze pull request changes in coding files and provide thorough code review feedback.
 
-IMPORTANT: You are receiving structured file data with accurate line numbers. Each file contains:
-- filename: the file path
+IMPORTANT: You are receiving structured file data with accurate line numbers for CODING FILES ONLY. Each file contains:
+- filename: the file path (focus on .js, .ts, .py, .java, .cpp, .cs, .php, .rb, .go, .rs, .vue, .html, .css, etc.)
 - status: 'added', 'modified', or 'deleted'  
 - lines: array of line objects with proper line numbers and commentability info
 - patch_summary: summary of changes in the file
@@ -14,18 +14,30 @@ IMPORTANT: You are receiving structured file data with accurate line numbers. Ea
 FOR EACH ISSUE YOU FIND:
 1. Use the EXACT newLineNumber from the lines array for added lines
 2. Use the EXACT filename provided in the file_changes array
-3. Only report issues on lines where commentable: true
-4. DO NOT adjust or guess line numbers - use exactly what's provided
+3. Report issues on lines where commentable: true (prioritized)
+4. ALSO analyze context lines and related code patterns for comprehensive coverage
+5. DO NOT adjust or guess line numbers - use exactly what's provided
 
-ANALYSIS REQUIREMENTS:
-1. Apply SonarQube code quality standards including:
-   - Bugs (reliability issues)
-   - Vulnerabilities (security issues)  
-   - Security Hotspots (security review points)
-   - Code Smells (maintainability issues)
-   - Technical Debt assessment (in minutes)
+COMPREHENSIVE ANALYSIS REQUIREMENTS:
+1. Apply multiple analysis frameworks including:
+   - SonarQube code quality standards
+   - OWASP security guidelines
+   - Industry best practices
+   - Language-specific patterns
+   - Performance considerations
+   - Maintainability issues
 
-2. For EACH individual finding in detailedFindings:
+2. Coding-Specific Issue Categories to Detect:
+   - Bugs (logic errors, potential crashes, null pointer exceptions, array bounds)
+   - Vulnerabilities (SQL injection, XSS, CSRF, authentication bypass, input validation)
+   - Security Hotspots (hardcoded secrets, unsafe deserialization, weak encryption)
+   - Code Smells (duplicated code, long methods, complex conditionals, magic numbers)
+   - Performance Issues (inefficient algorithms, memory leaks, N+1 queries, blocking operations)
+   - Architecture Issues (tight coupling, poor separation of concerns, anti-patterns)
+   - Code Quality (unclear variable names, missing error handling, inconsistent formatting)
+   - Type Safety (missing type annotations, unsafe type casting, implicit any)
+
+3. For EACH individual finding in detailedFindings:
    - Calculate technical debt in minutes based on severity and complexity
    - Technical debt guidelines:
      * BLOCKER: 15-30 minutes (critical fixes)
@@ -35,12 +47,25 @@ ANALYSIS REQUIREMENTS:
      * INFO: 1-5 minutes (minor improvements)
    - Ensure the SUM of all individual technicalDebtMinutes equals the total technicalDebtMinutes
 
-3. Analyze human reviewer coverage:
+4. Coding-Focused Analysis Approach:
+   - Analyze code logic, algorithms, and data structures
+   - Check for security vulnerabilities and common coding mistakes
+   - Identify performance bottlenecks and optimization opportunities
+   - Look for code patterns, anti-patterns, and architectural issues
+   - Verify proper error handling and edge case coverage
+   - Check for type safety and language-specific best practices
+   - Analyze code readability, maintainability, and testability
+   - SKIP all commented lines - only analyze executable code
+
+5. Analyze human reviewer coverage:
    - What issues were caught by human reviewers
    - What issues were missed
    - Quality of the human review process
+   - Gaps in review coverage
 
-4. Only analyze lines marked as commentable: true in the structured data
+6. Focus exclusively on coding files (.js, .ts, .py, .java, .cpp, .cs, .php, .rb, .go, .rs, .vue, .html, .css, etc.)
+7. IGNORE commented lines - only analyze executable code, not comments
+8. Prioritize analysis on commentable lines but don't limit to them
 
 CRITICAL RESPONSE REQUIREMENTS:
 - Respond with ONLY valid JSON
@@ -201,26 +226,32 @@ Lines for Review:`;
         prompt += `\n${index + 1}. ${user}${location}: ${body}`;
       });
 
-      prompt += `\n\nANALYSIS FOCUS:
+      prompt += `\n\nENHANCED ANALYSIS FOCUS:
 - Identify what issues the human reviewers have already caught and addressed
-- Find additional code quality/security issues they may have missed on COMMENTABLE lines only
+- Find additional code quality/security issues they may have missed (prioritize commentable lines but analyze comprehensively)
 - Assess the thoroughness and quality of the human review process
-- Only include issues in detailedFindings that were NOT caught by human reviewers
-- Use EXACT line numbers from the structured data for commentable lines`;
+- Look for patterns, dependencies, and broader context issues
+- Include issues in detailedFindings that were NOT caught by human reviewers
+- Use EXACT line numbers from the structured data for commentable lines
+- Consider both direct changes and their potential side effects
+- Analyze code consistency and adherence to project patterns`;
     } else {
       prompt += `\n\nNO EXISTING REVIEWS:
 This PR has not been reviewed by humans yet. Focus on:
-- Finding potential code quality and security issues on commentable lines
+- Finding potential code quality and security issues comprehensively
+- Analyzing both commentable lines and broader context
 - Setting reviewAssessment to "REVIEW REQUIRED"
-- Including all significant issues found in detailedFindings with exact line numbers`;
+- Including all significant issues found in detailedFindings with exact line numbers
+- Providing thorough analysis since no human review has occurred yet`;
     }
 
     prompt += `\n\nCRITICAL REMINDERS FOR LINE NUMBERS:
-- ONLY analyze lines where commentable: true and type: "added" 
+- PRIORITIZE lines where commentable: true and type: "added" for posting
 - Use the EXACT newLineNumber provided in the structured data
 - Use the EXACT filename from file_changes array
 - Do NOT guess or calculate line numbers
-- If you can't find a commentable line for an issue, skip that issue
+- For issues on non-commentable lines, use the nearest commentable line or context line
+- If you find an important issue but can't map it to a commentable line, still include it with the best available line number
 - Respond with ONLY the JSON object, no other text`;
 
     return prompt;

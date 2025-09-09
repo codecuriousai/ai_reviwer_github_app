@@ -702,6 +702,13 @@ class GitHubService {
   filterFiles(files) {
     const { excludeFiles, maxFilesToAnalyze, maxFileSizeBytes } = config.review;
 
+    // Define coding file extensions to focus analysis on
+    const codingExtensions = [
+      '.js', '.jsx', '.ts', '.tsx', '.py', '.java', '.cpp', '.c', '.cs', '.php', 
+      '.rb', '.go', '.rs', '.swift', '.kt', '.scala', '.dart', '.vue', '.svelte',
+      '.html', '.css', '.scss', '.sass', '.less', '.styl', '.jsx', '.tsx'
+    ];
+
     return files
       .filter((file) => {
         // Check file extension exclusions
@@ -710,13 +717,19 @@ class GitHubService {
           return regex.test(file.filename);
         });
 
+        // Check if it's a coding file
+        const isCodingFile = codingExtensions.some(ext => 
+          file.filename.toLowerCase().endsWith(ext)
+        );
+
         // Check file size
         const isTooLarge = file.changes > maxFileSizeBytes;
 
         // Only include added or modified files
         const isRelevant = ["added", "modified"].includes(file.status);
 
-        return !isExcluded && !isTooLarge && isRelevant;
+        // Focus on coding files only
+        return !isExcluded && !isTooLarge && isRelevant && isCodingFile;
       })
       .slice(0, maxFilesToAnalyze);
   }
