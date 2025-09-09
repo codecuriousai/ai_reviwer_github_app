@@ -2424,10 +2424,10 @@ class GitHubService {
       }
       
       // Create tree with blob references
-      const tree = [];
+      const treeItems = [];
       for (const [file, fileData] of fileChanges.entries()) {
         const blobSha = fileBlobMap.get(file);
-        tree.push({
+        treeItems.push({
           path: file,
           mode: '100644',
           type: 'blob',
@@ -2435,14 +2435,43 @@ class GitHubService {
         });
       }
       
-      // Create the commit
-      const commit = await this.octokit.rest.git.createCommit({
-        owner,
-        repo,
-        message: detailedCommitMessage,
-        tree: tree,
-        parents: [pr.data.head.sha]
+      // Create the tree object first
+      logger.info(`Creating tree with ${treeItems.length} items`, {
+        treeItems: treeItems.map(item => ({ path: item.path, sha: item.sha.substring(0, 7) }))
       });
+      
+      let treeResponse;
+      try {
+        treeResponse = await this.octokit.rest.git.createTree({
+          owner,
+          repo,
+          base_tree: pr.data.head.sha, // Use the current HEAD as base
+          tree: treeItems
+        });
+      } catch (treeError) {
+        logger.error(`Failed to create tree:`, treeError);
+        throw new Error(`Failed to create tree: ${treeError.message}`);
+      }
+      
+      logger.info(`Tree created successfully`, {
+        treeSha: treeResponse.data.sha,
+        treeUrl: treeResponse.data.url
+      });
+      
+      // Create the commit using the tree SHA
+      let commit;
+      try {
+        commit = await this.octokit.rest.git.createCommit({
+          owner,
+          repo,
+          message: detailedCommitMessage,
+          tree: treeResponse.data.sha, // Use the tree SHA, not the tree array
+          parents: [pr.data.head.sha]
+        });
+      } catch (commitError) {
+        logger.error(`Failed to create commit:`, commitError);
+        throw new Error(`Failed to create commit: ${commitError.message}`);
+      }
       
       // Update the branch reference
       await this.octokit.rest.git.updateRef({
