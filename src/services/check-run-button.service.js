@@ -2,6 +2,7 @@
 
 const githubService = require("./github.service");
 const aiService = require("./ai.service");
+const prReviewStatusService = require("./pr-review-status.service");
 const logger = require("../utils/logger");
 const { generateTrackingId, truncateText } = require("../utils/helpers");
 
@@ -243,6 +244,9 @@ class CheckRunButtonService {
           checkRunData
         );
         buttonStates["commit-fixes"] = "completed";
+        
+        // Mark fixes as committed
+        prReviewStatusService.markFixesCommitted(owner, repo, pullNumber);
         
         // Update the check run data with new button states
         checkRunData.buttonStates = buttonStates;

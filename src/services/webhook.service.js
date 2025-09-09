@@ -3,6 +3,7 @@
 const githubService = require('./github.service');
 const aiService = require('./ai.service');
 const checkRunButtonService = require('./check-run-button.service');
+const prReviewStatusService = require('./pr-review-status.service');
 const logger = require('../utils/logger');
 const { delay, generateTrackingId } = require('../utils/helpers');
 
@@ -50,6 +51,9 @@ class WebhookService {
   // Handle PR events - only create initial button, no analysis
   async handlePullRequestEvent(payload) {
     const { action, pull_request, repository } = payload;
+    const owner = repository.owner.login;
+    const repo = repository.name;
+    const pullNumber = pull_request.number;
     
     const relevantActions = ['opened', 'reopened', 'synchronize'];
     if (!relevantActions.includes(action)) {
@@ -58,12 +62,23 @@ class WebhookService {
     }
 
     if (pull_request.draft) {
-      logger.info(`Ignoring draft PR #${pull_request.number}`);
+      logger.info(`Ignoring draft PR #${pullNumber}`);
       return;
     }
 
     if (!githubService.isTargetBranch(pull_request.base.ref)) {
       logger.info(`Ignoring PR to non-target branch: ${pull_request.base.ref}`);
+      return;
+    }
+
+    // Check if review has already been completed for this PR
+    if (prReviewStatusService.hasReviewBeenCompleted(owner, repo, pullNumber)) {
+      logger.info(`PR #${pullNumber} already has completed review, skipping AI review button creation`);
+      
+      // If fixes have been committed, show only Check Merge Ready button
+      if (prReviewStatusService.hasFixesBeenCommitted(owner, repo, pullNumber)) {
+        await this.createCheckMergeReadyButton(repository, pull_request);
+      }
       return;
     }
 
@@ -150,6 +165,37 @@ class WebhookService {
         `**Lines changed:** +${pullRequest.additions} -${pullRequest.deletions}\n\n` +
         `*Analysis will create interactive buttons for posting AI findings directly to your code.*`
       );
+    }
+  }
+
+  // Create Check Merge Ready button for PRs that already have completed review
+  async createCheckMergeReadyButton(repository, pullRequest) {
+    const owner = repository.owner.login;
+    const repo = repository.name;
+    const headSha = pullRequest.head.sha;
+  
+    try {
+      logger.info(`Creating Check Merge Ready button for PR #${pullRequest.number}`);
+  
+      const checkRun = await githubService.createCheckRun(owner, repo, {
+        name: 'AI Code Review',
+        head_sha: headSha,
+        status: 'completed',
+        conclusion: 'success',
+        output: {
+          title: '✅ AI Review Completed - Ready for Merge Check',
+          summary: `This PR has already been reviewed by AI. All fixes have been committed.\n\n**Status:** Ready for merge readiness check\n**Files analyzed:** ${pullRequest.changed_files}\n**Lines changed:** +${pullRequest.additions} -${pullRequest.deletions}`
+        },
+        actions: [{
+          label: 'Check Merge Ready',
+          description: 'Check if this PR is ready to merge',
+          identifier: 'check-merge'
+        }]
+      });
+  
+      logger.info(`Check Merge Ready button created: ${checkRun.id} for PR #${pullRequest.number}`);
+    } catch (error) {
+      logger.error('Error creating Check Merge Ready button:', error);
     }
   }
   
@@ -496,6 +542,9 @@ class WebhookService {
           summary: `Analysis completed successfully!\n\nInteractive comment buttons are now available in the main "AI Code Review" check run.\n\n**Issues Found:** ${analysis.automatedAnalysis.totalIssues}\n**Analysis ID:** \`${analysis.trackingId}\`\n\nSee the main check run above for interactive comment posting options.`
         }
       });
+
+      // Mark review as completed
+      prReviewStatusService.markReviewCompleted(owner, repo, pullNumber);
 
       logger.info(`Interactive check run created successfully for PR #${pullNumber}`, { 
         trackingId: analysis.trackingId,
