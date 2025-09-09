@@ -176,6 +176,11 @@ class CheckRunButtonService {
       return true;
     }
 
+    // Special handling for check-merge when there's no analysis data
+    if (actionId === 'check-merge' && !checkRunData.analysis) {
+      return await this.handleCheckMergeWithoutAnalysis(checkRunData, checkRunId, repository);
+    }
+
     const {
       owner,
       repo,
@@ -1030,6 +1035,63 @@ class CheckRunButtonService {
       });
     } catch (error) {
       logger.error('Error updating check run with new actions:', error);
+    }
+  }
+
+  // Handle check merge when there's no analysis data (for Check Merge Ready button)
+  async handleCheckMergeWithoutAnalysis(checkRunData, checkRunId, repository) {
+    const { owner, repo, pullNumber } = checkRunData;
+    
+    try {
+      logger.info(`Starting merge readiness analysis for PR #${pullNumber} (without analysis data)`);
+
+      // Get the PR data to perform merge readiness check
+      const prData = await githubService.getPRData(owner, repo, pullNumber);
+      if (!prData) {
+        throw new Error('Could not fetch PR data');
+      }
+
+      // Perform merge readiness analysis
+      const mergeAnalysis = await aiService.checkMergeReadiness(null, { prData });
+
+      const isReady = mergeAnalysis.isReady;
+      const statusIcon = isReady ? "✅" : "❌";
+      const statusText = isReady ? "Ready to Merge" : "Not Ready to Merge";
+      const conclusion = isReady ? "success" : "failure";
+
+      const enhancedSummary =
+        `${statusIcon} **${statusText}**\n\n` +
+        `**Assessment:** ${mergeAnalysis.status || "Analyzed"}\n` +
+        `**Recommendation:** ${
+          mergeAnalysis.recommendation || "See details below"
+        }`;
+
+      // Update the check run
+      await githubService.updateCheckRun(owner, repo, checkRunId, {
+        status: "completed",
+        conclusion: conclusion,
+        output: {
+          title: `${statusIcon} Merge Readiness: ${statusText}`,
+          summary: enhancedSummary,
+        },
+        actions: [], // No more actions after completion
+      });
+
+      // Update button states
+      checkRunData.buttonStates["check-merge"] = "completed";
+      this.activeCheckRuns.set(checkRunId, checkRunData);
+
+      logger.info(`Merge readiness analysis completed. Status: ${statusText}`);
+      return true;
+
+    } catch (error) {
+      logger.error(`Error in merge readiness analysis for PR #${pullNumber}:`, error);
+      await this.updateCheckRunError(
+        repository,
+        checkRunId,
+        `Failed to complete merge readiness check: ${error.message}`
+      );
+      return true;
     }
   }
 }

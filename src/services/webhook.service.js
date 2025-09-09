@@ -180,11 +180,10 @@ class WebhookService {
       const checkRun = await githubService.createCheckRun(owner, repo, {
         name: 'AI Code Review',
         head_sha: headSha,
-        status: 'completed',
-        conclusion: 'success',
+        status: 'queued',
         output: {
-          title: '✅ AI Review Completed - Ready for Merge Check',
-          summary: `This PR has already been reviewed by AI. All fixes have been committed.\n\n**Status:** Ready for merge readiness check\n**Files analyzed:** ${pullRequest.changed_files}\n**Lines changed:** +${pullRequest.additions} -${pullRequest.deletions}`
+          title: 'AI Review Completed - Check Merge Ready',
+          summary: `This PR has already been reviewed by AI. All fixes have been committed.\n\n**Status:** Click "Check Merge Ready" to verify merge readiness\n**Files analyzed:** ${pullRequest.changed_files}\n**Lines changed:** +${pullRequest.additions} -${pullRequest.deletions}`
         },
         actions: [{
           label: 'Check Merge Ready',
@@ -193,6 +192,22 @@ class WebhookService {
         }]
       });
   
+      // Store check run data for button handling
+      const checkRunData = {
+        checkRunId: checkRun.id,
+        owner,
+        repo,
+        pullNumber: pullRequest.number,
+        headSha,
+        buttonStates: {},
+        analysis: null, // No analysis data for this check run
+        postableFindings: []
+      };
+      
+      // Store in active check runs map
+      const checkRunButtonService = require('./check-run-button.service');
+      checkRunButtonService.activeCheckRuns.set(checkRun.id, checkRunData);
+
       logger.info(`Check Merge Ready button created: ${checkRun.id} for PR #${pullRequest.number}`);
     } catch (error) {
       logger.error('Error creating Check Merge Ready button:', error);
