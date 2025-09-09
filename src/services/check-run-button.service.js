@@ -167,7 +167,10 @@ class CheckRunButtonService {
     // Get stored check run data
     const checkRunData = this.activeCheckRuns.get(checkRunId);
     if (!checkRunData) {
-      logger.error(`No data found for check run ${checkRunId}`);
+      logger.error(`No data found for check run ${checkRunId}`, {
+        activeCheckRunsCount: this.activeCheckRuns.size,
+        activeCheckRunIds: Array.from(this.activeCheckRuns.keys())
+      });
       await this.updateCheckRunError(
         repository,
         checkRunId,
@@ -256,6 +259,13 @@ class CheckRunButtonService {
         // Update the check run data with new button states
         checkRunData.buttonStates = buttonStates;
         this.activeCheckRuns.set(checkRunId, checkRunData);
+        
+        logger.info(`Updated check run data for commit-fixes`, {
+          checkRunId,
+          buttonStates,
+          hasAnalysis: !!checkRunData.analysis,
+          hasPostableFindings: !!checkRunData.postableFindings
+        });
         
         await this.updateCheckRunCompleted(
           repository,
@@ -886,20 +896,39 @@ class CheckRunButtonService {
     // Use current button states to generate correct actions
     const persistentActions = this.generateCheckRunActions(postableFindings, buttonStates || {});
 
-    await githubService.updateCheckRun(
-      repository.owner.login,
-      repository.name,
-      checkRunId,
-      {
-        conclusion: "success",
-        output: {
-          title: "AI Code Review - Action Completed",
-          summary: completionMessage,
-          // REMOVED: text field to prevent Details section
-        },
-        actions: persistentActions,
-      }
-    );
+    // Special handling for commit-fixes: don't complete the check run, just update it
+    if (actionId === "commit-fixes") {
+      await githubService.updateCheckRun(
+        repository.owner.login,
+        repository.name,
+        checkRunId,
+        {
+          status: "completed",
+          conclusion: "success",
+          output: {
+            title: "AI Code Review - Fixes Committed",
+            summary: completionMessage + "\n\n**Next Step:** Click 'Check Merge Ready' to verify merge readiness.",
+            // REMOVED: text field to prevent Details section
+          },
+          actions: persistentActions,
+        }
+      );
+    } else {
+      await githubService.updateCheckRun(
+        repository.owner.login,
+        repository.name,
+        checkRunId,
+        {
+          conclusion: "success",
+          output: {
+            title: "AI Code Review - Action Completed",
+            summary: completionMessage,
+            // REMOVED: text field to prevent Details section
+          },
+          actions: persistentActions,
+        }
+      );
+    }
   }
 
   // Update check run on error without Details section
