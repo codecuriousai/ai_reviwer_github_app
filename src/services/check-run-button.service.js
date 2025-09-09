@@ -1075,13 +1075,42 @@ class CheckRunButtonService {
       logger.info(`Starting merge readiness analysis for PR #${pullNumber} (without analysis data)`);
 
       // Get the PR data to perform merge readiness check
+      logger.info(`Fetching PR data for merge readiness check: ${owner}/${repo}#${pullNumber}`);
       const prData = await githubService.getPullRequestData(owner, repo, pullNumber);
       if (!prData) {
         throw new Error('Could not fetch PR data');
       }
+      
+      logger.info(`PR data fetched successfully`, {
+        prNumber: prData.pr?.number,
+        repository: prData.pr?.repository,
+        filesCount: prData.files?.length || 0
+      });
+
+      // Create a minimal analysis object for merge readiness check
+      const minimalAnalysis = {
+        trackingId: `merge-check-${Date.now()}`,
+        detailedFindings: [] // No findings since we're checking merge readiness without analysis
+      };
+
+      // Create proper checkRunData structure for merge readiness check
+      const checkRunDataForMerge = {
+        prData: prData,
+        reviewComments: [],
+        pullNumber: pullNumber,
+        owner: owner,
+        repo: repo
+      };
 
       // Perform merge readiness analysis
-      const mergeAnalysis = await aiService.checkMergeReadiness(null, { prData });
+      logger.info(`Starting merge readiness analysis with AI service`);
+      const mergeAnalysis = await aiService.checkMergeReadiness(minimalAnalysis, checkRunDataForMerge);
+      
+      logger.info(`Merge readiness analysis completed`, {
+        isReady: mergeAnalysis.isReady,
+        status: mergeAnalysis.status,
+        score: mergeAnalysis.score
+      });
 
       const isReady = mergeAnalysis.isReady;
       const statusIcon = isReady ? "✅" : "❌";
