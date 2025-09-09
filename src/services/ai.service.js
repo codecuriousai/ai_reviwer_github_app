@@ -1,13 +1,9 @@
-// src/services/ai.service.js - Enhanced AI Service with Resolved Conversation-Based Merge Readiness
-
 const OpenAI = require("openai");
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 const config = require("../config/config");
 const logger = require("../utils/logger");
 const { getCodeReviewPrompt } = require("../prompts/prompts");
 const fixHistoryService = require("./fix-history.service");
-
-// Add this at the top of ai.service.js
 const { graphql } = require("@octokit/graphql");
 
 const {
@@ -25,9 +21,7 @@ const {
 class AIService {
   constructor() {
     this.provider = config.ai.provider;
-    this.initializeProviders();
-
-    // CORRECTED: Comment filtering configuration 
+    this.initializeProviders(); 
     this.commentFilterConfig = {
       include: {
         commentTypes: [
@@ -79,7 +73,9 @@ class AIService {
     };
   }
 
-  // Initialize AI providers
+  /**
+   * Initializes AI providers based on configuration
+   */
   initializeProviders() {
     try {
       if (this.provider === "openai" || config.ai.openai.apiKey) {
@@ -102,16 +98,19 @@ class AIService {
     }
   }
 
-  // Enhanced main function to analyze pull request with comprehensive issue detection
+  /**
+   * Analyzes a pull request with comprehensive issue detection using AI
+   * @param {Object} prData - The pull request data
+   * @param {Array} existingComments - Existing comments on the PR
+   * @returns {Object} The analysis results
+   */
   async analyzePullRequest(prData, existingComments = []) {
     try {
       logger.info(`Starting enhanced AI analysis for PR #${prData.pr.number}`);
 
-      // Prepare data for analysis
       const analysisData = this.prepareAnalysisData(prData, existingComments);
       const prompt = getCodeReviewPrompt(analysisData, existingComments);
 
-      // Log analysis context for debugging
       logger.info(`Analysis context:`, {
         filesToAnalyze: analysisData.file_changes.length,
         totalLines: analysisData.file_changes.reduce((sum, file) => sum + file.lines.length, 0),
@@ -120,7 +119,6 @@ class AIService {
         existingComments: existingComments.length
       });
 
-      // Perform analysis with retry logic
       let rawResponse;
       try {
         rawResponse = await retryWithBackoff(async () => {
@@ -139,7 +137,6 @@ class AIService {
         );
       }
 
-      // Validate and parse response
       let parsedAnalysis;
       try {
         parsedAnalysis = this.parseAnalysisResponse(rawResponse);
@@ -149,8 +146,6 @@ class AIService {
           `Parsing Error: ${parseError.message}`
         );
       }
-
-      // Enhance analysis with PR context
       const enhancedAnalysis = this.enhanceAnalysisWithContext(
         parsedAnalysis,
         prData,
@@ -213,7 +208,13 @@ class AIService {
   }
 }
 
-  // NEW METHOD: Get review threads using GraphQL API
+  /**
+   * Gets review threads using GraphQL API
+   * @param {string} owner - Repository owner
+   * @param {string} repo - Repository name
+   * @param {number} pullNumber - Pull request number
+   * @returns {Object} Review threads data
+   */
  async getReviewThreadsViaGraphQL(owner, repo, pullNumber) {
    try {
      const githubToken = process.env.GITHUB_TOKEN || config.github?.token;
@@ -313,7 +314,11 @@ class AIService {
  }
  
 
-// NEW METHOD: Analyze GraphQL review threads for resolution status
+  /**
+   * Analyzes GraphQL review threads for resolution status
+   * @param {Array} reviewThreads - Array of review thread objects
+   * @returns {Object} Analysis results with resolution statistics
+   */
 analyzeGraphQLReviewThreads(reviewThreads) {
   if (reviewThreads.length === 0) {
     logger.info('No review threads found - PR ready for merge');

@@ -1,5 +1,3 @@
-// src/config/config.js - Updated Configuration for Single Comment Format
-
 require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
