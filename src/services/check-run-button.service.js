@@ -2,6 +2,7 @@
 
 const githubService = require("./github.service");
 const aiService = require("./ai.service");
+const prReviewStatusService = require("./pr-review-status.service");
 const logger = require("../utils/logger");
 const { generateTrackingId, truncateText } = require("../utils/helpers");
 
@@ -36,7 +37,7 @@ class CheckRunButtonService {
           summary: this.generateInteractiveSummary(analysis, postableFindings),
           // REMOVED: text field to prevent Details section from appearing
         },
-        actions: this.generateCheckRunActions(postableFindings),
+        actions: this.generateCheckRunActions(postableFindings, {}),
       };
 
       const checkRun = await githubService.createCheckRun(
@@ -85,28 +86,46 @@ class CheckRunButtonService {
   }
 
   // Generate actions (buttons) for the check run - ENHANCED with new buttons
-  generateCheckRunActions(postableFindings) {
+  generateCheckRunActions(postableFindings, buttonStates = {}) {
     const actions = [];
     const maxButtons = 3;
 
     if (postableFindings.length > 0) {
-      actions.push({
-        label: `Post All Comments`,
-        description: `Post all ${postableFindings.length} findings`,
-        identifier: "post-all",
+      // Only show "Post All Comments" button if not completed
+      const allCommentsPosted = buttonStates["post-all"] === "completed";
+      
+      logger.info(`Generating check run actions`, {
+        postableFindingsCount: postableFindings.length,
+        allCommentsPosted,
+        buttonStates: buttonStates
       });
+      
+      if (!allCommentsPosted) {
+        actions.push({
+          label: `Post All Comments`,
+          description: `Post all ${postableFindings.length} findings`,
+          identifier: "post-all",
+        });
+      }
 
-      actions.push({
-        label: `Commit Fixes`,
-        description: `Apply all fixes to branch`,
-        identifier: "commit-fixes",
-      });
+      // Only show commit button if all comments have been posted
+      if (allCommentsPosted) {
+        actions.push({
+          label: `Commit Fixes`,
+          description: `Apply all fixes to branch`,
+          identifier: "commit-fixes",
+        });
+      }
     }
 
     actions.push({
       label: `Check Merge Ready`,
       description: `Assess if PR is ready to merge`,
       identifier: "check-merge",
+    });
+
+    logger.info(`Generated ${actions.length} actions`, {
+      actions: actions.map(a => a.identifier)
     });
 
     return actions.slice(0, maxButtons);
@@ -148,13 +167,21 @@ class CheckRunButtonService {
     // Get stored check run data
     const checkRunData = this.activeCheckRuns.get(checkRunId);
     if (!checkRunData) {
-      logger.error(`No data found for check run ${checkRunId}`);
+      logger.error(`No data found for check run ${checkRunId}`, {
+        activeCheckRunsCount: this.activeCheckRuns.size,
+        activeCheckRunIds: Array.from(this.activeCheckRuns.keys())
+      });
       await this.updateCheckRunError(
         repository,
         checkRunId,
         "Check run data not found. Please re-run AI review."
       );
       return true;
+    }
+
+    // Special handling for check-merge when there's no analysis data
+    if (actionId === 'check-merge' && !checkRunData.analysis) {
+      return await this.handleCheckMergeWithoutAnalysis(checkRunData, checkRunId, repository);
     }
 
     const {
@@ -204,6 +231,11 @@ class CheckRunButtonService {
           }
         });
         buttonStates["post-all"] = "completed";
+        
+        // Update the check run data with new button states
+        checkRunData.buttonStates = buttonStates;
+        this.activeCheckRuns.set(checkRunId, checkRunData);
+        
         await this.updateCheckRunCompleted(
           repository,
           checkRunId,
@@ -220,6 +252,21 @@ class CheckRunButtonService {
           checkRunData
         );
         buttonStates["commit-fixes"] = "completed";
+        
+        // Mark fixes as committed
+        prReviewStatusService.markFixesCommitted(owner, repo, pullNumber);
+        
+        // Update the check run data with new button states
+        checkRunData.buttonStates = buttonStates;
+        this.activeCheckRuns.set(checkRunId, checkRunData);
+        
+        logger.info(`Updated check run data for commit-fixes`, {
+          checkRunId,
+          buttonStates,
+          hasAnalysis: !!checkRunData.analysis,
+          hasPostableFindings: !!checkRunData.postableFindings
+        });
+        
         await this.updateCheckRunCompleted(
           repository,
           checkRunId,
@@ -246,19 +293,23 @@ class CheckRunButtonService {
             mergeAnalysis.recommendation || "See details below"
           }`;
 
-        // Create simple status without details to prevent Details section
+        // Update button states
+        buttonStates["check-merge"] = "completed";
+        
+        // Update the check run data with new button states
+        checkRunData.buttonStates = buttonStates;
+        this.activeCheckRuns.set(checkRunId, checkRunData);
+
+        // Create simple status without details to prevent Details section, but keep button visible
         await githubService.updateCheckRun(owner, repo, checkRunId, {
-          status: "completed",
-          conclusion: conclusion,
+          status: "queued",
           output: {
             title: `${statusIcon} Merge Readiness: ${statusText}`,
-            summary: enhancedSummary,
+            summary: enhancedSummary + "\n\n**Click 'Check Merge Ready' to re-check merge status.**",
             // REMOVED: text field to prevent Details section
           },
-          actions: this.generateCheckRunActions(postableFindings),
+          actions: this.generateCheckRunActions(postableFindings, buttonStates),
         });
-
-        buttonStates["check-merge"] = "completed";
         logger.info(
           `Merge readiness analysis completed. Status: ${statusText}`
         );
@@ -689,7 +740,8 @@ class CheckRunButtonService {
     const severityEmoji = this.getSeverityEmoji(finding.severity);
 
     let comment = `${severityEmoji} **AI Finding**\n\n`;
-    comment += `**Issue:** ${finding.issue}\n\n`;
+    comment += `**Issue:** ${finding.issue}\n`;
+    comment += `**Technical Debt:** ${finding.technicalDebtMinutes || 0} minutes\n\n`;
     comment += `**Suggestion:**\n${finding.suggestion}\n\n`;
 
     // Add suggested code fix inline
@@ -825,7 +877,7 @@ class CheckRunButtonService {
     checkRunData,
     actionId
   ) {
-    const { analysis, postableFindings, trackingId } = checkRunData;
+    const { analysis, postableFindings, trackingId, buttonStates } = checkRunData;
 
     let completionMessage;
     if (actionId === "post-all") {
@@ -840,22 +892,42 @@ class CheckRunButtonService {
       completionMessage = `Comment posted for ${finding.file}:${finding.line}.`;
     }
 
-    const persistentActions = this.generateCheckRunActions(postableFindings);
+    // Use current button states to generate correct actions
+    const persistentActions = this.generateCheckRunActions(postableFindings, buttonStates || {});
 
-    await githubService.updateCheckRun(
-      repository.owner.login,
-      repository.name,
-      checkRunId,
-      {
-        conclusion: "success",
-        output: {
-          title: "AI Code Review - Action Completed",
-          summary: completionMessage,
-          // REMOVED: text field to prevent Details section
-        },
-        actions: persistentActions,
-      }
-    );
+    // Special handling for commit-fixes: don't complete the check run, just update it
+    if (actionId === "commit-fixes") {
+      await githubService.updateCheckRun(
+        repository.owner.login,
+        repository.name,
+        checkRunId,
+        {
+          status: "completed",
+          conclusion: "success",
+          output: {
+            title: "AI Code Review - Fixes Committed",
+            summary: completionMessage + "\n\n**Next Step:** Click 'Check Merge Ready' to verify merge readiness.",
+            // REMOVED: text field to prevent Details section
+          },
+          actions: persistentActions,
+        }
+      );
+    } else {
+      await githubService.updateCheckRun(
+        repository.owner.login,
+        repository.name,
+        checkRunId,
+        {
+          conclusion: "success",
+          output: {
+            title: "AI Code Review - Action Completed",
+            summary: completionMessage,
+            // REMOVED: text field to prevent Details section
+          },
+          actions: persistentActions,
+        }
+      );
+    }
   }
 
   // Update check run on error without Details section
@@ -964,6 +1036,122 @@ class CheckRunButtonService {
 
     if (cleaned > 0) {
       logger.info(`Cleaned ${cleaned} old check run entries`);
+    }
+  }
+
+  // Update check run with new actions after comments are posted
+  async updateCheckRunWithNewActions(owner, repo, checkRunId, checkRunData, buttonStates) {
+    try {
+      const postableFindings = checkRunData.postableFindings || [];
+      const newActions = this.generateCheckRunActions(postableFindings, buttonStates);
+      
+      // Update the check run data with new button states
+      checkRunData.buttonStates = buttonStates;
+      this.activeCheckRuns.set(checkRunId, checkRunData);
+      
+      await githubService.updateCheckRun(owner, repo, checkRunId, {
+        output: {
+          title: "AI Code Review Completed - Comments Posted",
+          summary: this.generateInteractiveSummary(checkRunData.analysis, postableFindings),
+        },
+        actions: newActions,
+      });
+      
+      logger.info(`Updated check run ${checkRunId} with new actions after comments posted`, {
+        newActionsCount: newActions.length,
+        buttonStates: buttonStates
+      });
+    } catch (error) {
+      logger.error('Error updating check run with new actions:', error);
+    }
+  }
+
+  // Handle check merge when there's no analysis data (for Check Merge Ready button)
+  async handleCheckMergeWithoutAnalysis(checkRunData, checkRunId, repository) {
+    const { owner, repo, pullNumber } = checkRunData;
+    
+    try {
+      logger.info(`Starting merge readiness analysis for PR #${pullNumber} (without analysis data)`);
+
+      // Get the PR data to perform merge readiness check
+      logger.info(`Fetching PR data for merge readiness check: ${owner}/${repo}#${pullNumber}`);
+      const prData = await githubService.getPullRequestData(owner, repo, pullNumber);
+      if (!prData) {
+        throw new Error('Could not fetch PR data');
+      }
+      
+      logger.info(`PR data fetched successfully`, {
+        prNumber: prData.pr?.number,
+        repository: prData.pr?.repository,
+        filesCount: prData.files?.length || 0
+      });
+
+      // Create a minimal analysis object for merge readiness check
+      const minimalAnalysis = {
+        trackingId: `merge-check-${Date.now()}`,
+        detailedFindings: [] // No findings since we're checking merge readiness without analysis
+      };
+
+      // Create proper checkRunData structure for merge readiness check
+      const checkRunDataForMerge = {
+        prData: prData,
+        reviewComments: [],
+        pullNumber: pullNumber,
+        owner: owner,
+        repo: repo
+      };
+
+      // Perform merge readiness analysis
+      logger.info(`Starting merge readiness analysis with AI service`);
+      const mergeAnalysis = await aiService.checkMergeReadiness(minimalAnalysis, checkRunDataForMerge);
+      
+      logger.info(`Merge readiness analysis completed`, {
+        isReady: mergeAnalysis.isReady,
+        status: mergeAnalysis.status,
+        score: mergeAnalysis.score
+      });
+
+      const isReady = mergeAnalysis.isReady;
+      const statusIcon = isReady ? "✅" : "❌";
+      const statusText = isReady ? "Ready to Merge" : "Not Ready to Merge";
+      const conclusion = isReady ? "success" : "failure";
+
+      const enhancedSummary =
+        `${statusIcon} **${statusText}**\n\n` +
+        `**Assessment:** ${mergeAnalysis.status || "Analyzed"}\n` +
+        `**Recommendation:** ${
+          mergeAnalysis.recommendation || "See details below"
+        }`;
+
+      // Update the check run but keep it in queued status so button remains visible
+      await githubService.updateCheckRun(owner, repo, checkRunId, {
+        status: "queued",
+        output: {
+          title: `${statusIcon} Merge Readiness: ${statusText}`,
+          summary: enhancedSummary + "\n\n**Click 'Check Merge Ready' to re-check merge status.**",
+        },
+        actions: [{
+          label: 'Check Merge Ready',
+          description: 'Check if this PR is ready to merge',
+          identifier: 'check-merge'
+        }],
+      });
+
+      // Update button states
+      checkRunData.buttonStates["check-merge"] = "completed";
+      this.activeCheckRuns.set(checkRunId, checkRunData);
+
+      logger.info(`Merge readiness analysis completed. Status: ${statusText}`);
+      return true;
+
+    } catch (error) {
+      logger.error(`Error in merge readiness analysis for PR #${pullNumber}:`, error);
+      await this.updateCheckRunError(
+        repository,
+        checkRunId,
+        `Failed to complete merge readiness check: ${error.message}`
+      );
+      return true;
     }
   }
 }

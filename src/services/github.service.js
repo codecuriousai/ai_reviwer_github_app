@@ -7,6 +7,7 @@ const path = require("path");
 const config = require("../config/config");
 const logger = require("../utils/logger");
 const aiService = require('./ai.service');
+const fixHistoryService = require('./fix-history.service');
 // Import interactive comment service to avoid loading issues
 let interactiveCommentService;
 try {
@@ -513,48 +514,153 @@ class GitHubService {
   }
 
   // Get pull request review comments
-  async getPullRequestComments(owner, repo, pullNumber) {
-    try {
-      const [reviewComments, issueComments] = await Promise.all([
-        this.octokit.rest.pulls.listReviewComments({
-          owner,
-          repo,
-          pull_number: pullNumber,
-        }),
-        this.octokit.rest.issues.listComments({
-          owner,
-          repo,
-          issue_number: pullNumber,
-        }),
-      ]);
+ async getPullRequestComments(owner, repo, pullNumber) {
+  try {
+    // Fetch all types of comments including PR reviews
+    const [reviewComments, issueComments, reviews] = await Promise.all([
+      this.octokit.rest.pulls.listReviewComments({
+        owner,
+        repo,
+        pull_number: pullNumber,
+      }),
+      this.octokit.rest.issues.listComments({
+        owner,
+        repo,
+        issue_number: pullNumber,
+      }),
+      this.octokit.rest.pulls.listReviews({
+        owner,
+        repo,
+        pull_number: pullNumber,
+      })
+    ]);
 
-      const allComments = [
-        ...reviewComments.data.map((comment) => ({
-          id: comment.id,
-          body: comment.body,
-          user: comment.user.login,
-          createdAt: comment.created_at,
-          path: comment.path,
-          line: comment.line,
-          type: "review",
-        })),
-        ...issueComments.data.map((comment) => ({
-          id: comment.id,
-          body: comment.body,
-          user: comment.user.login,
-          createdAt: comment.created_at,
-          type: "issue",
-        })),
-      ];
+    const allComments = [
+      // Review comments (line-specific)
+      ...reviewComments.data.map((comment) => ({
+        id: comment.id,
+        user: {
+          login: comment.user?.login,
+          type: comment.user?.type || 'User'
+        },
+        body: comment.body || '',
+        created_at: comment.created_at,
+        updated_at: comment.updated_at,
+        createdAt: comment.created_at, // Keep your existing field for backward compatibility
+        
+        // Review comment specific fields - CRITICAL for merge readiness
+        path: comment.path,
+        line: comment.line,
+        original_line: comment.original_line,
+        diff_hunk: comment.diff_hunk,
+        pull_request_review_id: comment.pull_request_review_id,
+        in_reply_to_id: comment.in_reply_to_id,
+        
+        // GitHub resolution status - MOST IMPORTANT for merge readiness
+        resolved: comment.resolved || false,
+        conversation_resolved: comment.conversation_resolved || false,
+        
+        // Author association for bot filtering
+        author_association: comment.author_association || 'NONE',
+        
+        // Additional GitHub fields
+        url: comment.url,
+        html_url: comment.html_url,
+        pull_request_url: comment.pull_request_url,
+        
+        // Your existing fields
+        user: comment.user?.login, // Keep for backward compatibility
+        type: "review",
+      })),
 
-      return allComments.sort(
-        (a, b) => new Date(a.createdAt) - new Date(b.createdAt)
-      );
-    } catch (error) {
-      logger.error("Error fetching PR comments:", error);
-      throw new Error(`Failed to fetch PR comments: ${error.message}`);
-    }
+      // Issue comments (general PR comments)
+      ...issueComments.data.map((comment) => ({
+        id: comment.id,
+        user: {
+          login: comment.user?.login,
+          type: comment.user?.type || 'User'
+        },
+        body: comment.body || '',
+        created_at: comment.created_at,
+        updated_at: comment.updated_at,
+        createdAt: comment.created_at, // Keep your existing field
+        
+        // No line-specific fields for issue comments
+        path: null,
+        line: null,
+        original_line: null,
+        diff_hunk: null,
+        pull_request_review_id: null,
+        in_reply_to_id: null,
+        
+        // Issue comments don't have resolved status in GitHub API
+        resolved: false,
+        conversation_resolved: false,
+        
+        // Author association for bot filtering
+        author_association: comment.author_association || 'NONE',
+        
+        // Additional GitHub fields
+        url: comment.url,
+        html_url: comment.html_url,
+        issue_url: comment.issue_url,
+        
+        // Your existing fields
+        user: comment.user?.login, // Keep for backward compatibility
+        type: "issue",
+      })),
+
+      // PR Reviews (APPROVED, CHANGES_REQUESTED, etc.)
+      ...reviews.data
+        .filter(review => review.body && review.body.trim()) // Only reviews with content
+        .map((review) => ({
+          id: review.id,
+          user: {
+            login: review.user?.login,
+            type: review.user?.type || 'User'
+          },
+          body: review.body || '',
+          created_at: review.submitted_at || review.created_at,
+          updated_at: review.submitted_at || review.updated_at,
+          createdAt: review.submitted_at || review.created_at, // Keep your existing field
+          
+          // No line-specific fields for review submissions
+          path: null,
+          line: null,
+          original_line: null,
+          diff_hunk: null,
+          pull_request_review_id: review.id,
+          in_reply_to_id: null,
+          
+          // Reviews don't have individual resolved status
+          resolved: false,
+          conversation_resolved: false,
+          
+          // Author association
+          author_association: review.author_association || 'NONE',
+          
+          // Review-specific fields
+          state: review.state, // APPROVED, CHANGES_REQUESTED, COMMENTED
+          
+          // Additional GitHub fields
+          url: review.html_url,
+          html_url: review.html_url,
+          
+          // Your existing fields
+          user: review.user?.login, // Keep for backward compatibility
+          type: "review_submission",
+        }))
+    ];
+
+    // Sort by creation time (keep your existing sorting)
+    return allComments.sort(
+      (a, b) => new Date(a.createdAt) - new Date(b.createdAt)
+    );
+  } catch (error) {
+    logger.error("Error fetching PR comments:", error);
+    throw new Error(`Failed to fetch PR comments: ${error.message}`);
   }
+}
 
   // NEW: Post multiple comments in a single review
   async postReviewComments(owner, repo, pullNumber, headSha, comments) {
@@ -797,6 +903,7 @@ class GitHubService {
             finding.file || "General"
           }**\n`;
           comment += `   └─ **Issue:** ${finding.issue}\n`;
+          comment += `   └─ **Technical Debt:** ${finding.technicalDebtMinutes || 0} minutes\n`;
           comment += `   └─ **Suggestion:** ${finding.suggestion}\n\n`;
         });
       }
@@ -2258,6 +2365,7 @@ class GitHubService {
         skipped: []
       };
       
+      // Process all fixes individually
       for (let i = 0; i < fixes.length; i++) {
         const fix = fixes[i];
         logger.info(`Processing fix ${i + 1}/${fixes.length} for ${fix.file}:${fix.line}`);
@@ -2311,6 +2419,9 @@ class GitHubService {
               logger.info(`Fallback fix applied successfully for ${fix.file}`);
               const commitResult = await this.commitSingleFile(owner, repo, fix, fileInfo, fallbackUpdatedContent, commitMessage);
               results.successful.push(commitResult);
+              
+              // Mark fix as committed in history
+              await fixHistoryService.markAsCommitted(owner, repo, fix.file, fix.line, fix.issue, commitResult.commitSha);
             } else {
               results.skipped.push({
                 file: fix.file,
@@ -2326,9 +2437,12 @@ class GitHubService {
             updatedLength: updatedContent.length
           });
           
-          // Step 4: Commit the file
+          // Step 4: Commit the fix using new PR-focused method
           const commitResult = await this.commitSingleFile(owner, repo, fix, fileInfo, updatedContent, commitMessage);
           results.successful.push(commitResult);
+          
+          // Mark fix as committed in history
+          await fixHistoryService.markAsCommitted(owner, repo, fix.file, fix.line, fix.issue, commitResult.commitSha);
           
           // Small delay to avoid rate limiting
           await new Promise(resolve => setTimeout(resolve, 200));
@@ -2342,6 +2456,7 @@ class GitHubService {
           });
         }
       }
+      
       
       logger.info(`commitFixesToPRBranch completed`, {
         successful: results.successful.length,
@@ -2357,6 +2472,74 @@ class GitHubService {
     }
   }
   
+  // NEW: Helper method to commit multiple files in a single commit
+  async commitMultipleFiles(owner, repo, fileChanges, commitMessage, pullNumber) {
+    try {
+      // Get the source branch from PR
+      const pr = await this.octokit.rest.pulls.get({
+        owner,
+        repo,
+        pull_number: pullNumber
+      });
+      
+      const sourceBranch = pr.data.head.ref;
+      
+      // Prepare the commit message with details
+      const detailedCommitMessage = [
+        commitMessage,
+        '',
+        `Files changed: ${fileChanges.size}`,
+        `Fixes applied: ${Array.from(fileChanges.values()).reduce((sum, file) => sum + file.fixes.length, 0)}`,
+        '',
+        'Applied via AI Code Reviewer'
+      ].join('\n');
+      
+      // Create tree with all file changes
+      const tree = [];
+      for (const [file, fileData] of fileChanges.entries()) {
+        tree.push({
+          path: file,
+          mode: '100644',
+          type: 'blob',
+          content: fileData.content
+        });
+      }
+      
+      // Create the commit
+      const commit = await this.octokit.rest.git.createCommit({
+        owner,
+        repo,
+        message: detailedCommitMessage,
+        tree: tree,
+        parents: [pr.data.head.sha]
+      });
+      
+      // Update the branch reference
+      await this.octokit.rest.git.updateRef({
+        owner,
+        repo,
+        ref: `heads/${sourceBranch}`,
+        sha: commit.data.sha
+      });
+      
+      logger.info(`Successfully committed ${fileChanges.size} files in single commit`, {
+        commitSha: commit.data.sha,
+        filesChanged: fileChanges.size
+      });
+      
+      return {
+        commitSha: commit.data.sha,
+        commitUrl: commit.data.html_url,
+        filesChanged: fileChanges.size,
+        totalFixes: Array.from(fileChanges.values()).reduce((sum, file) => sum + file.fixes.length, 0)
+      };
+      
+    } catch (error) {
+      logger.error('Error committing multiple files:', error);
+      throw error;
+    }
+  }
+
   // NEW: Helper method to commit a single file
   async commitSingleFile(owner, repo, fix, fileInfo, updatedContent, commitMessage) {
     const detailedCommitMessage = [
