@@ -1928,8 +1928,25 @@ class GitHubService {
 
   async commitFixesToPRBranch(owner, repo, pullNumber, fixes, commitMessage = 'Apply AI-suggested code fixes') {
     try {
-      logger.info(`Starting commitFixesToPRBranch for PR #${pullNumber}`, {
-        fixesCount: fixes.length
+      // Input validation
+      if (!owner || !repo || !pullNumber) {
+        throw new Error('Missing required parameters: owner, repo, and pullNumber are required');
+      }
+      
+      if (!Array.isArray(fixes) || fixes.length === 0) {
+        logger.warn(`No fixes provided for PR #${pullNumber}`);
+        return {
+          successful: [],
+          failed: [],
+          skipped: [],
+          message: 'No fixes provided'
+        };
+      }
+      
+      logger.info(`Starting batch commit process for PR #${pullNumber}`, {
+        fixesCount: fixes.length,
+        owner,
+        repo
       });
       
       const results = {
@@ -1938,7 +1955,11 @@ class GitHubService {
         skipped: []
       };
       
-      // Process all fixes individually
+      // Map to store file changes for batch commit
+      const fileChanges = new Map();
+      const processedFixes = [];
+      
+      // Process all fixes and collect file changes
       for (let i = 0; i < fixes.length; i++) {
         const fix = fixes[i];
         logger.info(`Processing fix ${i + 1}/${fixes.length} for ${fix.file}:${fix.line}`);
@@ -1966,7 +1987,13 @@ class GitHubService {
           };
           
           // Use the existing method that's already working in your system
-          const fixSuggestion = await aiService.generateCodeFixSuggestion(fix, fileInfo.content, prData);
+          let fixSuggestion;
+          try {
+            fixSuggestion = await aiService.generateCodeFixSuggestion(fix, fileInfo.content, prData);
+          } catch (aiError) {
+            logger.error(`AI service error for ${fix.file}:${fix.line}:`, aiError);
+            throw new Error(`AI service failed: ${aiError.message}`);
+          }
           
           if (!fixSuggestion || fixSuggestion.error) {
             throw new Error(fixSuggestion?.error_message || 'AI fix generation failed');
@@ -1979,30 +2006,23 @@ class GitHubService {
           });
           
           // Step 3: Apply the fix using enhanced replacement logic
-          const updatedContent = this.applyAdvancedFixToContent(fileInfo.content, fix, fixSuggestion);
+          let updatedContent = this.applyAdvancedFixToContent(fileInfo.content, fix, fixSuggestion);
           
           if (!updatedContent || updatedContent === fileInfo.content) {
             logger.warn(`No changes could be applied to ${fix.file} - trying fallback approach`);
             
             // Fallback: Create a better fix based on the issue type
             const fallbackFix = this.createFallbackFix(fix, fileInfo.content);
-            const fallbackUpdatedContent = this.applyAdvancedFixToContent(fileInfo.content, fix, fallbackFix);
+            updatedContent = this.applyAdvancedFixToContent(fileInfo.content, fix, fallbackFix);
             
-            if (fallbackUpdatedContent && fallbackUpdatedContent !== fileInfo.content) {
-              logger.info(`Fallback fix applied successfully for ${fix.file}`);
-              const commitResult = await this.commitSingleFile(owner, repo, fix, fileInfo, fallbackUpdatedContent, commitMessage);
-              results.successful.push(commitResult);
-              
-              // Mark fix as committed in history
-              await fixHistoryService.markAsCommitted(owner, repo, fix.file, fix.line, fix.issue, commitResult.commitSha);
-            } else {
+            if (!updatedContent || updatedContent === fileInfo.content) {
               results.skipped.push({
                 file: fix.file,
                 reason: 'No changes could be applied - both AI and fallback fixes failed',
                 fix: fix
               });
+              continue;
             }
-            continue;
           }
           
           logger.info(`Content successfully updated for ${fix.file}`, {
@@ -2010,26 +2030,209 @@ class GitHubService {
             updatedLength: updatedContent.length
           });
           
-          // Step 4: Commit the fix using new PR-focused method
-          const commitResult = await this.commitSingleFile(owner, repo, fix, fileInfo, updatedContent, commitMessage);
-          results.successful.push(commitResult);
+          // Store the file change for batch commit
+          if (!fileChanges.has(fix.file)) {
+            fileChanges.set(fix.file, {
+              content: fileInfo.content, // Start with original content
+              originalContent: fileInfo.content,
+              sourceBranch: fileInfo.sourceBranch,
+              sha: fileInfo.sha,
+              fixes: []
+            });
+          }
           
-          // Mark fix as committed in history
-          await fixHistoryService.markAsCommitted(owner, repo, fix.file, fix.line, fix.issue, commitResult.commitSha);
+          // Apply the fix to the current content of the file
+          const currentFileData = fileChanges.get(fix.file);
+          const newContent = this.applyAdvancedFixToContent(currentFileData.content, fix, fixSuggestion);
           
-          // Small delay to avoid rate limiting
-          await new Promise(resolve => setTimeout(resolve, 200));
+          if (newContent && newContent !== currentFileData.content) {
+            currentFileData.content = newContent;
+            logger.info(`Applied fix to ${fix.file} in batch processing`, {
+              line: fix.line,
+              issue: fix.issue
+            });
+          } else {
+            logger.warn(`Could not apply fix to ${fix.file} in batch processing`, {
+              line: fix.line,
+              issue: fix.issue
+            });
+            // Still add to fixes list for tracking, but mark as not applied
+            currentFileData.fixes.push({
+              ...fix,
+              fixSuggestion,
+              line: fix.line,
+              issue: fix.issue,
+              suggestion: fix.suggestion,
+              applied: false
+            });
+            continue;
+          }
+          
+          // Add this fix to the file's fix list
+          currentFileData.fixes.push({
+            ...fix,
+            fixSuggestion,
+            line: fix.line,
+            issue: fix.issue,
+            suggestion: fix.suggestion,
+            applied: true
+          });
+          
+          processedFixes.push({
+            file: fix.file,
+            line: fix.line,
+            issue: fix.issue,
+            fix: fix
+          });
+          
+          // Small delay to avoid overwhelming services
+          if (i < fixes.length - 1) {
+            await new Promise(resolve => setTimeout(resolve, 100));
+          }
           
         } catch (error) {
-          logger.error(`Error processing fix for ${fix.file}:`, error);
+          logger.error(`Error processing fix for ${fix.file}:${fix.line}:`, {
+            error: error.message,
+            issue: fix.issue,
+            suggestion: fix.suggestion
+          });
           results.failed.push({
             file: fix.file,
+            line: fix.line,
             error: error.message,
             fix: fix
           });
         }
       }
       
+      // If we have file changes, commit them all at once
+      if (fileChanges.size > 0) {
+        try {
+          // Validate that we have at least one file with actual changes
+          let hasValidChanges = false;
+          for (const [file, fileData] of fileChanges.entries()) {
+            if (fileData.content !== fileData.originalContent) {
+              hasValidChanges = true;
+              break;
+            }
+          }
+          
+          if (!hasValidChanges) {
+            logger.warn(`No actual content changes detected in ${fileChanges.size} files`);
+            results.skipped.push({
+              reason: 'No actual content changes detected',
+              files: Array.from(fileChanges.keys())
+            });
+            return results;
+          }
+          
+          logger.info(`Committing ${fileChanges.size} files with ${processedFixes.length} fixes in single commit`);
+          
+          const commitResult = await this.commitMultipleFiles(owner, repo, fileChanges, commitMessage, pullNumber);
+          
+          // Mark only applied fixes as committed in history
+          let committedFixesCount = 0;
+          for (const [file, fileData] of fileChanges.entries()) {
+            if (fileData.fixes) {
+              for (const fix of fileData.fixes) {
+                if (fix.applied !== false) {
+                  try {
+                    await fixHistoryService.markAsCommitted(
+                      owner, 
+                      repo, 
+                      fix.file, 
+                      fix.line, 
+                      fix.issue, 
+                      commitResult.commitSha
+                    );
+                    committedFixesCount++;
+                  } catch (historyError) {
+                    logger.warn(`Failed to update fix history for ${fix.file}:${fix.line}`, {
+                      error: historyError.message
+                    });
+                  }
+                }
+              }
+            }
+          }
+          
+          results.successful.push({
+            commitSha: commitResult.commitSha,
+            commitUrl: commitResult.commitUrl,
+            filesChanged: commitResult.filesChanged,
+            totalFixes: commitResult.totalFixes,
+            totalAttemptedFixes: commitResult.totalAttemptedFixes,
+            failedFixes: commitResult.failedFixes,
+            committedFixesCount: committedFixesCount,
+            processedFixes: processedFixes
+          });
+          
+          logger.info(`Batch commit completed successfully`, {
+            commitSha: commitResult.commitSha,
+            filesChanged: commitResult.filesChanged,
+            totalFixes: commitResult.totalFixes,
+            committedFixesCount: committedFixesCount
+          });
+          
+        } catch (error) {
+          logger.error(`Error in batch commit:`, error);
+          
+          // Determine if this is a recoverable error
+          const isRecoverableError = error.status === 422 || // Unprocessable Entity
+                                   error.status === 409 || // Conflict
+                                   error.message.includes('rate limit') ||
+                                   error.message.includes('timeout');
+          
+          if (isRecoverableError) {
+            // For recoverable errors, try to commit files individually as fallback
+            logger.info(`Attempting individual file commits as fallback for recoverable error`);
+            
+            for (const [file, fileData] of fileChanges.entries()) {
+              try {
+                const individualCommitResult = await this.commitSingleFile(
+                  owner, 
+                  repo, 
+                  { file: file, line: 0, issue: 'Batch fix', suggestion: 'Multiple fixes applied' },
+                  { content: fileData.originalContent, sourceBranch: fileData.sourceBranch, sha: fileData.sha },
+                  fileData.content,
+                  `${commitMessage} - Individual file commit (fallback)`
+                );
+                
+                results.successful.push({
+                  commitSha: individualCommitResult.commitSha,
+                  commitUrl: individualCommitResult.commitUrl,
+                  filesChanged: 1,
+                  totalFixes: fileData.fixes ? fileData.fixes.filter(fix => fix.applied !== false).length : 0,
+                  isFallbackCommit: true
+                });
+                
+              } catch (individualError) {
+                logger.error(`Failed to commit individual file ${file}:`, individualError);
+                results.failed.push({
+                  file: file,
+                  error: `Individual commit failed: ${individualError.message}`,
+                  originalError: error.message
+                });
+              }
+            }
+          } else {
+            // For non-recoverable errors, add all processed fixes to failed results
+            for (const processedFix of processedFixes) {
+              results.failed.push({
+                file: processedFix.file,
+                error: `Batch commit failed: ${error.message}`,
+                fix: processedFix.fix
+              });
+            }
+          }
+        }
+      } else {
+        logger.warn(`No file changes to commit after processing ${fixes.length} fixes`);
+        results.skipped.push({
+          reason: 'No file changes detected',
+          totalFixes: fixes.length
+        });
+      }
       
       logger.info(`commitFixesToPRBranch completed`, {
         successful: results.successful.length,
@@ -2056,13 +2259,44 @@ class GitHubService {
       });
       
       const sourceBranch = pr.data.head.ref;
+      const totalFixes = Array.from(fileChanges.values()).reduce((sum, file) => 
+        sum + (file.fixes ? file.fixes.filter(fix => fix.applied !== false).length : 0), 0
+      );
+      const totalAttemptedFixes = Array.from(fileChanges.values()).reduce((sum, file) => 
+        sum + (file.fixes ? file.fixes.length : 0), 0
+      );
       
-      // Prepare the commit message with details
+      // Prepare detailed commit message with fix summaries
+      const fixSummaries = [];
+      for (const [file, fileData] of fileChanges.entries()) {
+        if (fileData.fixes && fileData.fixes.length > 0) {
+          const appliedFixes = fileData.fixes.filter(fix => fix.applied !== false);
+          const failedFixes = fileData.fixes.filter(fix => fix.applied === false);
+          
+          if (appliedFixes.length > 0) {
+            const fileFixes = appliedFixes.map(fix => 
+              `  - ${fix.issue} (line ${fix.line})`
+            ).join('\n');
+            fixSummaries.push(`${file}:\n${fileFixes}`);
+          }
+          
+          if (failedFixes.length > 0) {
+            const failedFileFixes = failedFixes.map(fix => 
+              `  - ${fix.issue} (line ${fix.line}) - FAILED TO APPLY`
+            ).join('\n');
+            fixSummaries.push(`${file} (failed fixes):\n${failedFileFixes}`);
+          }
+        }
+      }
+      
       const detailedCommitMessage = [
         commitMessage,
         '',
         `Files changed: ${fileChanges.size}`,
-        `Fixes applied: ${Array.from(fileChanges.values()).reduce((sum, file) => sum + file.fixes.length, 0)}`,
+        `Fixes applied: ${totalFixes}${totalAttemptedFixes > totalFixes ? ` (${totalAttemptedFixes - totalFixes} failed)` : ''}`,
+        '',
+        'Fix details:',
+        ...fixSummaries,
         '',
         'Applied via AI Code Reviewer'
       ].join('\n');
@@ -2097,14 +2331,18 @@ class GitHubService {
       
       logger.info(`Successfully committed ${fileChanges.size} files in single commit`, {
         commitSha: commit.data.sha,
-        filesChanged: fileChanges.size
+        filesChanged: fileChanges.size,
+        totalFixes: totalFixes
       });
       
       return {
         commitSha: commit.data.sha,
         commitUrl: commit.data.html_url,
         filesChanged: fileChanges.size,
-        totalFixes: Array.from(fileChanges.values()).reduce((sum, file) => sum + file.fixes.length, 0)
+        totalFixes: totalFixes,
+        totalAttemptedFixes: totalAttemptedFixes,
+        failedFixes: totalAttemptedFixes - totalFixes,
+        sourceBranch: sourceBranch
       };
       
     } catch (error) {
