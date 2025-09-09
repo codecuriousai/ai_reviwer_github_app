@@ -300,13 +300,12 @@ class CheckRunButtonService {
         checkRunData.buttonStates = buttonStates;
         this.activeCheckRuns.set(checkRunId, checkRunData);
 
-        // Create simple status without details to prevent Details section
+        // Create simple status without details to prevent Details section, but keep button visible
         await githubService.updateCheckRun(owner, repo, checkRunId, {
-          status: "completed",
-          conclusion: conclusion,
+          status: "queued",
           output: {
             title: `${statusIcon} Merge Readiness: ${statusText}`,
-            summary: enhancedSummary,
+            summary: enhancedSummary + "\n\n**Click 'Check Merge Ready' to re-check merge status.**",
             // REMOVED: text field to prevent Details section
           },
           actions: this.generateCheckRunActions(postableFindings, buttonStates),
@@ -1124,15 +1123,18 @@ class CheckRunButtonService {
           mergeAnalysis.recommendation || "See details below"
         }`;
 
-      // Update the check run
+      // Update the check run but keep it in queued status so button remains visible
       await githubService.updateCheckRun(owner, repo, checkRunId, {
-        status: "completed",
-        conclusion: conclusion,
+        status: "queued",
         output: {
           title: `${statusIcon} Merge Readiness: ${statusText}`,
-          summary: enhancedSummary,
+          summary: enhancedSummary + "\n\n**Click 'Check Merge Ready' to re-check merge status.**",
         },
-        actions: [], // No more actions after completion
+        actions: [{
+          label: 'Check Merge Ready',
+          description: 'Check if this PR is ready to merge',
+          identifier: 'check-merge'
+        }],
       });
 
       // Update button states
