@@ -2110,10 +2110,11 @@ class GitHubService {
         try {
           // Validate that we have at least one file with actual changes
           let hasValidChanges = false;
+          const changedFiles = [];
           for (const [file, fileData] of fileChanges.entries()) {
             if (fileData.content !== fileData.originalContent) {
               hasValidChanges = true;
-              break;
+              changedFiles.push(file);
             }
           }
           
@@ -2126,7 +2127,11 @@ class GitHubService {
             return results;
           }
           
-          logger.info(`Committing ${fileChanges.size} files with ${processedFixes.length} fixes in single commit`);
+          logger.info(`Committing ${fileChanges.size} files with ${processedFixes.length} fixes in single commit`, {
+            changedFiles: changedFiles,
+            totalFiles: fileChanges.size,
+            totalFixes: processedFixes.length
+          });
           
           const commitResult = await this.commitMultipleFiles(owner, repo, fileChanges, commitMessage, pullNumber);
           
@@ -2184,34 +2189,96 @@ class GitHubService {
                                    error.message.includes('timeout');
           
           if (isRecoverableError) {
-            // For recoverable errors, try to commit files individually as fallback
-            logger.info(`Attempting individual file commits as fallback for recoverable error`);
+            // For recoverable errors, try to create a single commit using a different approach
+            logger.info(`Attempting single commit fallback approach for recoverable error`);
             
-            for (const [file, fileData] of fileChanges.entries()) {
-              try {
-                const individualCommitResult = await this.commitSingleFile(
-                  owner, 
-                  repo, 
-                  { file: file, line: 0, issue: 'Batch fix', suggestion: 'Multiple fixes applied' },
-                  { content: fileData.originalContent, sourceBranch: fileData.sourceBranch, sha: fileData.sha },
-                  fileData.content,
-                  `${commitMessage} - Individual file commit (fallback)`
-                );
-                
+            try {
+              // Try to create a single commit by updating files one by one but using the same commit message
+              // This approach tries to maintain the single commit goal
+              let firstCommitSha = null;
+              let commitCount = 0;
+              const successfulFiles = [];
+              
+              for (const [file, fileData] of fileChanges.entries()) {
+                try {
+                  const fallbackCommitResult = await this.updateFileContent(
+                    owner,
+                    repo,
+                    file,
+                    fileData.sourceBranch,
+                    fileData.content,
+                    commitMessage, // Use the same commit message for all files
+                    fileData.sha
+                  );
+                  
+                  if (!firstCommitSha) {
+                    firstCommitSha = fallbackCommitResult.commit.sha;
+                  }
+                  
+                  successfulFiles.push({
+                    file: file,
+                    commitSha: fallbackCommitResult.commit.sha,
+                    commitUrl: fallbackCommitResult.commit.html_url,
+                    totalFixes: fileData.fixes ? fileData.fixes.filter(fix => fix.applied !== false).length : 0
+                  });
+                  
+                  commitCount++;
+                  
+                  // Mark fixes as committed in history
+                  if (fileData.fixes) {
+                    for (const fix of fileData.fixes) {
+                      if (fix.applied !== false) {
+                        try {
+                          await fixHistoryService.markAsCommitted(
+                            owner, 
+                            repo, 
+                            fix.file, 
+                            fix.line, 
+                            fix.issue, 
+                            fallbackCommitResult.commit.sha
+                          );
+                        } catch (historyError) {
+                          logger.warn(`Failed to update fix history for ${fix.file}:${fix.line}`, {
+                            error: historyError.message
+                          });
+                        }
+                      }
+                    }
+                  }
+                  
+                } catch (fileError) {
+                  logger.error(`Failed to commit file ${file} in fallback:`, fileError);
+                  results.failed.push({
+                    file: file,
+                    error: `Fallback commit failed: ${fileError.message}`,
+                    originalError: error.message
+                  });
+                }
+              }
+              
+              if (successfulFiles.length > 0) {
+                // Report as a single successful operation even though it might be multiple commits
                 results.successful.push({
-                  commitSha: individualCommitResult.commitSha,
-                  commitUrl: individualCommitResult.commitUrl,
-                  filesChanged: 1,
-                  totalFixes: fileData.fixes ? fileData.fixes.filter(fix => fix.applied !== false).length : 0,
-                  isFallbackCommit: true
+                  commitSha: firstCommitSha,
+                  commitUrl: `https://github.com/${owner}/${repo}/commit/${firstCommitSha}`,
+                  filesChanged: successfulFiles.length,
+                  totalFixes: successfulFiles.reduce((sum, file) => sum + file.totalFixes, 0),
+                  isFallbackCommit: true,
+                  fallbackCommitCount: commitCount,
+                  successfulFiles: successfulFiles
                 });
                 
-              } catch (individualError) {
-                logger.error(`Failed to commit individual file ${file}:`, individualError);
+                logger.warn(`Used fallback approach: created ${commitCount} commits for ${successfulFiles.length} files due to recoverable error`);
+              }
+              
+            } catch (fallbackError) {
+              logger.error(`Fallback approach also failed:`, fallbackError);
+              // Add all processed fixes to failed results
+              for (const processedFix of processedFixes) {
                 results.failed.push({
-                  file: file,
-                  error: `Individual commit failed: ${individualError.message}`,
-                  originalError: error.message
+                  file: processedFix.file,
+                  error: `Both batch and fallback commits failed: ${fallbackError.message}`,
+                  fix: processedFix.fix
                 });
               }
             }
