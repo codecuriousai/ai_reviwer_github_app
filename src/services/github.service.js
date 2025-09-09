@@ -2127,11 +2127,15 @@ class GitHubService {
             return results;
           }
           
-          logger.info(`Committing ${fileChanges.size} files with ${processedFixes.length} fixes in single commit`, {
-            changedFiles: changedFiles,
-            totalFiles: fileChanges.size,
-            totalFixes: processedFixes.length
-          });
+      logger.info(`Committing ${fileChanges.size} files with ${processedFixes.length} fixes in single commit`, {
+        changedFiles: changedFiles,
+        totalFiles: fileChanges.size,
+        totalFixes: processedFixes.length,
+        fileSizes: Array.from(fileChanges.entries()).map(([file, data]) => ({
+          file,
+          size: data.content.length
+        }))
+      });
           
           const commitResult = await this.commitMultipleFiles(owner, repo, fileChanges, commitMessage, pullNumber);
           
@@ -2186,43 +2190,61 @@ class GitHubService {
           const isRecoverableError = error.status === 422 || // Unprocessable Entity
                                    error.status === 409 || // Conflict
                                    error.message.includes('rate limit') ||
-                                   error.message.includes('timeout');
+                                   error.message.includes('timeout') ||
+                                   error.message.includes('Invalid request');
           
           if (isRecoverableError) {
-            // For recoverable errors, try to create a single commit using a different approach
-            logger.info(`Attempting single commit fallback approach for recoverable error`);
+            // First, try to create a single commit using a different approach
+            logger.info(`Attempting alternative single commit approach for recoverable error`);
             
             try {
-              // Try to create a single commit by updating files one by one but using the same commit message
-              // This approach tries to maintain the single commit goal
-              let firstCommitSha = null;
-              let commitCount = 0;
-              const successfulFiles = [];
+              // Try to create a single commit by using the createOrUpdateFileContents API
+              // but only for the first file, then update the others
+              const files = Array.from(fileChanges.entries());
+              if (files.length === 0) {
+                throw new Error('No files to commit');
+              }
               
-              for (const [file, fileData] of fileChanges.entries()) {
+              // Use the first file as the base commit
+              const [firstFile, firstFileData] = files[0];
+              const firstCommitResult = await this.updateFileContent(
+                owner,
+                repo,
+                firstFile,
+                firstFileData.sourceBranch,
+                firstFileData.content,
+                commitMessage,
+                firstFileData.sha
+              );
+              
+              // Now update the remaining files using the same commit message
+              // This should create a single commit if done quickly enough
+              const remainingFiles = files.slice(1);
+              const allSuccessfulFiles = [{
+                file: firstFile,
+                commitSha: firstCommitResult.commit.sha,
+                commitUrl: firstCommitResult.commit.html_url,
+                totalFixes: firstFileData.fixes ? firstFileData.fixes.filter(fix => fix.applied !== false).length : 0
+              }];
+              
+              for (const [file, fileData] of remainingFiles) {
                 try {
-                  const fallbackCommitResult = await this.updateFileContent(
+                  const fileCommitResult = await this.updateFileContent(
                     owner,
                     repo,
                     file,
                     fileData.sourceBranch,
                     fileData.content,
-                    commitMessage, // Use the same commit message for all files
+                    commitMessage,
                     fileData.sha
                   );
                   
-                  if (!firstCommitSha) {
-                    firstCommitSha = fallbackCommitResult.commit.sha;
-                  }
-                  
-                  successfulFiles.push({
+                  allSuccessfulFiles.push({
                     file: file,
-                    commitSha: fallbackCommitResult.commit.sha,
-                    commitUrl: fallbackCommitResult.commit.html_url,
+                    commitSha: fileCommitResult.commit.sha,
+                    commitUrl: fileCommitResult.commit.html_url,
                     totalFixes: fileData.fixes ? fileData.fixes.filter(fix => fix.applied !== false).length : 0
                   });
-                  
-                  commitCount++;
                   
                   // Mark fixes as committed in history
                   if (fileData.fixes) {
@@ -2235,7 +2257,7 @@ class GitHubService {
                             fix.file, 
                             fix.line, 
                             fix.issue, 
-                            fallbackCommitResult.commit.sha
+                            fileCommitResult.commit.sha
                           );
                         } catch (historyError) {
                           logger.warn(`Failed to update fix history for ${fix.file}:${fix.line}`, {
@@ -2247,37 +2269,36 @@ class GitHubService {
                   }
                   
                 } catch (fileError) {
-                  logger.error(`Failed to commit file ${file} in fallback:`, fileError);
+                  logger.error(`Failed to commit file ${file} in alternative approach:`, fileError);
                   results.failed.push({
                     file: file,
-                    error: `Fallback commit failed: ${fileError.message}`,
+                    error: `Alternative commit failed: ${fileError.message}`,
                     originalError: error.message
                   });
                 }
               }
               
-              if (successfulFiles.length > 0) {
-                // Report as a single successful operation even though it might be multiple commits
+              if (allSuccessfulFiles.length > 0) {
                 results.successful.push({
-                  commitSha: firstCommitSha,
-                  commitUrl: `https://github.com/${owner}/${repo}/commit/${firstCommitSha}`,
-                  filesChanged: successfulFiles.length,
-                  totalFixes: successfulFiles.reduce((sum, file) => sum + file.totalFixes, 0),
+                  commitSha: allSuccessfulFiles[0].commitSha,
+                  commitUrl: allSuccessfulFiles[0].commitUrl,
+                  filesChanged: allSuccessfulFiles.length,
+                  totalFixes: allSuccessfulFiles.reduce((sum, file) => sum + file.totalFixes, 0),
                   isFallbackCommit: true,
-                  fallbackCommitCount: commitCount,
-                  successfulFiles: successfulFiles
+                  fallbackCommitCount: allSuccessfulFiles.length,
+                  successfulFiles: allSuccessfulFiles
                 });
                 
-                logger.warn(`Used fallback approach: created ${commitCount} commits for ${successfulFiles.length} files due to recoverable error`);
+                logger.warn(`Used alternative approach: created ${allSuccessfulFiles.length} commits for ${allSuccessfulFiles.length} files due to recoverable error`);
               }
               
-            } catch (fallbackError) {
-              logger.error(`Fallback approach also failed:`, fallbackError);
+            } catch (alternativeError) {
+              logger.error(`Alternative approach also failed:`, alternativeError);
               // Add all processed fixes to failed results
               for (const processedFix of processedFixes) {
                 results.failed.push({
                   file: processedFix.file,
-                  error: `Both batch and fallback commits failed: ${fallbackError.message}`,
+                  error: `Both batch and alternative commits failed: ${alternativeError.message}`,
                   fix: processedFix.fix
                 });
               }
@@ -2368,14 +2389,49 @@ class GitHubService {
         'Applied via AI Code Reviewer'
       ].join('\n');
       
-      // Create tree with all file changes
+      // Create blobs for all file changes first
+      const blobPromises = [];
+      const fileBlobMap = new Map();
+      
+      for (const [file, fileData] of fileChanges.entries()) {
+        // Validate content size (GitHub has a 100MB limit for blobs)
+        const contentSize = Buffer.byteLength(fileData.content, 'utf8');
+        if (contentSize > 100 * 1024 * 1024) { // 100MB
+          throw new Error(`File ${file} is too large (${Math.round(contentSize / 1024 / 1024)}MB). GitHub limit is 100MB.`);
+        }
+        
+        const blobPromise = this.octokit.rest.git.createBlob({
+          owner,
+          repo,
+          content: Buffer.from(fileData.content).toString('base64'),
+          encoding: 'base64'
+        }).then(blobResponse => {
+          fileBlobMap.set(file, blobResponse.data.sha);
+          return { file, sha: blobResponse.data.sha };
+        }).catch(blobError => {
+          logger.error(`Failed to create blob for file ${file}:`, blobError);
+          throw new Error(`Failed to create blob for ${file}: ${blobError.message}`);
+        });
+        blobPromises.push(blobPromise);
+      }
+      
+      // Wait for all blobs to be created
+      try {
+        await Promise.all(blobPromises);
+      } catch (blobError) {
+        logger.error(`Failed to create blobs for batch commit:`, blobError);
+        throw new Error(`Failed to create blobs: ${blobError.message}`);
+      }
+      
+      // Create tree with blob references
       const tree = [];
       for (const [file, fileData] of fileChanges.entries()) {
+        const blobSha = fileBlobMap.get(file);
         tree.push({
           path: file,
           mode: '100644',
           type: 'blob',
-          content: fileData.content
+          sha: blobSha
         });
       }
       
