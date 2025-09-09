@@ -1,5 +1,3 @@
-// src/services/check-run-button.service.js - Updated to use PR-focused methods
-
 const githubService = require("./github.service");
 const aiService = require("./ai.service");
 const prReviewStatusService = require("./pr-review-status.service");
@@ -8,10 +6,18 @@ const { generateTrackingId, truncateText } = require("../utils/helpers");
 
 class CheckRunButtonService {
   constructor() {
-    this.activeCheckRuns = new Map(); // Store active check runs with button data
+    this.activeCheckRuns = new Map();
   }
 
-  // Create enhanced check run with interactive buttons for each finding
+  /**
+   * Create enhanced check run with interactive buttons for each finding
+   * @param {string} owner - Repository owner
+   * @param {string} repo - Repository name
+   * @param {number} pullNumber - Pull request number
+   * @param {Object} analysis - Analysis data
+   * @param {string} headSha - Head commit SHA
+   * @returns {Object} Created check run
+   */
   async createInteractiveCheckRun(owner, repo, pullNumber, analysis, headSha) {
     try {
       const trackingId = analysis.trackingId || generateTrackingId();
@@ -21,12 +27,9 @@ class CheckRunButtonService {
         trackingId,
       });
 
-      // Filter postable findings (ones that can be posted as inline comments)
       const postableFindings = this.getPostableFindings(
         analysis.detailedFindings || []
       );
-
-      // Create check run with completion status and interactive buttons
       const checkRunData = {
         name: "AI Code Review",
         head_sha: headSha,
@@ -35,7 +38,6 @@ class CheckRunButtonService {
         output: {
           title: "AI Code Review Completed",
           summary: this.generateInteractiveSummary(analysis, postableFindings),
-          // REMOVED: text field to prevent Details section from appearing
         },
         actions: this.generateCheckRunActions(postableFindings, {}),
       };
@@ -46,7 +48,6 @@ class CheckRunButtonService {
         checkRunData
       );
 
-      // Store check run data for action handling
       this.activeCheckRuns.set(checkRun.id, {
         checkRunId: checkRun.id,
         owner,
@@ -85,13 +86,17 @@ class CheckRunButtonService {
     }
   }
 
-  // Generate actions (buttons) for the check run - ENHANCED with new buttons
+  /**
+   * Generate actions (buttons) for the check run
+   * @param {Array} postableFindings - Array of findings that can be posted
+   * @param {Object} buttonStates - Current button states
+   * @returns {Array} Array of action objects
+   */
   generateCheckRunActions(postableFindings, buttonStates = {}) {
     const actions = [];
     const maxButtons = 3;
 
     if (postableFindings.length > 0) {
-      // Only show "Post All Comments" button if not completed
       const allCommentsPosted = buttonStates["post-all"] === "completed";
       
       logger.info(`Generating check run actions`, {
@@ -108,7 +113,6 @@ class CheckRunButtonService {
         });
       }
 
-      // Only show commit button if all comments have been posted
       if (allCommentsPosted) {
         actions.push({
           label: `Commit Fixes`,
@@ -131,7 +135,12 @@ class CheckRunButtonService {
     return actions.slice(0, maxButtons);
   }
 
-  // Generate interactive summary for check run
+  /**
+   * Generate interactive summary for check run
+   * @param {Object} analysis - Analysis data
+   * @param {Array} postableFindings - Array of postable findings
+   * @returns {string} Generated summary text
+   */
   generateInteractiveSummary(analysis, postableFindings) {
     const { automatedAnalysis, reviewAssessment } = analysis;
 
@@ -152,7 +161,11 @@ class CheckRunButtonService {
     return summary;
   }
 
-  // Handle check run button actions - UPDATED to use PR-focused methods
+  /**
+   * Handle check run button actions
+   * @param {Object} payload - Webhook payload
+   * @returns {boolean} Whether action was handled
+   */
   async handleButtonAction(payload) {
     const { action, check_run, requested_action, repository } = payload;
     if (action !== "requested_action" || check_run.name !== "AI Code Review") {

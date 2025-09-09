@@ -1,5 +1,3 @@
-// src/services/github.service.js - Enhanced with Interactive Comment Support and Correct Line Finding
-
 const { Octokit } = require("@octokit/rest");
 const { createAppAuth } = require("@octokit/auth-app");
 const fs = require("fs");
@@ -8,7 +6,6 @@ const config = require("../config/config");
 const logger = require("../utils/logger");
 const aiService = require('./ai.service');
 const fixHistoryService = require('./fix-history.service');
-// Import interactive comment service to avoid loading issues
 let interactiveCommentService;
 try {
   interactiveCommentService = require("./interactive-comment.service");
@@ -30,11 +27,14 @@ class GitHubService {
   }
 
   // Enhanced private key retrieval with better validation
+  /**
+   * Gets the GitHub private key from various sources
+   * @returns {string} The private key content
+   */
   getPrivateKey() {
     try {
       let privateKeyContent = null;
 
-      // Method 1: Base64 encoded private key (for Render/Cloud deployment)
       if (process.env.GITHUB_PRIVATE_KEY_BASE64) {
         logger.info(
           "Attempting to use base64 encoded private key from environment"
@@ -43,7 +43,6 @@ class GitHubService {
         try {
           const base64Key = process.env.GITHUB_PRIVATE_KEY_BASE64.trim();
 
-          // Validate base64 format
           if (!this.isValidBase64(base64Key)) {
             throw new Error("Invalid base64 format");
           }
@@ -62,8 +61,6 @@ class GitHubService {
           );
         }
       }
-
-      // Method 2: Direct private key content (fallback)
       else if (process.env.GITHUB_PRIVATE_KEY) {
         logger.info("Using direct private key content from environment");
         privateKeyContent = process.env.GITHUB_PRIVATE_KEY.replace(
@@ -71,8 +68,6 @@ class GitHubService {
           "\n"
         );
       }
-
-      // Method 3: Private key file path (local development)
       else if (
         process.env.GITHUB_PRIVATE_KEY_PATH &&
         fs.existsSync(process.env.GITHUB_PRIVATE_KEY_PATH)
@@ -116,7 +111,11 @@ class GitHubService {
     }
   }
 
-  // Validate base64 format
+  /**
+   * Validates if a string is valid base64 format
+   * @param {string} str - The string to validate
+   * @returns {boolean} True if valid base64
+   */
   isValidBase64(str) {
     try {
       const decoded = Buffer.from(str, "base64").toString("base64");
@@ -126,7 +125,11 @@ class GitHubService {
     }
   }
 
-  // Validate private key format
+  /**
+   * Validates if the private key content is in correct PEM format
+   * @param {string} keyContent - The private key content to validate
+   * @returns {boolean} True if valid PEM format
+   */
   validatePrivateKeyFormat(keyContent) {
     if (!keyContent || typeof keyContent !== "string") {
       return false;
@@ -145,7 +148,10 @@ class GitHubService {
     );
   }
 
-  // Test GitHub App authentication
+  /**
+   * Tests GitHub App authentication
+   * @returns {Object} Authentication test results
+   */
   async testAuthentication() {
     try {
       const { data: app } = await this.octokit.rest.apps.getAuthenticated();
@@ -702,6 +708,13 @@ class GitHubService {
   filterFiles(files) {
     const { excludeFiles, maxFilesToAnalyze, maxFileSizeBytes } = config.review;
 
+    // Define coding file extensions to focus analysis on
+    const codingExtensions = [
+      '.js', '.jsx', '.ts', '.tsx', '.py', '.java', '.cpp', '.c', '.cs', '.php', 
+      '.rb', '.go', '.rs', '.swift', '.kt', '.scala', '.dart', '.vue', '.svelte',
+      '.html', '.css', '.scss', '.sass', '.less', '.styl', '.jsx', '.tsx'
+    ];
+
     return files
       .filter((file) => {
         // Check file extension exclusions
@@ -710,13 +723,19 @@ class GitHubService {
           return regex.test(file.filename);
         });
 
+        // Check if it's a coding file
+        const isCodingFile = codingExtensions.some(ext => 
+          file.filename.toLowerCase().endsWith(ext)
+        );
+
         // Check file size
         const isTooLarge = file.changes > maxFileSizeBytes;
 
         // Only include added or modified files
         const isRelevant = ["added", "modified"].includes(file.status);
 
-        return !isExcluded && !isTooLarge && isRelevant;
+        // Focus on coding files only
+        return !isExcluded && !isTooLarge && isRelevant && isCodingFile;
       })
       .slice(0, maxFilesToAnalyze);
   }
@@ -1016,49 +1035,6 @@ class GitHubService {
     }
   }
 
-  // MODIFIED: Get file content from repository with fallback branches
-  // async getFileContent(owner, repo, path, ref = 'main') {
-  //   const branchesToTry = [ref];
-
-  //   // If not main branch, also try main as fallback
-  //   if (ref !== 'main') {
-  //     branchesToTry.push('main');
-  //   }
-
-  //   // Also try common default branches
-  //   if (!branchesToTry.includes('master')) {
-  //     branchesToTry.push('master');
-  //   }
-
-  //   for (const branch of branchesToTry) {
-  //     try {
-  //       logger.info(`Attempting to get file content for ${path} from branch: ${branch}`);
-
-  //       const { data } = await this.octokit.rest.repos.getContent({
-  //         owner,
-  //         repo,
-  //         path,
-  //         ref: branch
-  //       });
-
-  //       if (data.type === 'file') {
-  //         logger.info(`Successfully found file ${path} on branch: ${branch}`);
-  //         return {
-  //           content: Buffer.from(data.content, 'base64').toString('utf8'),
-  //           sha: data.sha,
-  //           size: data.size,
-  //           branch: branch // Include which branch was used
-  //         };
-  //       }
-  //     } catch (error) {
-  //       logger.warn(`File ${path} not found on branch ${branch}: ${error.message}`);
-  //       // Continue to next branch
-  //     }
-  //   }
-
-  //   logger.error(`File ${path} not found on any branch: ${branchesToTry.join(', ')}`);
-  //   return null;
-  // }
   async getFileContent(owner, repo, path, ref = null) {
     try {
       // Step 1: If no ref provided, get the default branch
@@ -1154,26 +1130,6 @@ class GitHubService {
     }
   }
 
-  // NEW: Update file content in repository
-  // async updateFileContent(owner, repo, path, branch, content, message, sha) {
-  //   try {
-  //     const { data } = await this.octokit.rest.repos.createOrUpdateFileContents({
-  //       owner,
-  //       repo,
-  //       path,
-  //       message,
-  //       content: Buffer.from(content).toString('base64'),
-  //       branch,
-  //       sha
-  //     });
-
-  //     logger.info(`File updated: ${path} on branch ${branch}`);
-  //     return data;
-  //   } catch (error) {
-  //     logger.error(`Error updating file content for ${path}:`, error);
-  //     throw new Error(`Failed to update file: ${error.message}`);
-  //   }
-  // }
   async updateFileContent(
     owner,
     repo,
@@ -1308,72 +1264,6 @@ class GitHubService {
     return body;
   }
 
-  // Create check run for AI Review button
-  // async createCheckRun(owner, repo, checkRunData) {
-  //   try {
-  //     logger.info(`Creating check run: ${checkRunData.name} for ${owner}/${repo}`);
-
-  //     // Validate GitHub API limits before sending
-  //     this.validateCheckRunData(checkRunData);
-
-  //     const { data: checkRun } = await this.octokit.rest.checks.create({
-  //       owner,
-  //       repo,
-  //       ...checkRunData,
-  //     });
-
-  //     logger.info(`Check run created: ${checkRun.id}`);
-  //     return checkRun;
-  //   } catch (error) {
-  //     logger.error('Error creating check run:', error);
-  //     logger.error('Check run data that failed:', {
-  //       name: checkRunData.name,
-  //       status: checkRunData.status,
-  //       conclusion: checkRunData.conclusion,
-  //       summaryLength: checkRunData.output?.summary?.length,
-  //       textLength: checkRunData.output?.text?.length,
-  //       actionsCount: checkRunData.actions?.length,
-  //       actions: checkRunData.actions?.map(a => ({ label: a.label, identifier: a.identifier }))
-  //     });
-  //     throw new Error(`Failed to create check run: ${error.message}`);
-  //   }
-  // }
-
-  // async createCheckRun(owner, repo, checkRunData) {
-  //   try {
-  //     logger.info(`Creating check run: ${checkRunData.name} for ${owner}/${repo}`);
-
-  //     // Clean the output to remove empty DETAILS sections
-  //     if (checkRunData.output) {
-  //       checkRunData.output = this.cleanCheckRunOutput(checkRunData.output);
-  //     }
-
-  //     // Validate GitHub API limits before sending
-  //     this.validateCheckRunData(checkRunData);
-
-  //     const { data: checkRun } = await this.octokit.rest.checks.create({
-  //       owner,
-  //       repo,
-  //       ...checkRunData,
-  //     });
-
-  //     logger.info(`Check run created: ${checkRun.id}`);
-  //     return checkRun;
-  //   } catch (error) {
-  //     logger.error('Error creating check run:', error);
-  //     logger.error('Check run data that failed:', {
-  //       name: checkRunData.name,
-  //       status: checkRunData.status,
-  //       conclusion: checkRunData.conclusion,
-  //       summaryLength: checkRunData.output?.summary?.length,
-  //       textLength: checkRunData.output?.text?.length || 0,
-  //       actionsCount: checkRunData.actions?.length,
-  //       actions: checkRunData.actions?.map(a => ({ label: a.label, identifier: a.identifier }))
-  //     });
-  //     throw new Error(`Failed to create check run: ${error.message}`);
-  //   }
-  // }
-
   async createCheckRun(owner, repo, checkRunData) {
     try {
       logger.info(
@@ -1413,104 +1303,6 @@ class GitHubService {
       throw new Error(`Failed to create check run: ${error.message}`);
     }
   }
-
-  // Validate check run data against GitHub limits
-  // validateCheckRunData(checkRunData) {
-  //   const { name, output, actions } = checkRunData;
-
-  //   // Check name length (20 characters max)
-  //   if (name && name.length > 20) {
-  //     throw new Error(`Check run name too long: ${name.length} chars (max 20)`);
-  //   }
-
-  //   // Check output limits
-  //   if (output) {
-  //     if (output.title && output.title.length > 255) {
-  //       throw new Error(`Output title too long: ${output.title.length} chars (max 255)`);
-  //     }
-  //     if (output.summary && output.summary.length > 65535) {
-  //       throw new Error(`Output summary too long: ${output.summary.length} chars (max 65535)`);
-  //     }
-  //     if (output.text && output.text.length > 65535) {
-  //       throw new Error(`Output text too long: ${output.text.length} chars (max 65535)`);
-  //     }
-  //   }
-
-  //   // Check actions limits
-  //   if (actions) {
-  //     if (actions.length > 3) {
-  //       throw new Error(`Too many actions: ${actions.length} (max 3)`);
-  //     }
-  //     actions.forEach((action, index) => {
-  //       if (action.label && action.label.length > 20) {
-  //         throw new Error(`Action ${index} label too long: ${action.label.length} chars (max 20)`);
-  //       }
-  //       if (action.description && action.description.length > 40) {
-  //         throw new Error(`Action ${index} description too long: ${action.description.length} chars (max 40)`);
-  //       }
-  //       if (action.identifier && action.identifier.length > 20) {
-  //         throw new Error(`Action ${index} identifier too long: ${action.identifier.length} chars (max 20)`);
-  //       }
-  //     });
-  //   }
-
-  //   logger.info('Check run data validation passed', {
-  //     nameLength: name?.length,
-  //     titleLength: output?.title?.length,
-  //     summaryLength: output?.summary?.length,
-  //     textLength: output?.text?.length,
-  //     actionsCount: actions?.length
-  //   });
-  // }
-
-  // validateCheckRunData(checkRunData) {
-  //   const { name, output, actions } = checkRunData;
-
-  //   // Check name length (20 characters max)
-  //   if (name && name.length > 20) {
-  //     throw new Error(`Check run name too long: ${name.length} chars (max 20)`);
-  //   }
-
-  //   // Check output limits
-  //   if (output) {
-  //     if (output.title && output.title.length > 255) {
-  //       throw new Error(`Output title too long: ${output.title.length} chars (max 255)`);
-  //     }
-  //     if (output.summary && output.summary.length > 65535) {
-  //       throw new Error(`Output summary too long: ${output.summary.length} chars (max 65535)`);
-  //     }
-  //     // MODIFIED: Only validate text if it exists (since we're removing empty text fields)
-  //     if (output.text && output.text.length > 65535) {
-  //       throw new Error(`Output text too long: ${output.text.length} chars (max 65535)`);
-  //     }
-  //   }
-
-  //   // Check actions limits
-  //   if (actions) {
-  //     if (actions.length > 3) {
-  //       throw new Error(`Too many actions: ${actions.length} (max 3)`);
-  //     }
-  //     actions.forEach((action, index) => {
-  //       if (action.label && action.label.length > 20) {
-  //         throw new Error(`Action ${index} label too long: ${action.label.length} chars (max 20)`);
-  //       }
-  //       if (action.description && action.description.length > 40) {
-  //         throw new Error(`Action ${index} description too long: ${action.description.length} chars (max 40)`);
-  //       }
-  //       if (action.identifier && action.identifier.length > 20) {
-  //         throw new Error(`Action ${index} identifier too long: ${action.identifier.length} chars (max 20)`);
-  //       }
-  //     });
-  //   }
-
-  //   logger.info('Check run data validation passed', {
-  //     nameLength: name?.length,
-  //     titleLength: output?.title?.length,
-  //     summaryLength: output?.summary?.length,
-  //     textLength: output?.text?.length || 0, // Show 0 if no text field
-  //     actionsCount: actions?.length
-  //   });
-  // }
 
   validateCheckRunData(checkRunData) {
     const { name, output, actions } = checkRunData;
@@ -1573,44 +1365,6 @@ class GitHubService {
     });
   }
 
-  // Update existing check run
-  // async updateCheckRun(owner, repo, checkRunId, updateData) {
-  //   try {
-  //     const { data: checkRun } = await this.octokit.rest.checks.update({
-  //       owner,
-  //       repo,
-  //       check_run_id: checkRunId,
-  //       ...updateData,
-  //     });
-
-  //     logger.info(`Check run updated: ${checkRunId} - Status: ${updateData.status || 'updated'}`);
-  //     return checkRun;
-  //   } catch (error) {
-  //     logger.error(`Error updating check run ${checkRunId}:`, error);
-  //     throw new Error(`Failed to update check run: ${error.message}`);
-  //   }
-  // }
-  // async updateCheckRun(owner, repo, checkRunId, updateData) {
-  //   try {
-  //     // Clean the output to remove empty DETAILS sections
-  //     if (updateData.output) {
-  //       updateData.output = this.cleanCheckRunOutput(updateData.output);
-  //     }
-
-  //     const { data: checkRun } = await this.octokit.rest.checks.update({
-  //       owner,
-  //       repo,
-  //       check_run_id: checkRunId,
-  //       ...updateData,
-  //     });
-
-  //     logger.info(`Check run updated: ${checkRunId} - Status: ${updateData.status || 'updated'}`);
-  //     return checkRun;
-  //   } catch (error) {
-  //     logger.error(`Error updating check run ${checkRunId}:`, error);
-  //     throw new Error(`Failed to update check run: ${error.message}`);
-  //   }
-  // }
   async updateCheckRun(owner, repo, checkRunId, updateData) {
     try {
       // Clean the output to remove empty DETAILS sections
@@ -1904,23 +1658,6 @@ class GitHubService {
     };
   }
 
-  // cleanCheckRunOutput(output) {
-  //   if (!output) return output;
-
-  //   const cleanedOutput = {
-  //     title: output.title,
-  //     summary: output.summary
-  //   };
-
-  //   // Only include text if it has meaningful content (not empty or whitespace only)
-  //   if (output.text && output.text.trim() && output.text.trim().length > 0) {
-  //     cleanedOutput.text = output.text;
-  //   }
-  //   // REMOVED: Empty text field to prevent DETAILS section
-
-  //   return cleanedOutput;
-  // }
-
   // ENHANCED: Get file content with PR context for better handling of new files
   async getFileContentWithPRContext(owner, repo, path, ref, pullNumber = null) {
     try {
@@ -2189,170 +1926,6 @@ class GitHubService {
     }
   }
 
-  // ENHANCED: Commit fixes to PR source branch with detailed logging
-  // async commitFixesToPRBranch(owner, repo, pullNumber, fixes, commitMessage = 'Apply AI-suggested code fixes') {
-  //   try {
-  //     logger.info(`Starting commitFixesToPRBranch for PR #${pullNumber}`, {
-  //       fixesCount: fixes.length,
-  //       fixes: fixes.map(f => ({ file: f.file, line: f.line, issue: f.issue }))
-  //     });
-
-  //     const results = {
-  //       successful: [],
-  //       failed: [],
-  //       skipped: []
-  //     };
-
-  //     for (let i = 0; i < fixes.length; i++) {
-  //       const fix = fixes[i];
-  //       logger.info(`Processing fix ${i + 1}/${fixes.length} for ${fix.file}:${fix.line}`);
-
-  //       try {
-  //         // Step 1: Get current file content from PR context
-  //         logger.info(`Step 1: Getting file content for ${fix.file} from PR #${pullNumber}`);
-  //         const fileInfo = await this.getFileContentFromPR(owner, repo, pullNumber, fix.file);
-
-  //         if (!fileInfo) {
-  //           logger.warn(`Step 1 FAILED: File ${fix.file} not found in repository`);
-  //           results.skipped.push({
-  //             file: fix.file,
-  //             reason: 'File not found in repository',
-  //             fix: fix
-  //           });
-  //           continue;
-  //         }
-
-  //         logger.info(`Step 1 SUCCESS: File ${fix.file} found`, {
-  //           branch: fileInfo.sourceBranch,
-  //           hasContent: !!fileInfo.content,
-  //           contentLength: fileInfo.content?.length,
-  //           hasSha: !!fileInfo.sha
-  //         });
-
-  //         // Step 2: Generate AI fix suggestion first
-  //         logger.info(`Step 2: Generating AI fix suggestion for ${fix.file}:${fix.line}`);
-  //         let fixSuggestion = null;
-
-  //         try {
-  //           // Get detailed fix suggestion from AI service
-  //           fixSuggestion = await aiService.generateCodeFixSuggestion(fix, fileInfo.content, {
-  //             files: [{ filename: fix.file, patch: null }],
-  //             pr: { number: pullNumber }
-  //           });
-
-  //           if (fixSuggestion && !fixSuggestion.error) {
-  //             logger.info(`Step 2 SUCCESS: AI fix generated`, {
-  //               hasCurrentCode: !!fixSuggestion.current_code,
-  //               hasSuggestedFix: !!fixSuggestion.suggested_fix,
-  //               explanation: fixSuggestion.explanation?.substring(0, 100) + '...'
-  //             });
-  //           } else {
-  //             throw new Error(fixSuggestion?.error_message || 'AI fix generation failed');
-  //           }
-  //         } catch (aiError) {
-  //           logger.warn(`Step 2 PARTIAL: AI fix failed, using basic fix: ${aiError.message}`);
-  //           // Fallback to basic fix
-  //           fixSuggestion = {
-  //             current_code: null,
-  //             suggested_fix: fix.suggestion,
-  //             explanation: fix.issue
-  //           };
-  //         }
-
-  //         // Step 3: Apply the fix to the current content
-  //         logger.info(`Step 3: Applying fix to content for ${fix.file}`);
-  //         const updatedContent = this.applyAdvancedFixToContent(fileInfo.content, fix, fixSuggestion);
-
-  //         if (!updatedContent || updatedContent === fileInfo.content) {
-  //           logger.warn(`Step 3 FAILED: No changes could be applied to ${fix.file}`);
-  //           results.skipped.push({
-  //             file: fix.file,
-  //             reason: 'No changes could be applied - content unchanged',
-  //             fix: fix,
-  //             details: {
-  //               originalLength: fileInfo.content.length,
-  //               updatedLength: updatedContent?.length || 0,
-  //               hasFixSuggestion: !!fixSuggestion?.suggested_fix
-  //             }
-  //           });
-  //           continue;
-  //         }
-
-  //         logger.info(`Step 3 SUCCESS: Content updated for ${fix.file}`, {
-  //           originalLength: fileInfo.content.length,
-  //           updatedLength: updatedContent.length,
-  //           changesMade: updatedContent !== fileInfo.content
-  //         });
-
-  //         // Step 4: Commit the updated content to the PR source branch
-  //         logger.info(`Step 4: Committing changes to ${fileInfo.sourceBranch} for ${fix.file}`);
-
-  //         const detailedCommitMessage = [
-  //           commitMessage,
-  //           '',
-  //           `Fix for ${fix.file}:${fix.line}`,
-  //           `Issue: ${fix.issue}`,
-  //           `Suggestion: ${fix.suggestion}`,
-  //           fixSuggestion?.explanation ? `AI Explanation: ${fixSuggestion.explanation}` : '',
-  //           '',
-  //           `Applied via AI Code Reviewer`
-  //         ].filter(Boolean).join('\n');
-
-  //         const commitResult = await this.updateFileContent(
-  //           owner,
-  //           repo,
-  //           fix.file,
-  //           fileInfo.sourceBranch,
-  //           updatedContent,
-  //           detailedCommitMessage,
-  //           fileInfo.sha
-  //         );
-
-  //         logger.info(`Step 4 SUCCESS: Committed fix for ${fix.file}`, {
-  //           commitSha: commitResult.commit.sha,
-  //           commitUrl: commitResult.commit.html_url,
-  //           branch: fileInfo.sourceBranch
-  //         });
-
-  //         results.successful.push({
-  //           file: fix.file,
-  //           branch: fileInfo.sourceBranch,
-  //           commitSha: commitResult.commit.sha,
-  //           commitUrl: commitResult.commit.html_url,
-  //           fix: fix,
-  //           appliedFix: fixSuggestion
-  //         });
-
-  //         // Small delay to avoid rate limiting
-  //         await new Promise(resolve => setTimeout(resolve, 200));
-
-  //       } catch (error) {
-  //         logger.error(`Error processing fix ${i + 1} for ${fix.file}:`, error);
-  //         results.failed.push({
-  //           file: fix.file,
-  //           error: error.message,
-  //           stack: error.stack,
-  //           fix: fix
-  //         });
-  //       }
-  //     }
-
-  //     logger.info(`commitFixesToPRBranch completed for PR #${pullNumber}`, {
-  //       successful: results.successful.length,
-  //       failed: results.failed.length,
-  //       skipped: results.skipped.length,
-  //       successfulFiles: results.successful.map(r => `${r.file} (${r.commitSha.substring(0, 7)})`),
-  //       failedFiles: results.failed.map(r => `${r.file}: ${r.error}`),
-  //       skippedFiles: results.skipped.map(r => `${r.file}: ${r.reason}`)
-  //     });
-
-  //     return results;
-
-  //   } catch (error) {
-  //     logger.error(`Critical error in commitFixesToPRBranch for PR #${pullNumber}:`, error);
-  //     throw error;
-  //   }
-  // }
   async commitFixesToPRBranch(owner, repo, pullNumber, fixes, commitMessage = 'Apply AI-suggested code fixes') {
     try {
       logger.info(`Starting commitFixesToPRBranch for PR #${pullNumber}`, {
@@ -2646,142 +2219,7 @@ class GitHubService {
       explanation: `Manual fix required: ${fix.suggestion}`
     };
   }
-
-  // ENHANCED: Advanced fix application with multiple strategies
-  // applyAdvancedFixToContent(currentContent, fix, fixSuggestion) {
-  //   try {
-  //     logger.info(`Attempting to apply fix to ${fix.file}:${fix.line}`, {
-  //       hasCurrentCode: !!fixSuggestion?.current_code,
-  //       hasSuggestedFix: !!fixSuggestion?.suggested_fix,
-  //       fixLine: fix.line,
-  //       contentLines: currentContent.split('\n').length
-  //     });
-
-  //     // Strategy 1: Use AI-generated current_code and suggested_fix for exact replacement
-  //     if (fixSuggestion?.current_code && fixSuggestion?.suggested_fix) {
-  //       const currentCode = fixSuggestion.current_code.trim();
-  //       const suggestedFix = fixSuggestion.suggested_fix.trim();
-
-  //       logger.info(`Strategy 1: Trying exact code replacement`, {
-  //         currentCodeLength: currentCode.length,
-  //         suggestedFixLength: suggestedFix.length,
-  //         currentCodePreview: currentCode.substring(0, 100)
-  //       });
-
-  //       // Try exact match first
-  //       if (currentContent.includes(currentCode)) {
-  //         const updatedContent = currentContent.replace(currentCode, suggestedFix);
-  //         logger.info(`Strategy 1 SUCCESS: Exact replacement applied`);
-  //         return updatedContent;
-  //       }
-
-  //       // Try with normalized whitespace
-  //       const normalizedContent = currentContent.replace(/\s+/g, ' ');
-  //       const normalizedCurrentCode = currentCode.replace(/\s+/g, ' ');
-  //       const normalizedSuggestedFix = suggestedFix.replace(/\s+/g, ' ');
-
-  //       if (normalizedContent.includes(normalizedCurrentCode)) {
-  //         const updatedContent = currentContent.replace(
-  //           new RegExp(normalizedCurrentCode.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'),
-  //           suggestedFix
-  //         );
-  //         logger.info(`Strategy 1 PARTIAL: Normalized replacement applied`);
-  //         return updatedContent;
-  //       }
-  //     }
-
-  //     // Strategy 2: Line-based replacement using fix.line
-  //     if (fix.line && typeof fix.line === 'number' && fixSuggestion?.suggested_fix) {
-  //       logger.info(`Strategy 2: Trying line-based replacement at line ${fix.line}`);
-
-  //       const lines = currentContent.split('\n');
-  //       const lineIndex = fix.line - 1; // Convert to 0-based index
-
-  //       if (lineIndex >= 0 && lineIndex < lines.length) {
-  //         const originalLine = lines[lineIndex];
-  //         const suggestedFix = fixSuggestion.suggested_fix.trim();
-
-  //         // Preserve indentation from original line
-  //         const indentMatch = originalLine.match(/^(\s*)/);
-  //         const indent = indentMatch ? indentMatch[1] : '';
-
-  //         lines[lineIndex] = indent + suggestedFix;
-
-  //         const updatedContent = lines.join('\n');
-  //         logger.info(`Strategy 2 SUCCESS: Line replacement applied`, {
-  //           originalLine: originalLine.trim(),
-  //           newLine: (indent + suggestedFix).trim()
-  //         });
-  //         return updatedContent;
-  //       }
-  //     }
-
-  //     // Strategy 3: Pattern-based replacement using the issue description
-  //     if (fix.suggestion && fixSuggestion?.suggested_fix) {
-  //       logger.info(`Strategy 3: Trying pattern-based replacement`);
-
-  //       // Look for common patterns in the issue and try to replace them
-  //       const lines = currentContent.split('\n');
-  //       let foundLine = -1;
-
-  //       // Search for lines that might match the issue context
-  //       for (let i = 0; i < lines.length; i++) {
-  //         const line = lines[i].toLowerCase();
-
-  //         // Look for keywords from the issue in the line
-  //         const issueKeywords = fix.issue.toLowerCase().split(' ').filter(word =>
-  //           word.length > 3 && !['the', 'and', 'for', 'with', 'this', 'that', 'should', 'could', 'would'].includes(word)
-  //         );
-
-  //         const matchingKeywords = issueKeywords.filter(keyword => line.includes(keyword));
-
-  //         if (matchingKeywords.length > 0) {
-  //           foundLine = i;
-  //           logger.info(`Strategy 3: Found potential line ${i + 1} with keywords: ${matchingKeywords.join(', ')}`);
-  //           break;
-  //         }
-  //       }
-
-  //       if (foundLine >= 0) {
-  //         const originalLine = lines[foundLine];
-  //         const indentMatch = originalLine.match(/^(\s*)/);
-  //         const indent = indentMatch ? indentMatch[1] : '';
-
-  //         lines[foundLine] = indent + fixSuggestion.suggested_fix.trim();
-
-  //         const updatedContent = lines.join('\n');
-  //         logger.info(`Strategy 3 SUCCESS: Pattern replacement applied at line ${foundLine + 1}`);
-  //         return updatedContent;
-  //       }
-  //     }
-
-  //     // Strategy 4: Append fix as comment (fallback)
-  //     if (fixSuggestion?.suggested_fix || fix.suggestion) {
-  //       logger.info(`Strategy 4: Fallback - adding fix as comment`);
-
-  //       const fixToApply = fixSuggestion?.suggested_fix || fix.suggestion;
-  //       const fixComment = [
-  //         '',
-  //         `// AI Fix Suggestion for line ${fix.line || 'unknown'}:`,
-  //         `// Issue: ${fix.issue}`,
-  //         `// Suggested fix:`,
-  //         fixToApply.split('\n').map(line => `// ${line}`).join('\n'),
-  //         ''
-  //       ].join('\n');
-
-  //       const updatedContent = currentContent + fixComment;
-  //       logger.info(`Strategy 4 SUCCESS: Fix added as comment`);
-  //       return updatedContent;
-  //     }
-
-  //     logger.warn(`All strategies failed: Could not apply fix for ${fix.file}:${fix.line}`);
-  //     return currentContent;
-
-  //   } catch (error) {
-  //     logger.error(`Error applying fix to content for ${fix.file}:`, error);
-  //     return currentContent;
-  //   }
-  // }
+  
   applyAdvancedFixToContent(currentContent, fix, fixSuggestion) {
     try {
       logger.info(`Attempting to apply fix to ${fix.file}:${fix.line}`, {

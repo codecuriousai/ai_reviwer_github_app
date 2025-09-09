@@ -1,6 +1,10 @@
 const express = require('express');
 
-// Enhanced startup logging
+/**
+ * Logs startup messages with timestamp and error status
+ * @param {string} message - The message to log
+ * @param {boolean} isError - Whether this is an error message
+ */
 function logStartup(message, isError = false) {
   const timestamp = new Date().toISOString();
   const prefix = isError ? '❌ ERROR' : '✅ INFO';
@@ -9,7 +13,6 @@ function logStartup(message, isError = false) {
 
 logStartup('Starting GitHub AI Reviewer application...');
 
-// Safe module loading with error handling
 let config, logger, webhookService, authMiddleware, checkRunButtonService;
 
 try {
@@ -38,24 +41,22 @@ const app = express();
 
 logStartup('Express app created successfully');
 
-// Raw body parser for webhook signature verification
 app.use('/webhook', express.raw({ type: 'application/json' }));
 
-// JSON parser for other routes
 app.use(express.json({ 
   verify: (req, res, buf) => {
-    // Store raw body for signature verification
     req.rawBody = buf;
   }
 }));
 
-// Security headers
 app.use(authMiddleware.securityHeaders);
-
-// Request logging
 app.use(authMiddleware.requestLogger);
 
-// Enhanced health check endpoint with check run button stats
+/**
+ * Health check endpoint that returns system status and service health
+ * @param {Object} req - Express request object
+ * @param {Object} res - Express response object
+ */
 app.get('/health', async (req, res) => {
   try {
     const health = {
@@ -67,7 +68,6 @@ app.get('/health', async (req, res) => {
       version: require('../package.json').version,
     };
 
-    // Test AI service connectivity
     try {
       const aiService = require('./services/ai.service');
       const aiHealthy = await aiService.checkHealth();
@@ -77,7 +77,6 @@ app.get('/health', async (req, res) => {
       health.aiError = error.message;
     }
 
-    // Test GitHub service connectivity
     try {
       const githubService = require('./services/github.service');
       const githubHealth = await githubService.healthCheck();
@@ -90,7 +89,6 @@ app.get('/health', async (req, res) => {
       health.githubError = error.message;
     }
 
-    // Check run button service stats
     health.checkRunButtons = checkRunButtonService.getStats();
 
     res.status(200).json(health);
@@ -104,7 +102,11 @@ app.get('/health', async (req, res) => {
   }
 });
 
-// Webhook endpoint
+/**
+ * Webhook endpoint for processing GitHub webhook events
+ * @param {Object} req - Express request object
+ * @param {Object} res - Express response object
+ */
 app.post('/webhook', authMiddleware.validateWebhookHeaders, async (req, res) => {
   try {
     const signature = req.get('X-Hub-Signature-256');
@@ -113,11 +115,9 @@ app.post('/webhook', authMiddleware.validateWebhookHeaders, async (req, res) => 
 
     logger.info(`Received webhook: ${event}`, { delivery });
 
-    // Verify webhook signature using raw body
-    const payload = req.body; // This is the raw buffer
+    const payload = req.body;
     const payloadString = payload.toString('utf8');
     
-    // Verify signature
     const crypto = require('crypto');
     const expectedSignature = crypto
       .createHmac('sha256', config.github.webhookSecret)
@@ -127,7 +127,6 @@ app.post('/webhook', authMiddleware.validateWebhookHeaders, async (req, res) => 
     const expectedSignatureBuffer = Buffer.from(`sha256=${expectedSignature}`, 'utf8');
     const actualSignatureBuffer = Buffer.from(signature, 'utf8');
 
-    // Use timingSafeEqual to prevent timing attacks
     if (expectedSignatureBuffer.length !== actualSignatureBuffer.length ||
         !crypto.timingSafeEqual(expectedSignatureBuffer, actualSignatureBuffer)) {
       logger.warn('Invalid webhook signature', { 
@@ -141,7 +140,6 @@ app.post('/webhook', authMiddleware.validateWebhookHeaders, async (req, res) => 
 
     logger.info('Webhook signature verified', { event, delivery });
 
-    // Parse the JSON payload
     let parsedPayload;
     try {
       parsedPayload = JSON.parse(payloadString);
@@ -150,7 +148,6 @@ app.post('/webhook', authMiddleware.validateWebhookHeaders, async (req, res) => 
       return res.status(400).json({ error: 'Invalid JSON payload' });
     }
 
-    // Handle the webhook event
     await webhookService.handleWebhook(event, parsedPayload);
     
     res.status(200).json({ 
@@ -168,7 +165,11 @@ app.post('/webhook', authMiddleware.validateWebhookHeaders, async (req, res) => 
   }
 });
 
-// Enhanced status endpoint with check run button stats
+/**
+ * Status endpoint that returns system status and processing queue information
+ * @param {Object} req - Express request object
+ * @param {Object} res - Express response object
+ */
 app.get('/status', (req, res) => {
   const webhookStatus = webhookService.getProcessingStatus();
   res.json({
@@ -194,7 +195,11 @@ app.get('/status', (req, res) => {
   });
 });
 
-// NEW: Check run button management endpoints
+/**
+ * Gets active check runs and their statistics
+ * @param {Object} req - Express request object
+ * @param {Object} res - Express response object
+ */
 app.get('/api/check-runs/active', (req, res) => {
   try {
     const stats = checkRunButtonService.getStats();
@@ -223,7 +228,11 @@ app.get('/api/check-runs/active', (req, res) => {
   }
 });
 
-// NEW: Get specific check run data
+/**
+ * Gets specific check run data by ID
+ * @param {Object} req - Express request object with checkRunId parameter
+ * @param {Object} res - Express response object
+ */
 app.get('/api/check-runs/:checkRunId', (req, res) => {
   try {
     const { checkRunId } = req.params;
@@ -270,7 +279,11 @@ app.get('/api/check-runs/:checkRunId', (req, res) => {
   }
 });
 
-// NEW: Manual cleanup endpoint for check runs
+/**
+ * Manual cleanup endpoint for old check runs
+ * @param {Object} req - Express request object
+ * @param {Object} res - Express response object
+ */
 app.post('/api/check-runs/cleanup', (req, res) => {
   try {
     checkRunButtonService.cleanOldCheckRuns();
@@ -288,7 +301,11 @@ app.post('/api/check-runs/cleanup', (req, res) => {
   }
 });
 
-// NEW: Generate fix suggestions endpoint
+/**
+ * Generates and commits fix suggestions for a check run
+ * @param {Object} req - Express request object with checkRunId parameter
+ * @param {Object} res - Express response object
+ */
 app.post('/api/check-runs/:checkRunId/commit-fixes', async (req, res) => {
   try {
     const { checkRunId } = req.params;
@@ -303,7 +320,6 @@ app.post('/api/check-runs/:checkRunId/commit-fixes', async (req, res) => {
 
     const { owner, repo, pullNumber, postableFindings } = checkRunData;
     
-    // Trigger fix suggestions generation
     const result = await checkRunButtonService.commitAllFixSuggestions(
       owner, repo, pullNumber, postableFindings, checkRunData
     );
@@ -330,7 +346,11 @@ app.post('/api/check-runs/:checkRunId/commit-fixes', async (req, res) => {
   }
 });
 
-// NEW: Check merge readiness endpoint
+/**
+ * Checks merge readiness for a pull request
+ * @param {Object} req - Express request object with checkRunId parameter
+ * @param {Object} res - Express response object
+ */
 app.post('/api/check-runs/:checkRunId/check-merge', async (req, res) => {
   try {
     const { checkRunId } = req.params;
@@ -345,7 +365,6 @@ app.post('/api/check-runs/:checkRunId/check-merge', async (req, res) => {
 
     const { owner, repo, pullNumber, analysis } = checkRunData;
     
-    // Trigger merge readiness check
     await checkRunButtonService.checkMergeReadiness(owner, repo, pullNumber, analysis, checkRunData);
 
     res.json({
@@ -365,7 +384,11 @@ app.post('/api/check-runs/:checkRunId/check-merge', async (req, res) => {
   }
 });
 
-// NEW: Get fix suggestions for a specific finding
+/**
+ * Gets fix suggestions for a specific finding
+ * @param {Object} req - Express request object with finding data in body
+ * @param {Object} res - Express response object
+ */
 app.post('/api/fix-suggestion', async (req, res) => {
   try {
     const { owner, repo, pullNumber, finding } = req.body;
@@ -376,16 +399,13 @@ app.post('/api/fix-suggestion', async (req, res) => {
       });
     }
 
-    // Get PR data for context
     const githubService = require('./services/github.service');
     const aiService = require('./services/ai.service');
     
     const prData = await githubService.getPullRequestData(owner, repo, pullNumber);
     
-    // Get file content
     const fileContent = await checkRunButtonService.getFileContent(owner, repo, finding.file, prData);
     
-    // Generate fix suggestion
     const fixSuggestion = await aiService.generateCodeFixSuggestion(finding, fileContent, prData);
 
     res.json({
@@ -403,7 +423,11 @@ app.post('/api/fix-suggestion', async (req, res) => {
   }
 });
 
-// NEW: Assess merge readiness for a PR
+/**
+ * Assesses merge readiness for a pull request
+ * @param {Object} req - Express request object with PR data in body
+ * @param {Object} res - Express response object
+ */
 app.post('/api/merge-readiness', async (req, res) => {
   try {
     const { owner, repo, pullNumber } = req.body;
@@ -417,7 +441,6 @@ app.post('/api/merge-readiness', async (req, res) => {
     const githubService = require('./services/github.service');
     const aiService = require('./services/ai.service');
     
-    // Get PR data and current status
     const prData = await githubService.getPullRequestData(owner, repo, pullNumber);
     const reviewComments = prData.comments || [];
     
@@ -427,11 +450,8 @@ app.post('/api/merge-readiness', async (req, res) => {
       review_decision: prData.pr.review_decision
     };
 
-    // For this endpoint, we'll need to get existing AI findings
-    // This is a simplified version - in practice you'd want to store/retrieve the analysis
-    const aiFindings = []; // You could store these in a database or retrieve from previous analysis
+    const aiFindings = [];
     
-    // Assess merge readiness
     const mergeAssessment = await aiService.assessMergeReadiness(
       prData, aiFindings, reviewComments, currentStatus
     );
@@ -458,7 +478,11 @@ app.post('/api/merge-readiness', async (req, res) => {
   }
 });
 
-// NEW: Commit fix endpoint - Apply AI-suggested fixes directly
+/**
+ * Commit fix endpoint that applies AI-suggested fixes directly
+ * @param {Object} req - Express request object with commit data in query
+ * @param {Object} res - Express response object
+ */
 app.get('/api/commit-fix', async (req, res) => {
   try {
     const { data } = req.query;
@@ -474,7 +498,6 @@ app.get('/api/commit-fix', async (req, res) => {
 
     logger.info(`Commit fix requested for ${file}:${line}`, { trackingId, findingIndex });
 
-    // Create a user-friendly response page with copy-to-clipboard functionality
     const responseHtml = `
       <!DOCTYPE html>
       <html>
@@ -639,7 +662,11 @@ Tracking ID: ${trackingId}\`;
   }
 });
 
-// NEW: Test check run button creation (for development/debugging)
+/**
+ * Test endpoint for creating check run buttons (development/debugging)
+ * @param {Object} req - Express request object with test data in body
+ * @param {Object} res - Express response object
+ */
 app.post('/debug/test-check-run-buttons', async (req, res) => {
   try {
     const { owner, repo, pullNumber, headSha } = req.body;
@@ -650,7 +677,6 @@ app.post('/debug/test-check-run-buttons', async (req, res) => {
       });
     }
 
-    // Create test analysis data
     const testAnalysis = {
       trackingId: `test-${Date.now()}`,
       prInfo: {
@@ -726,12 +752,15 @@ app.post('/debug/test-check-run-buttons', async (req, res) => {
   }
 });
 
-// Debug endpoint for testing AI service directly
+/**
+ * Debug endpoint for testing AI service directly
+ * @param {Object} req - Express request object
+ * @param {Object} res - Express response object
+ */
 app.post('/debug/ai-test', async (req, res) => {
   try {
     const aiService = require('./services/ai.service');
     
-    // Simple test data
     const testData = {
       pr: {
         number: 999,
@@ -778,15 +807,17 @@ app.post('/debug/ai-test', async (req, res) => {
   }
 });
 
-// Dashboard route - serve the check run button dashboard
+/**
+ * Dashboard route that serves the check run button dashboard
+ * @param {Object} req - Express request object
+ * @param {Object} res - Express response object
+ */
 app.get('/dashboard', (req, res) => {
   res.sendFile(path.join(__dirname, '../public/check-run-button-dashboard.html'));
 });
 
-// Static files for dashboard
 app.use('/public', express.static(path.join(__dirname, '../public')));
 
-// Error handling middleware
 app.use((error, req, res, next) => {
   logger.error('Unhandled error:', error);
   res.status(500).json({ 
@@ -795,7 +826,6 @@ app.use((error, req, res, next) => {
   });
 });
 
-// 404 handler
 app.use('*', (req, res) => {
   res.status(404).json({ 
     error: 'Not found',
@@ -803,7 +833,6 @@ app.use('*', (req, res) => {
   });
 });
 
-// Start server
 logStartup('Preparing to start HTTP server...');
 
 const PORT = config.server.port;
@@ -819,7 +848,6 @@ const server = app.listen(PORT, () => {
   logStartup(`Check Run Button API: http://localhost:${PORT}/api/check-runs/*`);
   logStartup(`Interactive button system enabled - PR analysis will create clickable buttons for comment posting`);
   
-  // Also log with logger if available
   if (logger) {
     logger.info(`GitHub AI Reviewer server running on port ${PORT}`);
     logger.info(`Webhook URL: http://localhost:${PORT}/webhook`);
@@ -831,7 +859,6 @@ const server = app.listen(PORT, () => {
   }
 });
 
-// Handle server startup errors
 server.on('error', (error) => {
   logStartup(`Server startup error: ${error.message}`, true);
   logStartup(`Error code: ${error.code}`, true);
@@ -841,16 +868,13 @@ server.on('error', (error) => {
   process.exit(1);
 });
 
-// Graceful shutdown
 const shutdown = async () => {
   logger.info('Shutting down gracefully...');
   
-  // Close server
   server.close(() => {
     logger.info('HTTP server closed');
   });
 
-  // Shutdown webhook service
   if (webhookService.shutdown) {
     await webhookService.shutdown();
   }

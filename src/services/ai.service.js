@@ -1,13 +1,9 @@
-// src/services/ai.service.js - Enhanced AI Service with Resolved Conversation-Based Merge Readiness
-
 const OpenAI = require("openai");
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 const config = require("../config/config");
 const logger = require("../utils/logger");
 const { getCodeReviewPrompt } = require("../prompts/prompts");
 const fixHistoryService = require("./fix-history.service");
-
-// Add this at the top of ai.service.js
 const { graphql } = require("@octokit/graphql");
 
 const {
@@ -25,9 +21,7 @@ const {
 class AIService {
   constructor() {
     this.provider = config.ai.provider;
-    this.initializeProviders();
-
-    // CORRECTED: Comment filtering configuration 
+    this.initializeProviders(); 
     this.commentFilterConfig = {
       include: {
         commentTypes: [
@@ -79,7 +73,9 @@ class AIService {
     };
   }
 
-  // Initialize AI providers
+  /**
+   * Initializes AI providers based on configuration
+   */
   initializeProviders() {
     try {
       if (this.provider === "openai" || config.ai.openai.apiKey) {
@@ -102,16 +98,27 @@ class AIService {
     }
   }
 
-  // Main function to analyze pull request
+  /**
+   * Analyzes a pull request with comprehensive issue detection using AI
+   * @param {Object} prData - The pull request data
+   * @param {Array} existingComments - Existing comments on the PR
+   * @returns {Object} The analysis results
+   */
   async analyzePullRequest(prData, existingComments = []) {
     try {
-      logger.info(`Starting AI analysis for PR #${prData.pr.number}`);
+      logger.info(`Starting enhanced AI analysis for PR #${prData.pr.number}`);
 
-      // Prepare data for analysis
       const analysisData = this.prepareAnalysisData(prData, existingComments);
       const prompt = getCodeReviewPrompt(analysisData, existingComments);
 
-      // Perform analysis with retry logic
+      logger.info(`Analysis context:`, {
+        filesToAnalyze: analysisData.file_changes.length,
+        totalLines: analysisData.file_changes.reduce((sum, file) => sum + file.lines.length, 0),
+        commentableLines: analysisData.file_changes.reduce((sum, file) => 
+          sum + file.lines.filter(line => line.commentable).length, 0),
+        existingComments: existingComments.length
+      });
+
       let rawResponse;
       try {
         rawResponse = await retryWithBackoff(async () => {
@@ -130,7 +137,6 @@ class AIService {
         );
       }
 
-      // Validate and parse response
       let parsedAnalysis;
       try {
         parsedAnalysis = this.parseAnalysisResponse(rawResponse);
@@ -140,17 +146,20 @@ class AIService {
           `Parsing Error: ${parseError.message}`
         );
       }
-
-      // Enhance analysis with PR context
       const enhancedAnalysis = this.enhanceAnalysisWithContext(
         parsedAnalysis,
         prData,
         existingComments
       );
 
-      logger.info(
-        `AI analysis completed. Found ${enhancedAnalysis.automatedAnalysis.totalIssues} issues`
-      );
+      // Log analysis results for debugging
+      logger.info(`Enhanced AI analysis completed:`, {
+        totalIssues: enhancedAnalysis.automatedAnalysis.totalIssues,
+        severityBreakdown: enhancedAnalysis.automatedAnalysis.severityBreakdown,
+        categories: enhancedAnalysis.automatedAnalysis.categories,
+        detailedFindingsCount: enhancedAnalysis.detailedFindings.length
+      });
+
       return enhancedAnalysis;
     } catch (error) {
       logger.error("Critical error in AI analysis:", error);
@@ -199,7 +208,13 @@ class AIService {
   }
 }
 
-  // NEW METHOD: Get review threads using GraphQL API
+  /**
+   * Gets review threads using GraphQL API
+   * @param {string} owner - Repository owner
+   * @param {string} repo - Repository name
+   * @param {number} pullNumber - Pull request number
+   * @returns {Object} Review threads data
+   */
  async getReviewThreadsViaGraphQL(owner, repo, pullNumber) {
    try {
      const githubToken = process.env.GITHUB_TOKEN || config.github?.token;
@@ -299,7 +314,11 @@ class AIService {
  }
  
 
-// NEW METHOD: Analyze GraphQL review threads for resolution status
+  /**
+   * Analyzes GraphQL review threads for resolution status
+   * @param {Array} reviewThreads - Array of review thread objects
+   * @returns {Object} Analysis results with resolution statistics
+   */
 analyzeGraphQLReviewThreads(reviewThreads) {
   if (reviewThreads.length === 0) {
     logger.info('No review threads found - PR ready for merge');
@@ -1931,7 +1950,7 @@ determineMergeReadinessFromGraphQL(resolvedStatus, prData) {
     return structuredFiles;
   }
 
-  // Parse file patch into structured lines
+  // Enhanced file patch parsing with commented line filtering
   parseFileLines(patch, filename) {
     const lines = patch.split("\n");
     const structuredLines = [];
@@ -1949,7 +1968,10 @@ determineMergeReadinessFromGraphQL(resolvedStatus, prData) {
       }
 
       const lineType = line.charAt(0);
-      const content = line.slice(1);
+      const content = line.substring(1);
+
+      // Check if line is a comment (skip commented lines)
+      const isCommentedLine = this.isCommentedLine(content, filename);
 
       if (lineType === "-") {
         oldLineNum++;
@@ -1967,22 +1989,99 @@ determineMergeReadinessFromGraphQL(resolvedStatus, prData) {
           oldLineNumber: null,
           newLineNumber: newLineNum,
           content: content,
-          commentable: true,
+          commentable: !isCommentedLine, // Only commentable if not a comment
         });
       } else if (lineType === " ") {
         oldLineNum++;
         newLineNum++;
+        // Enhanced: Mark context lines as commentable for broader analysis (but skip comments)
         structuredLines.push({
           type: "context",
           oldLineNumber: oldLineNum,
           newLineNumber: newLineNum,
           content: content,
-          commentable: false,
+          commentable: !isCommentedLine, // Only commentable if not a comment
         });
       }
     }
 
     return structuredLines;
+  }
+
+  // Helper method to detect commented lines
+  isCommentedLine(content, filename) {
+    if (!content || content.trim() === '') {
+      return false;
+    }
+
+    const trimmedContent = content.trim();
+    const extension = filename.split('.').pop().toLowerCase();
+
+    // Language-specific comment patterns
+    switch (extension) {
+      case 'js':
+      case 'jsx':
+      case 'ts':
+      case 'tsx':
+      case 'java':
+      case 'cpp':
+      case 'c':
+      case 'cs':
+      case 'php':
+      case 'go':
+      case 'rs':
+      case 'swift':
+      case 'kt':
+      case 'scala':
+      case 'dart':
+        // Single line comments: // or # (for some languages)
+        return trimmedContent.startsWith('//') || 
+               trimmedContent.startsWith('#') ||
+               trimmedContent.startsWith('*') ||
+               trimmedContent.startsWith('/*') ||
+               trimmedContent.startsWith('*/');
+      
+      case 'py':
+      case 'rb':
+      case 'sh':
+      case 'yaml':
+      case 'yml':
+        // Python, Ruby, Shell, YAML comments
+        return trimmedContent.startsWith('#');
+      
+      case 'html':
+      case 'xml':
+        // HTML/XML comments
+        return trimmedContent.startsWith('<!--') || 
+               trimmedContent.startsWith('-->') ||
+               trimmedContent.startsWith('*');
+      
+      case 'css':
+      case 'scss':
+      case 'sass':
+      case 'less':
+        // CSS comments
+        return trimmedContent.startsWith('/*') || 
+               trimmedContent.startsWith('*') ||
+               trimmedContent.startsWith('*/');
+      
+      case 'vue':
+        // Vue files can have multiple comment types
+        return trimmedContent.startsWith('//') || 
+               trimmedContent.startsWith('<!--') ||
+               trimmedContent.startsWith('*') ||
+               trimmedContent.startsWith('/*') ||
+               trimmedContent.startsWith('*/');
+      
+      default:
+        // Default: check for common comment patterns
+        return trimmedContent.startsWith('//') || 
+               trimmedContent.startsWith('#') ||
+               trimmedContent.startsWith('<!--') ||
+               trimmedContent.startsWith('/*') ||
+               trimmedContent.startsWith('*') ||
+               trimmedContent.startsWith('*/');
+    }
   }
 
   // Format existing comments

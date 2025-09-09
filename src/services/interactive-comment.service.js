@@ -1,5 +1,3 @@
-// src/services/interactive-comment.service.js - Enhanced Interactive Comment Service
-
 const githubService = require('./github.service');
 const aiService = require('./ai.service');
 const logger = require('../utils/logger');
@@ -9,7 +7,16 @@ class InteractiveCommentService {
     this.activeComments = new Map(); // Track active interactive comments
   }
 
-  // NEW: Post enhanced comment with fix suggestion
+  /**
+   * Posts an enhanced comment with fix suggestion
+   * @param {string} owner - Repository owner
+   * @param {string} repo - Repository name
+   * @param {number} pullNumber - Pull request number
+   * @param {Object} finding - The finding object
+   * @param {Object} fixSuggestion - The fix suggestion object
+   * @param {string} trackingId - The tracking ID
+   * @returns {Object} The posted comment data
+   */
   async postCommentWithFixSuggestion(owner, repo, pullNumber, finding, fixSuggestion, trackingId) {
     try {
       logger.info(`Posting enhanced comment with fix suggestion for ${finding.file}:${finding.line}`, {
@@ -47,7 +54,13 @@ class InteractiveCommentService {
     }
   }
 
-  // NEW: Format enhanced comment with both issue and fix suggestion
+  /**
+   * Formats an enhanced comment with both issue and fix suggestion
+   * @param {Object} finding - The finding object
+   * @param {Object} fixSuggestion - The fix suggestion object
+   * @param {string} trackingId - The tracking ID
+   * @returns {string} The formatted comment body
+   */
   formatEnhancedComment(finding, fixSuggestion, trackingId) {
     const severityEmoji = this.getSeverityEmoji(finding.severity);
     const categoryEmoji = this.getCategoryEmoji(finding.category);
@@ -99,32 +112,6 @@ class InteractiveCommentService {
     return comment;
   }
 
-  // NEW: Post merge readiness status as check run update
-  // async updateCheckRunWithMergeStatus(owner, repo, checkRunId, mergeAssessment, trackingId) {
-  //   try {
-  //     logger.info(`Updating check run ${checkRunId} with merge readiness status: ${mergeAssessment.status}`);
-
-  //     const statusEmoji = this.getMergeStatusEmoji(mergeAssessment.status);
-  //     const conclusion = this.getCheckRunConclusion(mergeAssessment.status);
-
-  //     await githubService.updateCheckRun(owner, repo, checkRunId, {
-  //       conclusion: conclusion,
-  //       output: {
-  //         title: `${statusEmoji} Merge Readiness: ${mergeAssessment.status}`,
-  //         summary: this.formatMergeReadinessSummary(mergeAssessment),
-  //         text: this.formatMergeReadinessDetails(mergeAssessment, trackingId)
-  //       }
-  //     });
-
-  //     logger.info(`Check run updated with merge readiness status successfully`);
-  //     return true;
-
-  //   } catch (error) {
-  //     logger.error('Error updating check run with merge status:', error);
-  //     throw error;
-  //   }
-  // }
-
   async updateCheckRunWithMergeStatus(owner, repo, checkRunId, mergeAssessment, trackingId) {
     try {
       logger.info(`Updating check run ${checkRunId} with merge readiness status: ${mergeAssessment.status}`);
@@ -162,7 +149,11 @@ class InteractiveCommentService {
   }
   
 
-  // NEW: Format merge readiness summary for check run
+  /**
+   * Formats merge readiness summary for check run
+   * @param {Object} mergeAssessment - The merge assessment object
+   * @returns {string} The formatted summary
+   */
   formatMergeReadinessSummary(mergeAssessment) {
     let summary = `**Readiness Score:** ${mergeAssessment.merge_readiness_score}/100\n\n`;
     summary += `**Status:** ${mergeAssessment.status}\n\n`;
@@ -171,52 +162,12 @@ class InteractiveCommentService {
     return summary;
   }
 
-  // NEW: Format detailed merge readiness information
-  // formatMergeReadinessDetails(mergeAssessment, trackingId) {
-  //   let details = `## Merge Readiness Assessment\n\n`;
-    
-  //   details += `**Overall Score:** ${mergeAssessment.merge_readiness_score}/100\n`;
-  //   details += `**Decision:** ${mergeAssessment.status}\n`;
-  //   details += `**Confidence:** ${mergeAssessment.confidence}\n\n`;
-    
-  //   details += `### Assessment Reasoning\n`;
-  //   details += `${mergeAssessment.reason}\n\n`;
-    
-  //   details += `### Recommendation\n`;
-  //   details += `${mergeAssessment.recommendation}\n\n`;
-
-  //   // Outstanding issues
-  //   if (mergeAssessment.outstanding_issues && mergeAssessment.outstanding_issues.length > 0) {
-  //     details += `### Outstanding Issues (${mergeAssessment.outstanding_issues.length})\n`;
-  //     mergeAssessment.outstanding_issues.forEach((issue, index) => {
-  //       const issueEmoji = this.getSeverityEmoji(issue.severity);
-  //       details += `${index + 1}. ${issueEmoji} **${issue.type}** - ${issue.severity}\n`;
-  //       details += `   ${issue.description}\n`;
-  //       if (issue.file && issue.file !== 'system') {
-  //         details += `   📍 \`${issue.file}:${issue.line}\`\n`;
-  //       }
-  //       details += `   Status: ${issue.addressed ? '✅ Addressed' : '❌ Not Addressed'}\n\n`;
-  //     });
-  //   }
-
-  //   // Review quality assessment
-  //   if (mergeAssessment.review_quality_assessment) {
-  //     const qa = mergeAssessment.review_quality_assessment;
-  //     details += `### Review Quality Assessment\n`;
-  //     details += `- **Human Review Coverage:** ${qa.human_review_coverage}\n`;
-  //     details += `- **AI Analysis Coverage:** ${qa.ai_analysis_coverage}\n`;
-  //     details += `- **Critical Issues Addressed:** ${qa.critical_issues_addressed ? '✅' : '❌'}\n`;
-  //     details += `- **Security Issues Addressed:** ${qa.security_issues_addressed ? '✅' : '❌'}\n`;
-  //     details += `- **Unresolved Issues:** ${qa.total_unresolved_issues}\n\n`;
-  //   }
-
-  //   details += `---\n`;
-  //   details += `*Assessment completed at ${new Date().toISOString()}*\n`;
-  //   details += `*Analysis ID: \`${trackingId}\`*`;
-
-  //   return details;
-  // }
-
+  /**
+   * Formats merge readiness details for check run
+   * @param {Object} mergeAssessment - The merge assessment object
+   * @param {string} trackingId - The tracking ID
+   * @returns {string} The formatted details
+   */
   formatMergeReadinessDetails(mergeAssessment, trackingId) {
     let details = `## Merge Readiness Assessment\n\n`;
     
@@ -316,12 +267,12 @@ class InteractiveCommentService {
       comment += `- 🔵 Minor: ${severity.minor}\n`;
       comment += `- ℹ️ Info: ${severity.info}\n\n`;
 
-      const categories = analysis.automatedAnalysis.categories;
+      const { bugs, vulnerabilities, securityHotspots, codeSmells } = analysis.automatedAnalysis.categories;
       comment += `**By Category:**\n`;
-      comment += `- 🐛 Bugs: ${categories.bugs}\n`;
-      comment += `- 🔒 Vulnerabilities: ${categories.vulnerabilities}\n`;
-      comment += `- ⚠️ Security Hotspots: ${categories.securityHotspots}\n`;
-      comment += `- 💨 Code Smells: ${categories.codeSmells}\n\n`;
+      comment += `- 🐛 Bugs: ${bugs}\n`;
+      comment += `- 🔒 Vulnerabilities: ${vulnerabilities}\n`;
+      comment += `- ⚠️ Security Hotspots: ${securityHotspots}\n`;
+      comment += `- 💨 Code Smells: ${codeSmells}\n\n`;
     }
 
     // Merge readiness details
@@ -355,7 +306,11 @@ class InteractiveCommentService {
     return comment;
   }
 
-  // Helper methods for emojis
+  /**
+   * Get emoji for severity level
+   * @param {string} severity - The severity level
+   * @returns {string} The corresponding emoji
+   */
   getSeverityEmoji(severity) {
     const emojiMap = {
       'BLOCKER': '🚫',
@@ -367,6 +322,11 @@ class InteractiveCommentService {
     return emojiMap[severity?.toUpperCase()] || 'ℹ️';
   }
 
+  /**
+   * Get emoji for category type
+   * @param {string} category - The category type
+   * @returns {string} The corresponding emoji
+   */
   getCategoryEmoji(category) {
     const emojiMap = {
       'BUG': '🐛',
@@ -377,6 +337,11 @@ class InteractiveCommentService {
     return emojiMap[category?.toUpperCase()] || '💨';
   }
 
+  /**
+   * Get emoji for merge status
+   * @param {string} status - The merge status
+   * @returns {string} The corresponding emoji
+   */
   getMergeStatusEmoji(status) {
     const emojiMap = {
       'READY_FOR_MERGE': '✅',
@@ -386,7 +351,10 @@ class InteractiveCommentService {
     return emojiMap[status] || '❓';
   }
 
-  // Cleanup old comment data
+  /**
+   * Clean up old comment data from memory
+   * Removes comments older than 24 hours
+   */
   cleanupOldComments() {
     const maxAge = 24 * 60 * 60 * 1000; // 24 hours
     const now = Date.now();
@@ -404,7 +372,14 @@ class InteractiveCommentService {
     }
   }
 
-  // NEW: Store pending comments for interactive posting (for backward compatibility)
+  /**
+   * Store pending comments for interactive posting
+   * @param {string} owner - Repository owner
+   * @param {string} repo - Repository name
+   * @param {number} pullNumber - Pull request number
+   * @param {Array} findings - Array of findings to store
+   * @param {string} trackingId - Tracking ID for the analysis
+   */
   storePendingComments(owner, repo, pullNumber, findings, trackingId) {
     try {
       // Validate inputs
@@ -420,7 +395,7 @@ class InteractiveCommentService {
 
       // Store findings for potential interactive use
       findings.forEach((finding, index) => {
-        if (finding && finding.file && finding.line) {
+        if (finding?.file && finding?.line) {
           const commentKey = `${owner}/${repo}#${pullNumber}:${finding.file}:${finding.line}`;
           this.activeComments.set(commentKey, {
             finding,
@@ -442,7 +417,10 @@ class InteractiveCommentService {
     }
   }
 
-  // Get statistics
+  /**
+   * Get service statistics
+   * @returns {Object} Statistics object with active comments count
+   */
   getStats() {
     return {
       activeComments: this.activeComments.size
