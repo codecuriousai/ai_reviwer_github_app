@@ -176,7 +176,7 @@ ai_reviwer_github_app/
 - **Comment Management**: Posts inline comments and general PR comments
 - **Check Run Operations**: Creates, updates, and manages GitHub check runs
 - **File Operations**: Reads file contents and validates line numbers
-- **Fix Committing**: Automatically commits AI-suggested fixes to PR branches
+- **Fix Committing**: Automatically commits AI-suggested fixes to PR branches in single commits
 
 **GitHub API Endpoints Used**:
 - `/repos/{owner}/{repo}/pulls` - Pull request data
@@ -262,7 +262,7 @@ ai_reviwer_github_app/
 - **`GET /api/check-runs/active`** - List active check runs
 - **`GET /api/check-runs/:checkRunId`** - Get specific check run data
 - **`POST /api/check-runs/cleanup`** - Clean up old check runs
-- **`POST /api/check-runs/:checkRunId/commit-fixes`** - Commit AI fixes
+- **`POST /api/check-runs/:checkRunId/commit-fixes`** - Commit AI fixes in single commit
 - **`POST /api/check-runs/:checkRunId/check-merge`** - Check merge readiness
 
 ### AI Service APIs
@@ -273,6 +273,13 @@ ai_reviwer_github_app/
 ### Debug & Testing APIs
 - **`POST /debug/test-check-run-buttons`** - Test check run creation
 - **`POST /debug/ai-test`** - Test AI service functionality
+
+### Commit Management Features
+- **Single Commit Strategy**: All AI-suggested fixes are committed together in one commit
+- **Batch Processing**: Collects all file changes before committing
+- **Error Handling**: Detailed error reporting with file and line information
+- **Fallback Mechanism**: Alternative commit approach if batch commit fails
+- **Comprehensive Logging**: Detailed logs for debugging commit issues
 
 ---
 
@@ -544,6 +551,15 @@ sudo apt update && sudo apt upgrade -y
 - Implement proper error handling
 - Clean up old check run data
 
+#### 5. Commit Issues
+**Symptoms**: Fixes not being committed or multiple commits created
+**Solutions**:
+- Check GitHub API rate limits
+- Verify blob creation is successful
+- Review tree creation logs
+- Check for file size limits (100MB per file)
+- Monitor commit error messages for specific file/line issues
+
 ### Debug Commands
 
 ```bash
@@ -574,6 +590,12 @@ pm2 logs github-ai-reviewer | grep "webhook"
 
 # Check AI service calls
 pm2 logs github-ai-reviewer | grep "AI"
+
+# Check commit operations
+pm2 logs github-ai-reviewer | grep "commit"
+
+# Check batch commit process
+pm2 logs github-ai-reviewer | grep "batch commit"
 ```
 
 ---

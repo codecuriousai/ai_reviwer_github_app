@@ -320,28 +320,99 @@ app.post('/api/check-runs/:checkRunId/commit-fixes', async (req, res) => {
 
     const { owner, repo, pullNumber, postableFindings } = checkRunData;
     
-    const result = await checkRunButtonService.commitAllFixSuggestions(
+    const result = await checkRunButtonService.commitFixesToPRBranch(
       owner, repo, pullNumber, postableFindings, checkRunData
     );
 
+    // Determine overall success based on results
+    const hasSuccessfulCommits = result.successful && result.successful.length > 0;
+    const hasErrors = result.failed && result.failed.length > 0;
+    const hasSkipped = result.skipped && result.skipped.length > 0;
+    
+    // Prepare detailed error information
+    const detailedErrors = [];
+    if (hasErrors) {
+      result.failed.forEach(failedFix => {
+        detailedErrors.push({
+          file: failedFix.file,
+          line: failedFix.line || 'Unknown',
+          issue: failedFix.fix?.issue || 'Unknown issue',
+          error: failedFix.error,
+          suggestion: failedFix.fix?.suggestion || 'No suggestion available'
+        });
+      });
+    }
+    
+    // Prepare skipped information
+    const skippedDetails = [];
+    if (hasSkipped) {
+      result.skipped.forEach(skippedItem => {
+        skippedDetails.push({
+          file: skippedItem.file || 'Multiple files',
+          reason: skippedItem.reason,
+          line: skippedItem.fix?.line || 'Unknown',
+          issue: skippedItem.fix?.issue || 'Unknown issue'
+        });
+      });
+    }
+    
+    // Prepare success information
+    const successDetails = [];
+    if (hasSuccessfulCommits) {
+      result.successful.forEach(successItem => {
+        successDetails.push({
+          commitSha: successItem.commitSha,
+          commitUrl: successItem.commitUrl,
+          filesChanged: successItem.filesChanged,
+          totalFixes: successItem.totalFixes,
+          totalAttemptedFixes: successItem.totalAttemptedFixes,
+          failedFixes: successItem.failedFixes,
+          isFallbackCommit: successItem.isFallbackCommit || false
+        });
+      });
+    }
+
     res.json({
-      success: true,
-      message: 'Fix suggestions committed successfully',
+      success: hasSuccessfulCommits,
+      message: hasSuccessfulCommits ? 
+        'Fix suggestions committed successfully' : 
+        'Some or all fix suggestions failed to commit',
       checkRunId: parseInt(checkRunId),
+      summary: {
+        totalFixes: (result.successful?.[0]?.totalAttemptedFixes || 0) + (result.failed?.length || 0) + (result.skipped?.length || 0),
+        successfulFixes: result.successful?.[0]?.totalFixes || 0,
+        failedFixes: result.failed?.length || 0,
+        skippedFixes: result.skipped?.length || 0,
+        commitsCreated: result.successful?.length || 0
+      },
       results: {
-        successCount: result.successCount,
-        errorCount: result.errorCount,
-        errors: result.errors,
-        committedFixes: result.committedFixes
+        successful: successDetails,
+        failed: detailedErrors,
+        skipped: skippedDetails
       },
       timestamp: new Date().toISOString()
     });
 
   } catch (error) {
     logger.error('Error committing fix suggestions:', error);
-    res.status(500).json({
-      error: 'Failed to commit fix suggestions',
-      message: error.message
+    
+    // Determine if this is a validation error or system error
+    const isValidationError = error.message.includes('Missing required parameters') || 
+                             error.message.includes('No valid fixes to commit') ||
+                             error.message.includes('No fixes provided');
+    
+    const statusCode = isValidationError ? 400 : 500;
+    
+    res.status(statusCode).json({
+      success: false,
+      error: isValidationError ? 'Validation Error' : 'System Error',
+      message: error.message,
+      checkRunId: parseInt(checkRunId),
+      details: {
+        type: isValidationError ? 'validation' : 'system',
+        timestamp: new Date().toISOString(),
+        stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+      }
     });
   }
 });

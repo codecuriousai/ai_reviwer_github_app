@@ -11,6 +11,8 @@ An intelligent GitHub App that automatically reviews pull requests using AI mode
 🚨 **Severity Levels**: Categorizes issues by CRITICAL, HIGH, MEDIUM, LOW, INFO
 👥 **Reviewer Coverage**: Analyzes what human reviewers missed
 ⚡ **Real-time Processing**: Triggers on PR events automatically
+🔧 **Batch Fix Commits**: Commits all AI-suggested fixes in a single commit
+📈 **Detailed Error Reporting**: Clear error messages with file and line information
 
 ## Quick Start
 
@@ -102,6 +104,8 @@ The app responds to these GitHub webhook events:
 
 - `GET /health` - Health check
 - `POST /webhook` - GitHub webhook receiver
+- `POST /api/check-runs/:checkRunId/commit-fixes` - Commit AI-suggested fixes
+- `POST /api/check-runs/:checkRunId/check-merge` - Check merge readiness
 
 ## AI Analysis Output
 
