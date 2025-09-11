@@ -37,7 +37,7 @@ class FixHistoryService {
       await fs.mkdir(dataDir, { recursive: true });
       
       // Convert Map to array for JSON serialization
-      const historyArray = Array.from(this.fixHistory.entries());
+      const historyArray = [...this.fixHistory];
       await fs.writeFile(this.historyFile, JSON.stringify(historyArray, null, 2));
       logger.info(`Saved fix history with ${this.fixHistory.size} entries`);
     } catch (error) {
@@ -100,7 +100,7 @@ class FixHistoryService {
     const newFindings = [];
     const skippedCount = 0;
 
-    for (const finding of findings) {
+    findings.forEach(finding => {
       if (!this.hasBeenSuggested(owner, repo, finding.file, finding.line, finding.issue)) {
         newFindings.push(finding);
       } else {
